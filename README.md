@@ -442,6 +442,10 @@ See [CLAUDE.md](CLAUDE.md) for the full developer reference. Agents get
 what they need from the `ltvm` skill above, which `ltvm install` links
 into their skill directories.
 
+To run Lustre over RDMA without an HCA, see
+[docs/SOFTROCE_SETUP.md](docs/SOFTROCE_SETUP.md) -- o2iblnd on top of
+the in-kernel `rdma_rxe` software RoCE driver.
+
 ## License
 
 BSD 3-Clause.  See [LICENSE](LICENSE).

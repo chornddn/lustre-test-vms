@@ -1,8 +1,9 @@
-# SoftRoCE (RXE) between ltvm Rocky VMs
+# SoftRoCE (RXE) between ltvm VMs
 
-How to bring up a working RoCEv2 link between two ltvm-managed Rocky 9 VMs
-using the in-kernel `rdma_rxe` software RoCE driver. No HCA required —
-RXE runs RDMA verbs over the regular Ethernet NIC.
+How to bring up a working RoCEv2 link between two ltvm-managed VMs
+using the in-kernel `rdma_rxe` software RoCE driver, and how to run
+Lustre's o2iblnd over it. No HCA required -- RXE runs RDMA verbs over
+the regular Ethernet NIC.
 
 ## What this is good for
 
@@ -10,8 +11,8 @@ RXE runs RDMA verbs over the regular Ethernet NIC.
   without needing real Mellanox hardware.
 - Exercising the userspace verbs API (`libibverbs`, `librdmacm`) and
   perftest tools end-to-end.
-- Bringing up Lustre over o2iblnd against a software RDMA stack for
-  development.
+- Running the o2ib-gated parts of `sanity-lnet` (LST between two nodes,
+  a Lustre filesystem mounted over o2ib).
 
 ## What this is NOT good for
 
@@ -20,117 +21,227 @@ RXE runs RDMA verbs over the regular Ethernet NIC.
   HCA DMA engines). SoftRoCE never touches the PCIe data path; the
   "RDMA" is implemented entirely in software on top of UDP. The whole
   PCIe Relaxed Ordering story (DDN-6698 etc.) cannot reproduce here.
-- Throughput-sensitive benchmarking. Expect single-digit Gb/s, bounded
-  by software packet processing through the host bridge and TUN/TAP.
+- Throughput-sensitive benchmarking. Expect ~100-250 MB/s, bounded by
+  software packet processing.
+- Anything that depends on **NUMA placement**. RXE reports no NUMA node,
+  so code that selects a path by NUMA distance takes its degenerate
+  branch. Force such paths on explicitly rather than relying on
+  auto-detection.
+- **`ko2iblnd dev_failover` testing.** Forcing HCA rebuilds under load
+  breaks the RXE connection badly enough that an in-flight LST batch
+  cannot be stopped; `rmmod lnet_selftest` then blocks forever in
+  `sfw_shutdown` (unkillable D state, VM reboot required). This is not
+  specific to whatever LND feature you are testing -- it reproduces with
+  a stock module -- but it does mean failover tests need real hardware.
 
-## Steps
+## 1. Kernel: InfiniBand core + rdma_rxe
 
-### 1. Create two VMs with a SoftRoCE NIC
+The verbs core and `rdma_rxe` are built as modules via
+`targets/common/kernel-config.fragment` and the per-arch fragment.
+Vendor HCA drivers are deliberately left off -- a microvm has no HCA to
+bind and they dominate the build time.
 
-`--nic softroce` adds an extra NIC (eth1) and brings `rdma_rxe` up on
-it at boot, via `targets/common/setup-nic-softroce.sh`.  That is the
-supported path and it does steps 3 and 4 below for you:
+**aarch64 kernels built before this was enabled have no InfiniBand at
+all** (the arch fragment used to carry a blanket `CONFIG_INFINIBAND=n`).
+A VM booted on such a kernel fails at boot with:
+
+```
+modprobe: FATAL: Module rdma_rxe not found in directory /lib/modules/...
+setup-nic-softroce.sh: ERROR: modprobe rdma_rxe failed
+```
+
+Rebuild the kernel **and** the image -- the image carries `/lib/modules`,
+so a stale image on a fresh kernel produces exactly that error:
 
 ```bash
-ltvm create co<N>-rdma-a --vcpus 2 --mem 2048 --target rocky9 \
-    --mdt-disks 0 --ost-disks 0 --nic softroce
-ltvm create co<N>-rdma-b --vcpus 2 --mem 2048 --target rocky9 \
-    --mdt-disks 0 --ost-disks 0 --nic softroce
-ltvm list
+ltvm build kernel rocky9 --arch aarch64 --kernel 5.14-rhel9.5 \
+    --lustre-tree ~/lustre-release
+ltvm build image  rocky9 --arch aarch64 --kernel 5.14-rhel9.5 \
+    --lustre-tree ~/lustre-release
 ```
 
-Note the RXE link lands on the **extra** NIC (eth1, MTU 4200), not on
-the management NIC eth0 -- keeping RDMA traffic off the interface ssh
-and /etc/hosts rely on.  Check it came up:
+`build image` requires `--lustre-tree`; without it the build refuses
+because it cannot find the Lustre staging for that kernel.
+
+Verify before creating VMs:
 
 ```bash
-ssh co<N>-rdma-a 'rdma link'
+K=artifacts/rocky9/aarch64/kernels/5.14-rhel9.5-*/
+grep -E 'CONFIG_(INFINIBAND|RDMA_RXE)=' $K/build-tree/.config
+find $K/modules -name 'rdma_rxe.ko' -o -name 'ib_core.ko'
 ```
 
-No MDT/OST disks needed unless you also intend to run Lustre on them.
-Confirm L2 connectivity with a ping between the two VMs' eth1
-addresses before going further.
+## 2. Lustre: build the in-kernel o2iblnd
 
-The manual procedure in steps 3-4 remains documented below for VMs
-created without `--nic softroce`, and for anyone who wants to see what
-the boot-time script does.
-
-### 2. Verbs tooling is preinstalled
-
-`rdma-core` (which provides the `rdma` link tool), `libibverbs-utils`
-(`ibv_devices`, `ibv_devinfo`), and `perftest` (`ib_{read,write,send}_bw`,
-`..._lat`) all ship in the base image -- no on-demand install needed.
-The kernel modules `rdma_rxe`, `rdma_cm`, `ib_core`, `ib_uverbs`,
-`rdma_ucm`, and `mlx5_ib` are built into the kernel under
-`/lib/modules/$(uname -r)/kernel/drivers/infiniband/` and are only
-loaded when you `modprobe` them explicitly (or when matching
-hardware probes), so this preinstall is zero-cost on VMs that never
-enable RDMA.
-
-### 3. Load `rdma_rxe` and create the RXE link (both VMs)
-
-Skip this if you passed `--nic softroce` -- it has already happened.
-For a VM without it, bind RXE to the extra NIC if there is one; only
-fall back to eth0 (the management NIC) when the VM has no other:
+`ltvm build lustre` passes `--with-o2ib=no` by default, because the
+build container has no external OFED headers. That also means **no
+`ko2iblnd.ko` is built**, so nothing can run over RXE. Ask for the
+in-kernel LND explicitly:
 
 ```bash
-ssh co<N>-rdma-a 'modprobe rdma_rxe && \
-    rdma link add rxe0 type rxe netdev eth1 && rdma link'
-ssh co<N>-rdma-b 'modprobe rdma_rxe && \
-    rdma link add rxe0 type rxe netdev eth1 && rdma link'
+ltvm build lustre rocky9 --arch aarch64 --kernel 5.14-rhel9.5 \
+    --lustre-tree ~/lustre-release --configure="--with-o2ib=yes"
 ```
 
-Expected:
+Use the `--configure=<value>` form. With a space, argparse consumes
+`--with-o2ib=yes` as a flag of its own and fails with
+`argument --configure: expected one argument`.
+
+Expected in the configure output:
 
 ```
-link rxe0/1 state ACTIVE physical_state LINK_UP netdev eth1
+checking whether to enable OpenIB gen2 support... yes
 ```
 
-Verify userspace can see it:
+The neighbouring `Auto detection of external O2IB failed. Build of
+external o2ib disabled.` warning is normal -- that is the *external*
+(MOFED) LND, which we are not building. Confirm the module landed:
 
 ```bash
-ssh co<N>-rdma-a 'ibv_devices; ibv_devinfo -d rxe0'
+find ~/lustre-release/.ltvm-staging -name 'ko2iblnd.ko'
 ```
 
-You should see `rxe0` listed, port state `PORT_ACTIVE`, link_layer
-`Ethernet`. Ethernet link layer means RoCEv2 (encapsulated in UDP/IPv4).
-
-### 4. Smoke-test with perftest
-
-Server on B, client on A. Each test needs the server backgrounded
-because `ssh` is synchronous.
+## 3. Create the cluster
 
 ```bash
-# Server (VM-B) — note `true;` prefix avoids pkill nonzero exit
-# propagating; nohup + & detaches; -F skips CPU-frequency check
-ssh co<N>-rdma-b 'true; \
-    nohup ib_write_bw -d rxe0 -F -D 5 > /tmp/ib.log 2>&1 & echo started'
-
-# Client (VM-A)
-ssh co<N>-rdma-a 'ib_write_bw -d rxe0 -F -D 5 <VM-B-IP>'
+sudo ltvm cluster create co1 --target rocky9 --arch aarch64 \
+    --kernel 5.14-rhel9.5 --nic softroce --vcpus 2 --mem 4096 \
+    mgs+mds+oss:co1-srv:1 client:co1-cli
+ltvm cluster deploy co1 --build ~/lustre-release
 ```
 
-Repeat for `ib_read_bw` and `ib_send_bw`. Typical result on default
-1500-byte MTU eth0 (active RoCE MTU = 1024B): ~250 MiB/s for all three
-verbs at default message size. The numbers are dominated by SoftRoCE
-overhead, not the wire.
+`--nic softroce` gets `rdma_rxe` loaded at boot and sets `fc_nics=`
+so that mgmt (`eth0`) is excluded from LNet. `--kernel` is required
+whenever the target's default kernel is not the one you built.
 
-### 5. (Optional) Bigger MTU for less-bad numbers
+## 4. Move the rxe device onto eth0
+
+**This step is currently required.** `--nic softroce` puts the rxe link
+on `eth1`, but ltvm allocates the extra NIC an address in the *same
+subnet as mgmt*. With two interfaces on one subnet the kernel routes
+peer traffic out `eth0`, which has no rxe device, so `rdma_cm` address
+resolution fails and LNet reports:
+
+```
+failed to ping <nid>@o2ib: Network is down
+```
+
+Renumbering `eth1` onto its own subnet does not help on macOS: every
+NIC attaches to the same `socket_vmnet` socket, which only forwards its
+own subnet, so ARP for any other subnet never reaches the peer (visible
+as `ip neigh` entries stuck in `FAILED`, and the peer's `tcpdump`
+showing the request arriving on `eth0`).
+
+The reliable arrangement is to run RXE on `eth0`, the interface that
+definitely has L2 connectivity to the other VMs:
 
 ```bash
-ssh co<N>-rdma-a 'ip link set eth0 mtu 9000'
-ssh co<N>-rdma-b 'ip link set eth0 mtu 9000'
+for n in co1-srv co1-cli; do ssh $n '
+    lnetctl lnet unconfigure 2>/dev/null
+    rdma link delete rxe0 2>/dev/null
+    ip link set eth1 down 2>/dev/null
+    rdma link add rxe0 type rxe netdev eth0
+    echo '\''options lnet networks="o2ib0(eth0)"'\'' \
+        > /etc/modprobe.d/lnet.conf'
+done
 ```
 
-Then re-create the rxe link to pick up the new MTU:
+This is **runtime state and does not survive a VM reboot** -- `rc.local`
+recreates the link on `eth1` from the `fc_nics=` cmdline. The
+`/etc/modprobe.d` edits do persist (they live in the VM's overlay).
+Re-run the `rdma link` half after any reboot.
+
+## 5. Verify
 
 ```bash
-ssh co<N>-rdma-a 'rdma link delete rxe0 && \
-    rdma link add rxe0 type rxe netdev eth0'
+for n in co1-srv co1-cli; do ssh $n '
+    modprobe ko2iblnd
+    lnetctl lnet configure
+    lnetctl net add --net o2ib0 --if eth0
+    hostname; lctl list_nids'
+done
+ssh co1-cli 'lnetctl ping <server-ip>@o2ib'
 ```
 
-(Same on B.) Active RDMA MTU should now be 4096. The host bridge needs
-to support the larger MTU end-to-end; if pings stop working, revert.
+A healthy bring-up logs:
+
+```
+LNet: Using FastReg for registration
+LNet: Added LNI 192.168.105.134@o2ib [8/256/0/180]
+```
+
+For a pure-verbs smoke test, `perftest` is preinstalled (server
+backgrounded, since ssh is synchronous; `-F` skips the CPU-frequency
+check):
+
+```bash
+ssh co1-srv 'true; nohup ib_write_bw -d rxe0 -F -D 5 >/tmp/ib.log 2>&1 & echo ok'
+ssh co1-cli 'ib_write_bw -d rxe0 -F -D 5 <server-ip>'
+```
+
+## 6. Running sanity-lnet over o2ib
+
+Point the test config at the o2ib net. `cluster deploy` installs the
+stock `cfg/local.sh`, which defaults to `tcp`; append overrides rather
+than replacing the file, or you will drop the `${VAR:-default}`
+definitions that `init_test_env` derives `DIR`/`MOUNT1` from (the
+symptom is `DIR= not in /mnt/lustre. Aborting.` and exit 99):
+
+```bash
+cat >> /usr/lib64/lustre/tests/cfg/local.sh <<'EOF'
+mds_HOST=co1-srv
+mgs_HOST=co1-srv
+ost_HOST=co1-srv
+CLIENTS=co1-cli
+MDSCOUNT=1
+MDSDEV1=/dev/vdb
+OSTCOUNT=1
+OSTDEV1=/dev/vdc
+NETTYPE=o2ib
+MGSNID=192.168.105.134@o2ib
+LOAD_MODULES_REMOTE=true
+PDSH="pdsh -S -Rssh -w"
+EOF
+```
+
+Write the same file to every node, then run from the client:
+
+```bash
+ssh co1-cli 'cd /usr/lib64/lustre/tests && ONLY=313 bash ./sanity-lnet.sh'
+```
+
+### Tests that set ko2iblnd module options will silently do nothing
+
+Any test driving `MODOPTS_KO2IBLND` needs one more step on an
+**installed** (RPM / `make install`) tree. `load_module()` only uses
+`insmod` when it finds the module under `$LUSTRE`; otherwise it falls
+back to `modprobe`. Lustre's own `/etc/modprobe.d/ko2iblnd.conf` ships
+
+```
+install ko2iblnd /usr/sbin/ko2iblnd-probe
+```
+
+and that script re-execs `modprobe --ignore-install ...`, dropping the
+command-line options on the floor:
+
+```bash
+modprobe ko2iblnd <opt>=2                  # option lost, reads back 0
+modprobe --ignore-install ko2iblnd <opt>=2 # applied
+```
+
+The test then runs against a default-configured module and fails in a
+way that looks like a code bug. Comment the rule out on every node
+before running such tests:
+
+```bash
+for n in co1-srv co1-cli; do
+    ssh $n "sed -i 's|^install ko2iblnd |#install ko2iblnd |' \
+        /etc/modprobe.d/ko2iblnd.conf"
+done
+```
+
+This does not arise from a build tree, where `insmod` is used and
+`modprobe.conf` is bypassed entirely.
 
 ## Gotchas
 
@@ -139,11 +250,15 @@ to support the larger MTU end-to-end; if pings stop working, revert.
   fails. Prefix with `true;` or append `|| true`.
 - **Background jobs need `nohup ... &`**. Plain `&` under `ssh`
   may get reaped when the session closes.
-- **One RXE device per VM is enough.** Don't try to add multiple rxe
-  links over the same netdev — they'll conflict.
+- **One RXE device per VM is enough.** Don't add multiple rxe links
+  over the same netdev -- they'll conflict.
 - **Link layer is Ethernet, not InfiniBand**, even though `ibv_devinfo`
   prints `transport: InfiniBand`. That's the verbs transport class;
   what's on the wire is RoCEv2 over UDP.
+- **Teardown warns.** `rmmod`-ing an LND logs
+  `WARNING ... __rxe_cleanup ... cleanup failed, err = -22` from
+  `rdma_destroy_qp`. That is an `rdma_rxe` QP-teardown quirk, not a
+  fault in the caller.
 - **Don't expect RC behavior to match real HCAs at the edges.** SoftRoCE
   implements the verbs spec but performance characteristics, error
   paths, completion timing, and concurrency limits all differ from
