@@ -7,11 +7,13 @@
 # - Creates a shared ed25519 key so VMs can SSH to each other without prompts
 set -euo pipefail
 
-# Enable sshd (service name differs: sshd on RHEL, ssh on Debian)
-if systemctl list-unit-files sshd.service &>/dev/null; then
+# Enable sshd (service name differs: sshd on RHEL, ssh on Debian).
+# Debian's ssh.service is the real unit; focal additionally ships
+# sshd.service as a symlink to it, and systemd refuses to enable a
+# linked unit file.  Try the Debian name first so we never land on
+# the symlink, then fall back to the RHEL name.
+if ! systemctl enable ssh 2>/dev/null; then
 	systemctl enable sshd
-else
-	systemctl enable ssh
 fi
 
 # Allow root login with empty password, and raise the connection
