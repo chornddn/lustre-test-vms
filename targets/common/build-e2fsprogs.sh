@@ -15,6 +15,11 @@
 #     and libs (required on RHEL where the cross-toolchain ships no
 #     glibc/headers; install via dnf --forcearch --installroot).
 #
+# Per-target escape hatch:
+#   E2FS_CONFIGURE_ARGS -- extra words appended to ./configure, for
+#     distro quirks the shared recipe should not carry (e.g. an
+#     autoconf cache override that turns off a feature probe).
+#
 # Usage: build-e2fsprogs.sh [TAG|latest]
 set -euo pipefail
 
@@ -25,6 +30,7 @@ TARGET_ARCH="${TARGET_ARCH:-$(uname -m)}"
 HOST_ARCH="$(uname -m)"
 DESTDIR="${DESTDIR:-}"
 SYSROOT="${SYSROOT:-}"
+E2FS_CONFIGURE_ARGS="${E2FS_CONFIGURE_ARGS:-}"
 
 E2FS_REPO=https://review.whamcloud.com/tools/e2fsprogs
 
@@ -71,6 +77,7 @@ cd /tmp/e2fsprogs
 if [[ -n "$DESTDIR" ]]; then
 	./configure --prefix=/usr --with-root-prefix="" \
 	    --enable-elf-shlibs --disable-uuidd $CONFIGURE_HOST \
+	    $E2FS_CONFIGURE_ARGS \
 	    CFLAGS="-fPIC -O2"
 	make -j"$(nproc)"
 	make install DESTDIR="$DESTDIR"
@@ -79,6 +86,7 @@ if [[ -n "$DESTDIR" ]]; then
 else
 	./configure --prefix=/usr --with-root-prefix="" \
 	    --enable-elf-shlibs --disable-uuidd $CONFIGURE_HOST \
+	    $E2FS_CONFIGURE_ARGS \
 	    CFLAGS="-fPIC -O2"
 	make -j"$(nproc)"
 	make install
