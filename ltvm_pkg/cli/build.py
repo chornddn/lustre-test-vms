@@ -1026,8 +1026,49 @@ def cmd_clean(args: argparse.Namespace) -> int:
 # ------------------------------------------------------------------
 
 
+def _apply_for_cluster(args: argparse.Namespace) -> str | None:
+    """Resolve --for-cluster into target/kernel/arch on *args*.
+
+    A target's default kernel is often not the kernel a given cluster
+    runs, so a plain `build lustre <target>` produces modules the
+    cluster cannot load -- discovered only at deploy or insmod time.
+    Taking the three values straight from the cluster's own metadata
+    removes the mismatch.  Explicit flags still win, so an intentional
+    override is possible; a conflicting --target is an error rather
+    than a silent preference.  Returns an error message, or None.
+    """
+    name = getattr(args, "for_cluster", None)
+    if not name:
+        return None
+
+    from ltvm_pkg.vm_cluster import ClusterInfo, cluster_build_params
+
+    try:
+        cluster = ClusterInfo.load(name)
+    except Exception as e:  # ClusterNotFound and friends
+        return f"cannot load cluster {name!r}: {e}"
+
+    params = cluster_build_params(cluster)
+    if args.target and args.target != params.target:
+        return (
+            f"--target {args.target!r} conflicts with cluster "
+            f"{name!r}, which runs target {params.target!r}"
+        )
+    args.target = params.target
+    if getattr(args, "kernel", None) is None:
+        args.kernel = params.kernel
+    if getattr(args, "arch", None) is None:
+        args.arch = params.arch
+    if getattr(args, "variant", None) is None and params.variant != "base":
+        args.variant = params.variant
+    return None
+
+
 def cmd_build_lustre(args: argparse.Namespace) -> int:
     use_json = args.json
+    err_msg = _apply_for_cluster(args)
+    if err_msg:
+        return _error(err_msg, use_json)
     tc, err = _load_target_args(args, use_json)
     if err is not None:
         return err

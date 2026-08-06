@@ -787,6 +787,7 @@ ltvm build shell rocky9
 
 ```bash
 ltvm build lustre rocky9 --lustre-tree ~/lustre-release
+ltvm build lustre --for-cluster co2 --lustre-tree ~/lustre-release
 ```
 
 Builds inside the target's build container against the
@@ -803,6 +804,18 @@ other than the build about to run.  So switching targets
 in one source tree distcleans on each switch, and staying
 on one target never does.  autogen + configure re-run on
 a narrower condition still (`_needs_reconfigure`).
+**Building for a cluster:** pass `--for-cluster <name>` to
+take target, kernel and arch from that cluster's nodes.  A
+target's default kernel is often not the one a cluster was
+created with, and a plain `build lustre <target>` then
+produces modules the cluster cannot load -- a mismatch that
+only surfaces at deploy or insmod time.  Explicit `--kernel`
+/ `--arch` still win; a conflicting `--target` is an error.
+
+Extra `--configure` args are part of the cached configure
+state (stamp: `.ltvm-configure-<target>-<arch>`), so changing
+them re-runs autogen+configure automatically.  `--force` is
+not needed for that.
 
 ## Release Manifest Schema
 

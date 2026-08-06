@@ -9,6 +9,7 @@ import shlex
 import subprocess
 import sys
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -799,35 +800,36 @@ def _validate_lustre_source(path: Path) -> None:
         )
 
 
-def cmd_cluster_deploy(args: argparse.Namespace) -> None:
-    cluster = ClusterInfo.load(args.name)
-    nodes = cluster.get_nodes()
-    src = Path(args.lustre_source).expanduser().resolve()
-    _validate_lustre_source(src)
-    build = str(src)
-    vm_claim.require_all([n.name for n in nodes], "deploy to")
-    try:
-        for n in nodes:
-            vm_claim.auto_claim(n.name, build)
-    except vm_claim.ClaimHeld as e:
-        die(str(e))
+@dataclass(frozen=True)
+class ClusterBuildParams:
+    """The build inputs a cluster's nodes actually run.
 
-    # --server-only only affects the llmount.sh invocation, which only
-    # runs when --mount is set.  Reject the combination instead of
-    # silently dropping the flag.
-    if getattr(args, "server_only", False) and not getattr(
-        args, "mount", False
-    ):
-        die("--server-only requires --mount")
+    All nodes in a cluster share one target, so these come from the
+    first node's recorded metadata rather than from the target's
+    defaults -- a target's default kernel is frequently not the kernel a
+    given cluster was created with.
+    """
 
-    # Derive os_family and target+kernel+arch from the first node's
-    # metadata (all nodes in a cluster share the same target).  We also
-    # pull the kernel name and arch off the VM so build-lustre uses the
-    # right kernel tree and arch -- not just the target's defaults.
+    target: str
+    os_family: str
+    kernel: str | None
+    arch: str
+    variant: str = "base"
+
+
+def cluster_build_params(cluster: ClusterInfo) -> ClusterBuildParams:
+    """Resolve target, os_family, kernel and arch for *cluster*.
+
+    Shared by `cluster deploy` and by `build lustre --for-cluster`, so a
+    build aimed at a cluster cannot disagree with the deploy that
+    follows it.
+    """
     os_family = "rhel"
     target = DEFAULT_TARGET
     kernel_name: str | None = None
-    arch: str = "x86_64"
+    arch = "x86_64"
+
+    nodes = cluster.get_nodes()
     try:
         first_vm = VMInfo.load(nodes[0].name)
     except (VMNotFound, IndexError) as e:
@@ -851,6 +853,42 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
         kernel_name = Path(first_vm.kernel).parent.name
     if first_vm.arch:
         arch = first_vm.arch
+
+    return ClusterBuildParams(
+        target=target,
+        os_family=os_family,
+        kernel=kernel_name,
+        arch=arch,
+        variant=first_vm.variant,
+    )
+
+
+def cmd_cluster_deploy(args: argparse.Namespace) -> None:
+    cluster = ClusterInfo.load(args.name)
+    nodes = cluster.get_nodes()
+    src = Path(args.lustre_source).expanduser().resolve()
+    _validate_lustre_source(src)
+    build = str(src)
+    vm_claim.require_all([n.name for n in nodes], "deploy to")
+    try:
+        for n in nodes:
+            vm_claim.auto_claim(n.name, build)
+    except vm_claim.ClaimHeld as e:
+        die(str(e))
+
+    # --server-only only affects the llmount.sh invocation, which only
+    # runs when --mount is set.  Reject the combination instead of
+    # silently dropping the flag.
+    if getattr(args, "server_only", False) and not getattr(
+        args, "mount", False
+    ):
+        die("--server-only requires --mount")
+
+    params = cluster_build_params(cluster)
+    os_family = params.os_family
+    target = params.target
+    kernel_name = params.kernel
+    arch = params.arch
 
     print(f"=== Deploying to cluster '{cluster.name}' ===")
     print(f"    Build: {build}")
@@ -883,8 +921,8 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     build_cmd += ["--arch", arch]
     # Each node deploys from its variant's staging dir, which a base
     # build does not write.
-    if first_vm.variant != "base":
-        build_cmd += ["--variant", first_vm.variant]
+    if params.variant != "base":
+        build_cmd += ["--variant", params.variant]
     if getattr(args, "force_compat", False):
         build_cmd += ["--force-compat"]
     if want_zfs:
@@ -910,14 +948,14 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
         from .target_config import TargetConfig
         from .zfs_build import zfs_staging_dir
 
-        tc = TargetConfig(target, arch=arch, variant=first_vm.variant)
+        tc = TargetConfig(target, arch=arch, variant=params.variant)
         meta = read_staging_meta(
             _staging_path(
                 build,
                 target,
                 arch=arch,
                 kernel=kernel_name or tc.default_kernel,
-                variant=first_vm.variant,
+                variant=params.variant,
             )
         )
         staged_zfs = meta.get("zfs_version") if isinstance(meta, dict) else None

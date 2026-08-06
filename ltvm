@@ -779,6 +779,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Build a Lustre source tree against the target kernel build-tree",
     )
     _add_target_arg(blp, required=True)
+    _blp_cluster = blp.add_argument(
+        "--for-cluster",
+        metavar="NAME",
+        default=None,
+        help="Take target/kernel/arch from an existing cluster's nodes "
+        "(so the build matches what the cluster actually runs)",
+    )
+    _blp_cluster.completer = complete_clusters  # type: ignore[attr-defined]
     blp.add_argument(
         "--lustre-tree", help="Path to Lustre source tree (default: cwd)"
     )
