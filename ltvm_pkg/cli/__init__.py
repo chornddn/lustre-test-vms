@@ -151,6 +151,7 @@ from ltvm_pkg.cli.targets import (  # noqa: E402
     cmd_validate,
 )
 from ltvm_pkg.cli.telemetry import cmd_telemetry  # noqa: E402
+from ltvm_pkg.cli.test import cmd_test  # noqa: E402
 from ltvm_pkg.cli.vm import (  # noqa: E402
     _vm_call,
     cmd_console_log,
@@ -256,6 +257,7 @@ __all__ = [
     "cmd_setup",
     "cmd_skills",
     "cmd_snapshot",
+    "cmd_test",
     "cmd_status",
     "cmd_target_export",
     "cmd_target_show",

@@ -226,6 +226,7 @@ try:
         cmd_target_show,
         cmd_targets,
         cmd_telemetry,
+        cmd_test,
         cmd_update,
         cmd_validate,
         cmd_vm_set,
@@ -2291,6 +2292,65 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_completion)
 
+    # -- test --
+    sp = sub.add_parser(
+        "test",
+        parents=[common],
+        help="Run a Lustre test suite on a cluster and report results",
+    )
+    _test_cluster = sp.add_argument("cluster", help="Cluster name")
+    _test_cluster.completer = complete_clusters  # type: ignore[attr-defined]
+    sp.add_argument("suite", help="Test suite (e.g. sanity-lnet)")
+    sp.add_argument(
+        "--only",
+        default=None,
+        help="Comma-separated subtests to run (auster suite option)",
+    )
+    sp.add_argument(
+        "--except",
+        default=None,
+        help="Comma-separated subtests to skip (auster suite option)",
+    )
+    sp.add_argument(
+        "--cfg",
+        default="local",
+        help="Test config name -> cfg/<NAME>.sh (default: local)",
+    )
+    sp.add_argument(
+        "--node",
+        default=None,
+        help="Node (name or role) to drive auster from (default: client)",
+    )
+    sp.add_argument(
+        "--timeout",
+        type=int,
+        default=7200,
+        help="Seconds to allow the suite to run (default: 7200)",
+    )
+    sp.add_argument(
+        "--log-dir",
+        default=None,
+        help="Full log dir on the node (auster -D); default is unique "
+        "under /tmp/ltvm-test/",
+    )
+    sp.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Skip the cluster config / kernel / lnet.conf checks",
+    )
+    sp.add_argument(
+        "--benign",
+        action="append",
+        default=None,
+        metavar="SUITE:TEST[,SUITE:TEST]",
+        help="Treat these failures as environmental (repeatable)",
+    )
+    sp.add_argument(
+        "--no-benign",
+        action="store_true",
+        help="Report known-environmental failures as real failures",
+    )
+    sp.set_defaults(func=cmd_test)
     _alias_subcommands(sub, vm_sub, _VM_ALIASES)
 
     _attach_completers(p)
