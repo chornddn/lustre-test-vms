@@ -196,6 +196,29 @@ targets:
     status: experimental
     zfs:
       version: 2.4.0
+  ubuntu2004:
+    configure_args:
+    - --with-o2ib=no
+    container_image: ubuntu:20.04
+    kernel_deb_source: linux-source-5.4.0
+    kernels:
+      available:
+      - 5.4-ubuntu2004
+      config:
+        CONFIG_PVH: y
+        # focal's security/security.c uses the socket_getpeersec_stream
+        # hook outside the CONFIG_SECURITY_NETWORK guard that declares
+        # it, so security.o fails to compile whenever a defconfig
+        # leaves it off (arm64 does).  Every shipped Ubuntu config has
+        # it on.
+        CONFIG_SECURITY_NETWORK: y
+      default: 5.4-ubuntu2004
+    lustre:
+      mode: client
+    os_family: debian
+    os_name: ubuntu
+    os_version: '20.04'
+    status: experimental
   ubuntu2404:
     # --with-o2ib=no is NOT needed here: it has been hard-coded in the
     # base configure line (lustre_build.py) for every target since
