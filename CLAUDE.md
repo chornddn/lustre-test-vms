@@ -677,6 +677,55 @@ A malformed cluster command line now exits 2 with a usage message rather
 than ltvm's own error (a JSON envelope under `--json`), which is what
 every other subcommand already did.
 
+## Testing
+
+```bash
+ltvm test co2 sanity-lnet --except 50,109 --json
+ltvm test co2 sanity-lnet --only 630,631
+```
+
+Runs auster on the cluster's client node and prints one
+parsed result object instead of console output to scrape.
+
+**`--only` / `--except` are the only supported spelling.**
+`run_suites()` in `test-framework.sh` begins every suite
+with `unset ONLY EXCEPT START_AT STOP_AT`, so the
+environment form (`EXCEPT="50 109" ./auster ...`) is
+silently discarded and the excluded tests run anyway.
+`ltvm test` has no code path that can emit that form.
+
+Results come from auster's own `results.yml` (written to
+the `-D` log dir), never from stdout.
+
+`--json` emits:
+
+```json
+{"suite": "...", "cluster": "...", "cfg": "local",
+ "duration": 966, "pass": ["test_630"],
+ "fail": [{"test": "...", "reason": "..."}],
+ "skip": [{"test": "...", "reason": "..."}],
+ "benign": [{"test": "...", "reason": "...", "why": "..."}],
+ "counts": {"pass": 152, "fail": 0, "skip": 19, "benign": 2},
+ "node": "co2-cli", "log_dir": "/tmp/ltvm-test/..."}
+```
+
+Exit is non-zero only for real failures: a non-empty
+`fail` list, a preflight refusal, or an infrastructure
+error.  Skips and benign failures exit 0.
+
+Known environment-caused failures live as data in
+`BENIGN_FAILURES` in [ltvm_pkg/test_runner.py](ltvm_pkg/test_runner.py),
+each with the reason it is environmental.  They report as
+`benign`, never as `pass`.  Add one per run with
+`--benign SUITE:TEST`, or see them as real failures with
+`--no-benign`.
+
+A preflight refuses to start auster when `cfg/<name>.sh`
+is missing or differs between nodes, when the deployed
+modules do not match the running kernel, or when
+`lnet.conf` names a network the cluster config does not
+use.  `--skip-preflight` bypasses it.
+
 ## Target Configuration
 
 Targets live in [targets/targets.yaml](targets/targets.yaml).
