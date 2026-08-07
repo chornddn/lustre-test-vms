@@ -791,3 +791,117 @@ class TestRegisterGitExclude:
         (tree / ".ltvm-staging" / "rocky9").mkdir(parents=True)
         (tree / ".ltvm-staging" / "rocky9" / "a.ko").write_text("x\n")
         assert git("-C", str(tree), "status", "--porcelain") == ""
+
+
+# ---------------------------------------------------------------------------
+# staging_status: the one freshness check both deploy paths share
+# ---------------------------------------------------------------------------
+
+
+def _tree(tmp_path: Path) -> Path:
+    tree = tmp_path / "lustre-release"
+    (tree / "lustre" / "kernel_patches").mkdir(parents=True)
+    (tree / "lnet").mkdir()
+    (tree / "configure.ac").write_text("")
+    return tree
+
+
+def _built(tree: Path, kernel: str = "5.14-rhel9.7") -> Path:
+    from ltvm_pkg.lustre_build import staging_path as _sp
+
+    staging = _sp(tree, "rocky9", arch="x86_64", kernel=kernel)
+    staging.mkdir(parents=True)
+    (staging / "lustre.ko").write_text("")
+    (staging / ".ltvm-staging-stamp").write_text("5.14.0\n")
+    return staging
+
+
+class TestStagingStatus:
+    """staging_status answers 'is there deployable staging here?'."""
+
+    def _status(self, tree: Path):
+        from ltvm_pkg.lustre_build import staging_status
+
+        return staging_status(
+            tree, "rocky9", arch="x86_64", kernel="5.14-rhel9.7"
+        )
+
+    def test_a_finished_build_is_usable(self, tmp_path: Path) -> None:
+        tree = _tree(tmp_path)
+        staging = _built(tree)
+        st = self._status(tree)
+        assert st.usable
+        assert st.reason is None
+        assert st.path == staging
+
+    def test_no_directory_is_named(self, tmp_path: Path) -> None:
+        st = self._status(_tree(tmp_path))
+        assert not st.usable
+        assert "no staging directory" in st.reason
+
+    def test_no_modules_is_named(self, tmp_path: Path) -> None:
+        tree = _tree(tmp_path)
+        staging = _built(tree)
+        (staging / "lustre.ko").unlink()
+        st = self._status(tree)
+        assert not st.usable
+        assert "kernel modules" in st.reason
+
+    def test_missing_stamp_reads_as_unfinished(self, tmp_path: Path) -> None:
+        tree = _tree(tmp_path)
+        staging = _built(tree)
+        (staging / ".ltvm-staging-stamp").unlink()
+        st = self._status(tree)
+        assert not st.usable
+        assert "build stamp" in st.reason
+
+    def test_source_newer_than_the_stamp_is_stale(
+        self, tmp_path: Path
+    ) -> None:
+        import os
+        import time
+
+        tree = _tree(tmp_path)
+        _built(tree)
+        edited = tree / "lustre" / "obdclass.c"
+        edited.write_text("")
+        future = time.time() + 60
+        os.utime(edited, (future, future))
+        st = self._status(tree)
+        assert not st.usable
+        assert "newer" in st.reason
+
+    def test_build_outputs_do_not_read_as_source_edits(
+        self, tmp_path: Path
+    ) -> None:
+        """An incremental make rewrites .o/.ko in the tree; that is not
+        a source change."""
+        import os
+        import time
+
+        tree = _tree(tmp_path)
+        objs = [
+            tree / "lustre" / n
+            for n in ("obdclass.o", "obdclass.ko", ".ltvm-build-lock")
+        ]
+        for obj in objs:
+            obj.write_text("")
+        _built(tree)
+        future = time.time() + 60
+        for obj in objs:
+            os.utime(obj, (future, future))
+        assert self._status(tree).usable
+
+    def test_build_command_names_for_cluster_and_configure(
+        self, tmp_path: Path
+    ) -> None:
+        tree = _tree(tmp_path)
+        _built(tree)
+        st = self._status(tree)
+        line = st.build_command(cluster="co1")
+        assert "ltvm build lustre --for-cluster co1" in line
+        assert f"--lustre-tree {tree}" in line
+        assert "--configure" in line
+        # Without a cluster the target and its build key are spelled out.
+        plain = st.build_command()
+        assert "rocky9" in plain and "5.14-rhel9.7" in plain

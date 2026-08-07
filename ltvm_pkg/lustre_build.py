@@ -26,6 +26,7 @@ import subprocess
 import sys
 import time
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
 from typing import TypedDict
 
@@ -268,6 +269,116 @@ def staging_path(
     if variant == "base":
         return base
     return base.parent / f"{kernel}__{variant}"
+
+
+@dataclass
+class StagingStatus:
+    """Whether a Lustre tree holds usable staging for one build key.
+
+    ``reason`` is None when the staging is deployable.  Otherwise it is
+    a short phrase naming the defect, suitable for an error message.
+    """
+
+    path: Path
+    lustre_tree: Path
+    target: str
+    arch: str
+    kernel: str
+    variant: str
+    reason: str | None
+
+    @property
+    def usable(self) -> bool:
+        return self.reason is None
+
+    def build_command(
+        self, cluster: str | None = None, configure: bool = True
+    ) -> str:
+        """Return the `ltvm build lustre` line that produces this staging.
+
+        Name ``--configure`` in the hint by default: deploy used to run
+        the build itself and dropped those args, so a caller who needs
+        them has to be told they belong on the build command.
+        """
+        if cluster:
+            head = f"ltvm build lustre --for-cluster {cluster}"
+        else:
+            head = (
+                f"ltvm build lustre {self.target} "
+                f"--kernel {self.kernel} --arch {self.arch}"
+            )
+        line = f"{head} --lustre-tree {self.lustre_tree}"
+        if configure:
+            line += ' [--configure="..."]'
+        return line
+
+
+def _tree_newer_than(src: Path, stamp: Path) -> bool:
+    """Report whether any source file under *src* postdates *stamp*.
+
+    Build outputs and VCS state are pruned, so an incremental `make`
+    that rewrote .o files in the tree does not read as a source edit.
+    An unreadable tree counts as newer -- stale is the safe answer.
+    """
+    prune_names = [
+        "*.o", "*.ko", "*.a", "*.so", "*.so.*", "*.cmd", "*.d",
+        "*.tmp_*", "conftest*", "config.log", "config.status", ".ltvm-*",
+    ]
+    argv = ["find", str(src)]
+    for path_glob in ("*/.git", "*/autom4te.cache", "*/_lpb",
+                      "*/kconftest.dir"):
+        argv += ["-path", path_glob, "-prune", "-o"]
+    argv.append("(")
+    for i, name in enumerate(prune_names):
+        if i:
+            argv.append("-o")
+        argv += ["-name", name]
+    argv += [")", "-prune", "-o", "-newer", str(stamp), "-print", "-quit"]
+    r = subprocess.run(argv, capture_output=True, text=True)
+    if r.returncode != 0:
+        return True
+    return r.stdout.strip() != ""
+
+
+def staging_status(
+    lustre_tree: str | Path,
+    target: str,
+    *,
+    arch: str,
+    kernel: str,
+    variant: str = "base",
+) -> StagingStatus:
+    """Resolve staging for one build key and say whether it is usable.
+
+    Both deploy paths ask the same question -- is there staging for this
+    target's kernel and arch, and is it newer than the source? -- so the
+    answer lives in one place next to ``staging_path``.
+
+    Freshness is measured against ``.ltvm-staging-stamp``, written at the
+    end of a successful build, not against the staging directory's mtime:
+    a directory mtime only moves when entries are added or removed, so an
+    in-place rewrite of an existing .ko leaves it untouched.
+    """
+    tree = Path(lustre_tree)
+    path = staging_path(tree, target, arch, kernel=kernel, variant=variant)
+    reason: str | None = None
+    if not path.is_dir():
+        reason = "no staging directory"
+    elif not any(path.rglob("*.ko")):
+        reason = "staging holds no kernel modules"
+    elif not (path / ".ltvm-staging-stamp").is_file():
+        reason = "staging has no build stamp (the build did not finish)"
+    elif _tree_newer_than(tree, path / ".ltvm-staging-stamp"):
+        reason = "the source tree is newer than the staging"
+    return StagingStatus(
+        path=path,
+        lustre_tree=tree,
+        target=target,
+        arch=arch,
+        kernel=kernel,
+        variant=variant,
+        reason=reason,
+    )
 
 
 class BuildResult(TypedDict):
