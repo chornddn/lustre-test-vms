@@ -124,6 +124,12 @@ def cmd_cluster_create(args: argparse.Namespace) -> int:
             use_json,
         )
 
+    # Default to softroce so a new cluster can run either LNet net.  A
+    # softroce NIC is an ordinary virtio-net device with an rxe link on
+    # top, so it carries tcp just as well; a tcp-only cluster is strictly
+    # less capable and `deploy --net o2ib` has to refuse it.
+    nics = list(args.nic or []) or ["softroce"]
+
     return _call(
         _handler("cmd_cluster_create"),
         _qemu_ns(
@@ -141,7 +147,7 @@ def cmd_cluster_create(args: argparse.Namespace) -> int:
             variant=args.variant,
             disk_size=args.disk_size,
             root_size=args.root_size,
-            nic=list(args.nic or []),
+            nic=nics,
             kernel_args=args.kernel_args,
             owner_id=args.owner_id,
             dry_run=args.dry_run,

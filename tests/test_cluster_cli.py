@@ -279,7 +279,9 @@ class TestClusterCreateArgs:
         assert ns.arch is None
         assert ns.disk_size is None
         assert ns.root_size is None
-        assert ns.nic == []
+        # Default NIC: softroce carries either LNet net, so a new
+        # cluster is never stuck on tcp only.
+        assert ns.nic == ["softroce"]
         assert ns.kernel_args is None
         assert ns.kernel is None
         assert ns.variant == "base"

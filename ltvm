@@ -2020,7 +2020,7 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="TYPE[:ARG]",
         help="Extra NIC applied to every node; repeat for multiple. "
-        "Same types as `ltvm create --nic`.",
+        "Same types as `ltvm create --nic` (default: softroce).",
     )
     ccp.add_argument(
         "--kernel-args",
