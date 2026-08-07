@@ -571,7 +571,7 @@ Four verbs, one job each:
 ```bash
 ltvm build lustre --for-cluster co1 --lustre-tree ~/lustre-release \
     --configure="--with-o2ib=yes"
-ltvm deploy co1 --lustre-tree ~/lustre-release
+ltvm deploy co1 --lustre-tree ~/lustre-release --net o2ib
 ltvm llmount co1-mds
 ltvm test co1 sanity-lnet --except 50,109
 ```
@@ -596,6 +596,37 @@ than the `.ltvm-staging-stamp` written at the end of the build.
 
 **`llmount` is the mount command.**  Neither `build` nor
 `deploy` mounts anything.
+
+**`deploy --net {tcp,o2ib}` picks the cluster's LNet net.**
+A cluster runs **one** net at a time -- the Lustre test
+suites all assume one, and multi-network is uncommon
+outside LNet routers.  `deploy` is the only command that
+sets it; `test` has no `--net` and never reconfigures the
+network.  Switching nets means another deploy, which is
+cheap: `llmount.sh` reformats, so a changed `MGSNID`
+needs no `writeconf`.
+
+Omitting `--net` keeps the net the cluster was last
+deployed with (recorded in its cluster state), or tcp for
+a cluster that never had one.  `--net o2ib` on a cluster
+whose NICs cannot carry it fails before any node is
+touched.
+
+Deploy writes `cfg/local.sh` (`NETTYPE`, `MGSNID`) and
+`/etc/modprobe.d/lnet.conf` together, from one resolved
+net.  That is not a nicety: a node holding one file for
+one net and the other for another mounts nothing, and
+says `no connections available: rc = -22` while doing it
+-- which reads as a Lustre fault.  `rc.local` composes an
+`lnet.conf` only when none exists, so what deploy writes
+survives reboot.
+
+`tcp` runs on the mgmt NIC (`eth0`) and uses the mgmt
+address; `o2ib` runs on the extra NICs and uses their
+`172.16.100.x` addresses.  A real-HCA (`passthrough`)
+cluster is left to the boot-time emitter: deploy refuses
+`--net o2ib` for it, and refuses a bare deploy that would
+overwrite its `lnet.conf`.
 
 ### Running ltvm inside a VM it built
 
@@ -719,6 +750,13 @@ replace it.
 `~/lustre-dev/test-scripts/clusters/<cluster>/cfg/` -- see
 that repo's `clusters/README.md`.
 
+**`cluster create --nic` defaults to `softroce`**, so a new
+cluster can run either LNet net: a softroce NIC is an
+ordinary virtio-net device with an rxe link on top, and
+socklnd binds that same netdev.  `--nic tcp` still gives a
+tcp-only cluster -- one `deploy --net o2ib` correctly
+refuses.
+
 For an o2iblnd-over-SoftRoCE cluster, see
 [docs/SOFTROCE_SETUP.md](docs/SOFTROCE_SETUP.md) -- it needs
 a kernel with InfiniBand enabled and Lustre built with
@@ -796,9 +834,12 @@ each with the reason it is environmental.  They report as
 
 A preflight refuses to start auster when `cfg/<name>.sh`
 is missing or differs between nodes, when the deployed
-modules do not match the running kernel, or when
-`lnet.conf` names a network the cluster config does not
-use.  `--skip-preflight` bypasses it.
+modules do not match the running kernel, when `lnet.conf`
+names a network the cluster config does not use, or when
+`MGSNID` names a different net than `NETTYPE`.  That last
+one is the mismatch a net switch can leave behind, and it
+surfaces at mount as a Lustre-looking fault.
+`--skip-preflight` bypasses it.
 
 ## Target Configuration
 

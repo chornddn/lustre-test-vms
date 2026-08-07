@@ -107,12 +107,20 @@ find ~/lustre-release/.ltvm-staging -name 'ko2iblnd.ko'
 sudo ltvm cluster create co1 --target rocky9 --arch aarch64 \
     --kernel 5.14-rhel9.5 --nic softroce --vcpus 2 --mem 4096 \
     mgs+mds+oss:co1-srv:1 client:co1-cli
-ltvm deploy co1 --lustre-tree ~/lustre-release
+ltvm deploy co1 --lustre-tree ~/lustre-release --net o2ib
 ```
 
 `--nic softroce` gets `rdma_rxe` loaded at boot and sets `fc_nics=`
-so that mgmt (`eth0`) is excluded from LNet. `--kernel` is required
-whenever the target's default kernel is not the one you built.
+so that mgmt (`eth0`) is excluded from LNet. It is the default NIC
+type, so a plain `cluster create` gives you one too. `--kernel` is
+required whenever the target's default kernel is not the one you
+built.
+
+`--net o2ib` is what makes the cluster *run* o2ib: it writes
+`cfg/local.sh` and `/etc/modprobe.d/lnet.conf` on every node from one
+resolved net, with the extra NIC's address as the MGS NID. A softroce
+cluster runs tcp just as well -- `ltvm deploy co1 --net tcp` moves it
+back, and `llmount` reformats, so no `writeconf` is involved.
 
 ## 4. Extra-NIC addressing
 
@@ -205,34 +213,17 @@ ssh co1-cli 'ib_write_bw -d rxe0 -F -D 5 <server-ip>'
 
 ## 6. Running sanity-lnet over o2ib
 
-Point the test config at the o2ib net. `ltvm deploy` installs the
-stock `cfg/local.sh`, which defaults to `tcp`; append overrides rather
-than replacing the file, or you will drop the `${VAR:-default}`
-definitions that `init_test_env` derives `DIR`/`MOUNT1` from (the
-symptom is `DIR= not in /mnt/lustre. Aborting.` and exit 99):
+Nothing to hand-write: `ltvm deploy co1 --net o2ib` already put
+`NETTYPE=o2ib` and the o2ib `MGSNID` into `cfg/local.sh` on every node,
+and the matching `lnet.conf` next to it.  Mount and run:
 
 ```bash
-cat >> /usr/lib64/lustre/tests/cfg/local.sh <<'EOF'
-mds_HOST=co1-srv
-mgs_HOST=co1-srv
-ost_HOST=co1-srv
-CLIENTS=co1-cli
-MDSCOUNT=1
-MDSDEV1=/dev/vdb
-OSTCOUNT=1
-OSTDEV1=/dev/vdc
-NETTYPE=o2ib
-MGSNID=172.16.100.134@o2ib
-LOAD_MODULES_REMOTE=true
-PDSH="pdsh -S -Rssh -w"
-EOF
+ltvm llmount co1-srv
+ltvm test co1 sanity-lnet
 ```
 
-Write the same file to every node, then run from the client:
-
-```bash
-ssh co1-cli 'cd /usr/lib64/lustre/tests && ONLY=313 bash ./sanity-lnet.sh'
-```
+Editing `NETTYPE` or `MGSNID` by hand is how the two files drift apart.
+`ltvm test` refuses to start when they disagree.
 
 ### Tests that set ko2iblnd module options will silently do nothing
 
