@@ -114,60 +114,84 @@ ltvm cluster deploy co1 --build ~/lustre-release
 so that mgmt (`eth0`) is excluded from LNet. `--kernel` is required
 whenever the target's default kernel is not the one you built.
 
-## 4. Move the rxe device onto eth0
+## 4. Extra-NIC addressing
 
-**This step is currently required.** `--nic softroce` puts the rxe link
-on `eth1`, but ltvm allocates the extra NIC an address in the *same
-subnet as mgmt*. With two interfaces on one subnet the kernel routes
-peer traffic out `eth0`, which has no rxe device, so `rdma_cm` address
-resolution fails and LNet reports:
+**No manual step is needed here any more.** Earlier revisions of this
+document told you to tear the rxe link off `eth1` and rebuild it on
+`eth0` after every boot. That workaround existed because ltvm gave every
+extra NIC an address in the *same subnet as mgmt*, so the kernel had two
+`scope link` routes for one prefix and sent peer traffic out `eth0`,
+which has no rxe device.
+
+Extra NICs now get their own network (`172.16.100.0/24` by default,
+`$LTVM_EXTRA_SUBNET` to change it), and all of them share it, so several
+NICs are rails of one LNet network rather than separate one-rail
+networks. Because they share a subnet, `rc.local` gives each one a
+routing table of its own selected by source address:
 
 ```
-failed to ping <nid>@o2ib: Network is down
+32765:  from 172.16.100.33 lookup 101
+32764:  from 172.16.100.34 lookup 102
 ```
 
-Renumbering `eth1` onto its own subnet does not help on macOS: every
-NIC attaches to the same `socket_vmnet` socket, which only forwards its
-own subnet, so ARP for any other subnet never reaches the peer (visible
-as `ip neigh` entries stuck in `FAILED`, and the peer's `tcpdump`
-showing the request arriving on `eth0`).
+so a socket bound to a NIC's address egresses on that NIC. It also sets
+`arp_ignore=1` / `arp_announce=2`, because every NIC of every VM shares
+one L2 broadcast domain (the `fcbr0` bridge on Linux, one `socket_vmnet`
+hub on macOS) and the default `arp_ignore=0` would let the wrong
+interface answer ARP for its neighbour's address.
 
-The reliable arrangement is to run RXE on `eth0`, the interface that
-definitely has L2 connectivity to the other VMs:
+An earlier note here claimed `socket_vmnet` "only forwards its own
+subnet". **That is wrong.** It is a hub: it floods every frame to every
+other client with no MAC learning and no IP inspection. A second subnet
+crosses it fine. The failure that claim was based on was ARP flux, which
+the sysctls above address.
+
+Verified on macOS with `--nic tcp --nic tcp`: each rail resolves its
+peer to that peer's *own* interface MAC, and traffic sourced from each
+address leaves on its matching interface.
+
+> **Not yet re-verified for o2ib.** The check above used tcp NICs.
+> `rdma_cm` performs its own address resolution rather than inheriting a
+> bound socket's route, so whether it honours these source-based rules is
+> unconfirmed. If `lnetctl ping` fails with `Network is down`, that is the
+> first thing to investigate -- not the addressing, which is now known
+> good.
+
+## 5. Verify
+
+First confirm the rxe device sits on the extra NIC and that the routing
+is per-rail -- if either is wrong, nothing below will work:
 
 ```bash
 for n in co1-srv co1-cli; do ssh $n '
-    lnetctl lnet unconfigure 2>/dev/null
-    rdma link delete rxe0 2>/dev/null
-    ip link set eth1 down 2>/dev/null
-    rdma link add rxe0 type rxe netdev eth0
-    echo '\''options lnet networks="o2ib0(eth0)"'\'' \
-        > /etc/modprobe.d/lnet.conf'
+    hostname; rdma link show; ip rule; ip -4 -br addr show eth1'
 done
 ```
 
-This is **runtime state and does not survive a VM reboot** -- `rc.local`
-recreates the link on `eth1` from the `fc_nics=` cmdline. The
-`/etc/modprobe.d` edits do persist (they live in the VM's overlay).
-Re-run the `rdma link` half after any reboot.
-
-## 5. Verify
+Expect `rxe0 ... netdev eth1`, a `from 172.16.100.x lookup 101` rule,
+and `eth1` on `172.16.100.0/24`. An `eth0` netdev means the VM booted an
+image older than the addressing fix -- rebuild it with
+`ltvm build image`, since `rc.local` lives inside the image.
 
 ```bash
 for n in co1-srv co1-cli; do ssh $n '
     modprobe ko2iblnd
     lnetctl lnet configure
-    lnetctl net add --net o2ib0 --if eth0
+    lnetctl net add --net o2ib0 --if eth1
     hostname; lctl list_nids'
 done
-ssh co1-cli 'lnetctl ping <server-ip>@o2ib'
+ssh co1-cli 'lnetctl ping <server-extra-nic-ip>@o2ib'
 ```
+
+Use the peer's **extra-NIC** address (`172.16.100.x`), not its mgmt
+address. `lnetctl net add` may report `EEXIST` when `lnet.conf` already
+applied at modprobe time; that is fine, check `lctl list_nids`.
 
 A healthy bring-up logs:
 
 ```
 LNet: Using FastReg for registration
-LNet: Added LNI 192.168.105.134@o2ib [8/256/0/180]
+LNet: Added LNI 172.16.100.134@o2ib [8/256/0/180]
 ```
 
 For a pure-verbs smoke test, `perftest` is preinstalled (server
@@ -198,7 +222,7 @@ MDSDEV1=/dev/vdb
 OSTCOUNT=1
 OSTDEV1=/dev/vdc
 NETTYPE=o2ib
-MGSNID=192.168.105.134@o2ib
+MGSNID=172.16.100.134@o2ib
 LOAD_MODULES_REMOTE=true
 PDSH="pdsh -S -Rssh -w"
 EOF

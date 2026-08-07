@@ -682,6 +682,18 @@ replace it.
 `~/lustre-dev/test-scripts/clusters/<cluster>/cfg/` -- see
 that repo's `clusters/README.md`.
 
+For an o2iblnd-over-SoftRoCE cluster, see
+[docs/SOFTROCE_SETUP.md](docs/SOFTROCE_SETUP.md) -- it needs
+a kernel with InfiniBand enabled and Lustre built with
+`--configure="--with-o2ib=yes"`.
+
+Extra NICs share a network of their own (`172.16.100.0/24`
+by default, `$LTVM_EXTRA_SUBNET` to change it), separate
+from mgmt.  Repeating `--nic` gives several rails on one
+LNet net -- `--nic tcp --nic tcp` yields
+`tcp0(eth1,eth2)` -- and `rc.local` routes each rail by
+source address so a NI bound to one rail egresses on it.
+
 Each action is a real subparser, so `ltvm cluster <action> --help`
 works and every action's flags validate and tab-complete.  Two
 consequences worth knowing:
