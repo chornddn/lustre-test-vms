@@ -1,9 +1,12 @@
-"""Deploy / llmount subcommands.
+"""``ltvm deploy`` and ``ltvm llmount``.
 
-cmd_deploy is the big one: auto-detects target from VM metadata,
-picks up a bundled snapshot from ``ltvm fetch`` when present, else
-runs ``ltvm build lustre`` into per-kernel staging, then calls
-``deploy_to_vm`` to rsync modules and userland into the VM.
+``deploy`` takes a VM **or** a cluster name and ships an already-built
+Lustre staging tree to it.  It never builds: target, kernel and arch are
+derived from what the named thing actually runs, and every build option
+lives on ``ltvm build lustre``.  A deploy that shelled out to the build
+had to mirror each build flag by hand, and the one it missed
+(``--configure``) silently reconfigured the tree and shipped a cluster
+without ``ko2iblnd``.
 
 cmd_llmount is a thin wrapper around vm_commands.cmd_llmount.
 """
@@ -11,7 +14,6 @@ cmd_llmount is a thin wrapper around vm_commands.cmd_llmount.
 from __future__ import annotations
 
 import argparse
-import os
 import subprocess
 import sys
 from pathlib import Path
@@ -23,7 +25,7 @@ from ltvm_pkg.cli.util import (
     _error,
     _output,
 )
-from ltvm_pkg.lustre_build import read_staging_meta
+from ltvm_pkg.lustre_build import StagingStatus, read_staging_meta
 
 
 def _cli_attr(name: str) -> Any:
@@ -33,20 +35,98 @@ def _cli_attr(name: str) -> Any:
     return getattr(_cli, name)
 
 
+def _staging_error(status: StagingStatus, name: str, use_json: bool) -> int:
+    """Refuse a deploy that has nothing to deploy, naming the build."""
+    return _error(
+        f"no usable Lustre staging for {name} "
+        f"({status.target}/{status.arch}/{status.kernel}): {status.reason}\n"
+        f"  looked in: {status.path}\n"
+        f"  build it first:\n"
+        f"    {status.build_command()}",
+        use_json,
+    )
+
+
 def cmd_deploy(args: argparse.Namespace) -> int:
+    """Dispatch ``ltvm deploy <vm|cluster>`` to the right deployer."""
     use_json = args.json
-    target = getattr(args, "target", None)
-    kernel = getattr(args, "kernel", None)
+    name = args.name
 
-    from ltvm_pkg.vm_state import VMInfo, VMNotFound
+    # --arch rides on every subcommand from the shared parent parser.
+    # Deploy derives the arch from the target, so accepting one here
+    # would let a caller state something the nodes contradict -- exactly
+    # the mismatch this command was reshaped to make unexpressible.
+    if getattr(args, "arch", None):
+        return _error(
+            "deploy takes no --arch; it uses the arch the target runs",
+            use_json,
+            hint="pass --arch to `ltvm build lustre` instead",
+        )
 
-    # Get VM info
+    from ltvm_pkg.vm_state import (
+        ClusterInfo,
+        ClusterNotFound,
+        VMInfo,
+        VMNotFound,
+    )
+
+    cluster: ClusterInfo | None = None
+    vm: VMInfo | None = None
     try:
-        vm = VMInfo.load(args.vm)
-    except VMNotFound as e:
-        return _error(str(e), use_json)
+        cluster = ClusterInfo.load(name)
+    except (ClusterNotFound, RuntimeError):
+        cluster = None
+    try:
+        vm = VMInfo.load(name)
+    except VMNotFound:
+        vm = None
 
+    if cluster is not None and vm is not None:
+        # Whether the cluster or the VM should win is not ltvm's call to
+        # make silently; either answer deploys somewhere the caller did
+        # not mean.
+        return _error(
+            f"'{name}' names both a cluster and a VM; rename one",
+            use_json,
+        )
+    if cluster is None and vm is None:
+        return _error(
+            f"no cluster and no VM named '{name}'",
+            use_json,
+            hint="`ltvm cluster list` / `ltvm list` show what exists",
+        )
+
+    if cluster is not None:
+        return _deploy_cluster(cluster.name, args, use_json)
+    assert vm is not None
+    return _deploy_vm(vm, args, use_json)
+
+
+def _deploy_cluster(name: str, args: argparse.Namespace, use_json: bool) -> int:
+    """Hand a cluster deploy to vm_cluster, which checks the claims."""
+    from ltvm_pkg.cli.util import _qemu_ns
+    from ltvm_pkg.vm_cluster import cmd_cluster_deploy
+
+    tree = getattr(args, "lustre_tree", None) or "."
+    try:
+        cmd_cluster_deploy(
+            _qemu_ns(
+                name=name,
+                lustre_tree=tree,
+                cfg_dir=getattr(args, "cfg_dir", None),
+                fstype=getattr(args, "fstype", None),
+            )
+        )
+        return EXIT_OK
+    except SystemExit as e:
+        return int(e.code) if e.code is not None else EXIT_ERROR
+
+
+def _deploy_vm(vm: Any, args: argparse.Namespace, use_json: bool) -> int:
+    """Deploy staging to one standalone VM (or one cluster node)."""
     from ltvm_pkg import vm_claim
+    from ltvm_pkg.lustre_build import staging_status
+    from ltvm_pkg.vm_state import VMNotFound
 
     try:
         vm_claim.check(vm.name, "deploy to")
@@ -60,62 +140,43 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     except vm_claim.ClaimHeld as e:
         return _error(str(e), use_json)
 
-    # Auto-detect target from VM metadata
+    # Derive the build key from what the VM runs.  Being able to pass a
+    # kernel or arch that contradicts the target is the bug class this
+    # command exists to remove.
+    target = vm.os_id
     if not target:
-        target = vm.os_id or None
-        if target and not use_json:
-            print(f"  Auto-detected target: {target}")
-        if not target:
-            return _error(
-                f"Cannot detect target OS for VM '{args.vm}'. "
-                f"Pass --target explicitly.",
-                use_json,
-            )
-
-    # Resolve kernel name and target config.  Pass vm.arch through so
-    # the target's output_dir is arch-qualified -- otherwise an aarch64
-    # VM looks for its kernel/staging under the x86_64 output paths and
-    # fails to find anything.  We require a valid target here so a
-    # missing entry in targets.yaml fails loudly instead of silently
-    # falling back to RHEL paths.
+        return _error(
+            f"VM '{vm.name}' records no OS target; recreate it", use_json
+        )
     vm_arch = vm.arch
-    # Thread the VM's recorded variant into TargetConfig so tc.container_tag
-    # picks the matching build container (e.g. ltvm-build-rocky9-mofed for
-    # a MOFED VM) and tc.image_output_dir() resolves to the variant image.
     vm_variant = getattr(vm, "variant", "base") or "base"
     TargetConfig = _cli_attr("TargetConfig")
     try:
         tc = TargetConfig(target, arch=vm_arch, variant=vm_variant)
     except ValueError as e:
         return _error(
-            f"Unknown target '{target}' for VM '{args.vm}': {e}",
+            f"Unknown target '{target}' for VM '{vm.name}': {e}",
             use_json,
             hint="Check `ltvm status` for valid targets.",
         )
-    resolved_kernel = tc.resolve_kernel(kernel)
     os_family = tc.os_family
+    kernel = tc.resolve_kernel(
+        Path(vm.kernel).parent.name if vm.kernel else None
+    )
 
-    # Resolve build path:
-    #   1. Explicit --lustre-tree PATH wins (including --lustre-tree .)
-    #   2. Otherwise, if a bundled snapshot from `ltvm fetch` exists,
-    #      copy it into staging and use it directly (no source rebuild)
-    #   3. Otherwise, fall back to cwd
+    # Resolve the tree holding the staging:
+    #   1. --lustre-tree PATH wins.
+    #   2. Otherwise a bundled snapshot from `ltvm fetch`, if present.
+    #   3. Otherwise cwd.
     build_arg = getattr(args, "lustre_tree", None)
     bundled_snapshot: Path | None = None
     if build_arg is not None:
-        build_path = Path(build_arg).resolve()
+        build_path = Path(build_arg).expanduser().resolve()
     else:
-        # Use tc.output_dir (arch-qualified) instead of a hand-built
-        # ltvm_root/artifacts/<target>/ path so the bundled-snapshot lookup
-        # honors LTVM_ROOT and the /usr/local/bin/ltvm symlink resolution
-        # AND finds the correct arch-qualified subdirectory.
-        packaged = (
-            tc.output_dir / "kernels" / resolved_kernel / "lustre-artifacts"
-        )
-        # A bundled snapshot is identified by the .ltvm-snapshot.json marker
-        # written by snapshot_lustre.  It already has DESTDIR layout
-        # (usr/, lib/modules/), so we can deploy it directly without
-        # going through build-lustre.
+        packaged = tc.output_dir / "kernels" / kernel / "lustre-artifacts"
+        # A bundled snapshot is identified by the .ltvm-snapshot.json
+        # marker written by snapshot_lustre.  It already has DESTDIR
+        # layout (usr/, lib/modules/), so it deploys without a build.
         if packaged.is_dir() and (packaged / ".ltvm-snapshot.json").exists():
             bundled_snapshot = packaged
             build_path = packaged
@@ -125,14 +186,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
             build_path = Path(".").resolve()
 
     if not build_path.is_dir():
-        return _error(f"Build path not found: {build_path}", use_json)
+        return _error(f"Lustre tree not found: {build_path}", use_json)
 
-    # Validate that --lustre-tree points at an actual Lustre source tree
-    # before we try to feed it to `ltvm build lustre`.  Skip this when
-    # we picked up a bundled snapshot, which is a DESTDIR layout (usr/,
-    # lib/modules/), not a source tree.  Without this validation a typo
-    # like `--lustre-tree /wrong/dir` produces a confusing error several
-    # subprocess hops away inside the build container.
     if bundled_snapshot is None:
         missing = [
             n
@@ -148,69 +203,27 @@ def cmd_deploy(args: argparse.Namespace) -> int:
 
     userspace_only = getattr(args, "userspace_only", False)
 
-    # --zfs-version implies --zfs; --fstype zfs implies it too, since
-    # a VM cannot mount a ZFS target without ZFS on it.  Conversely
-    # --zfs on a *deploy* means "run this VM on ZFS", so it implies
-    # --fstype zfs unless the user pinned an fstype explicitly -- the
-    # one case for `--zfs --fstype ldiskfs` is staging ZFS on a VM you
-    # want to keep running ldiskfs for now.
+    # Which backend the VM runs is a deploy-time choice (it is written
+    # into cfg/local.sh); whether ZFS is *available* is the build's, so
+    # --zfs lives on `build lustre` and deploy only checks the staging.
     fstype = getattr(args, "fstype", None)
-    want_zfs = (
-        bool(getattr(args, "zfs", False))
-        or bool(getattr(args, "zfs_version", None))
-        or fstype == "zfs"
-    )
-    if want_zfs and fstype is None:
-        fstype = "zfs"
-    zfs_version_arg = getattr(args, "zfs_version", None)
-
-    # --userspace-only ships no modules, so it can neither install ZFS
-    # nor make a ZFS mount work.  Silently honouring only the --fstype
-    # half would leave the VM pinned to a backend it cannot mount.
-    if want_zfs and userspace_only:
+    if fstype == "zfs" and userspace_only:
         return _error(
-            "--zfs and --userspace-only are incompatible: a "
+            "--fstype zfs and --userspace-only are incompatible: a "
             "userspace-only deploy ships no kernel modules",
             use_json,
         )
 
-    # Staging now lives inside the lustre tree at
-    # <build_path>/.ltvm-staging/<target>/<arch>/<kernel>/, per-kernel
-    # so two kernels' userland (usr/sbin, etc.) coexist without
-    # clobbering each other.  The kernel key comes from the VM's
-    # actual kernel (falling back to the target's default) so a VM
-    # created with a non-default kernel deploys the Lustre that was
-    # built against that kernel.
-    from ltvm_pkg.lustre_build import staging_path as _staging_path
-
-    deploy_kernel = resolved_kernel
-    if vm.kernel:
-        vm_kernel_name = Path(vm.kernel).parent.name
-        if vm_kernel_name:
-            deploy_kernel = tc.resolve_kernel(vm_kernel_name)
-    staging = _staging_path(
-        build_path,
-        target,
-        arch=vm_arch,
-        kernel=deploy_kernel,
-        variant=vm.variant,
+    status = staging_status(
+        build_path, target, arch=vm_arch, kernel=kernel, variant=vm_variant
     )
-    # If the bundled-snapshot path is involved we DON'T require a
-    # pre-existing per-kernel staging -- the snapshot rsync below
-    # populates it.  Otherwise, if the user is deploying against a
-    # source tree without having built Lustre for this kernel, refuse
-    # with a clear hint rather than falling through to an automatic
-    # `ltvm build lustre` that might target the wrong kernel.
-    # If we picked up a bundled snapshot, mirror it into staging
-    # unconditionally.  Previously we skipped the mirror whenever
-    # staging already contained .ko files, but that silently shipped
-    # stale modules from an earlier `ltvm build lustre` run under the
-    # "Using bundled Lustre" banner -- the user thought they were
-    # deploying what they fetched but actually got what was last built
-    # locally.  rsync --delete is the right tool here: the bundled
-    # snapshot is the declared source of truth when bundled_snapshot
-    # is not None.
+    staging = status.path
+
     if bundled_snapshot is not None:
+        # rsync --delete, unconditionally: the snapshot is the declared
+        # source of truth here, and skipping the mirror when staging
+        # already held .ko files used to ship whatever was last built
+        # locally under the "Using bundled Lustre" banner.
         if not use_json:
             print(f"  Mirroring bundled snapshot into staging: {staging}")
         staging.mkdir(parents=True, exist_ok=True)
@@ -230,279 +243,15 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 f"Failed to mirror bundled snapshot: {r.stderr.strip()}",
                 use_json,
             )
-
-    def _staging_matches_kernel_and_flags(staging: Path) -> bool:
-        """Was this staging built against the kernel and flags in play now?
-
-        Source-file mtimes -- the only thing this fast path used to
-        consider -- cannot see either.  Rebuilding the kernel from an
-        edited patch series or a changed kernels.config leaves the
-        kernel directory name and kernel.release identical while
-        Module.symvers changes, so `ltvm deploy-lustre` said "Staging
-        up to date" and shipped modules linked against the previous
-        ABI: the VM then fails `modprobe lustre` with "disagrees about
-        version of symbol", or loads modules whose config.h HAVE_*
-        macros were probed against the old kernel.  Changing
-        configure_args in targets.yaml was equally invisible.
-
-        build_lustre records both signals in .ltvm-staging-meta.json;
-        this is the consumer that was missing.  Unknown/absent fields
-        mean staging predates them -- rebuild rather than guess.
-        """
-        meta = _cli_attr("read_staging_meta")(staging)
-        if not isinstance(meta, dict):
-            return False
-
-        build_tree = tc.kernel_output_dir(kernel=deploy_kernel) / "build-tree"
-        recorded_symvers = meta.get("module_symvers_sha256")
-        if not isinstance(recorded_symvers, str) or not recorded_symvers:
-            return False
-        current_symvers = _cli_attr("_hash_file")(build_tree / "Module.symvers")
-        if current_symvers != recorded_symvers:
-            if not use_json:
-                print("  Kernel ABI changed since staging was built")
-            return False
-
-        # A staging tree built without ZFS carries the same
-        # configure_sha256 as the tree's stamp (both are the non-ZFS
-        # hash), so the checks below would call it fresh and --zfs
-        # would silently do nothing.  The staged build's own record of
-        # which ZFS it used is the only thing that can answer this.
-        staged_zfs = meta.get("zfs_version")
-        if want_zfs:
-            if not staged_zfs:
-                if not use_json:
-                    print("  Staging was built without ZFS")
-                return False
-            if zfs_version_arg and staged_zfs != zfs_version_arg:
-                if not use_json:
-                    print(
-                        f"  Staging was built against ZFS {staged_zfs}, "
-                        f"not {zfs_version_arg}"
-                    )
-                return False
-
-        recorded_cfg = meta.get("configure_sha256")
-        if not isinstance(recorded_cfg, str) or not recorded_cfg:
-            return False
-        cfg_stamp = (
-            build_path
-            / f".ltvm-configure-{_cli_attr('_stamp_suffix')(target, tc.arch)}"
-        )
-        if not cfg_stamp.is_file():
-            return False
-        if cfg_stamp.read_text().strip() != recorded_cfg:
-            if not use_json:
-                print("  Configure flags changed since staging was built")
-            return False
-        return True
-
-    def _staging_is_fresh(staging: Path, src: Path) -> bool:
-        """Check if the staging dir is newer than all source files.
-
-        Uses an explicit `.ltvm-staging-stamp` file written at the end
-        of a successful build_lustre run as the reference mtime, NOT
-        the staging dir's own mtime: directory mtime only changes when
-        entries are added/removed in that exact directory, so an
-        in-place rewrite of an existing .ko file under
-        lib/modules/.../extra/ leaves the top-level staging mtime
-        unchanged and the freshness check would lie.
-        """
+    elif userspace_only:
+        # Userspace-only installs tools and tests, never modules, so a
+        # staging dir without .ko files is fine here.
         if not staging.is_dir():
-            return False
-        if not any(staging.rglob("*.ko")):
-            return False
-        stamp = staging / ".ltvm-staging-stamp"
-        if not stamp.is_file():
-            # Pre-stamp builds (or a build that crashed before writing
-            # the stamp): treat as stale so we rebuild rather than
-            # silently skip.
-            return False
-        if not _staging_matches_kernel_and_flags(staging):
-            return False
-        # Staging is outside the source tree so the find exclusions are
-        # simpler -- just skip build artifacts and VCS dirs.
-        r = subprocess.run(
-            [
-                "find",
-                str(src),
-                "-path",
-                "*/.git",
-                "-prune",
-                "-o",
-                "-path",
-                "*/autom4te.cache",
-                "-prune",
-                "-o",
-                "-path",
-                "*/_lpb",
-                "-prune",
-                "-o",
-                "-path",
-                "*/kconftest.dir",
-                "-prune",
-                "-o",
-                "(",
-                "-name",
-                "*.o",
-                "-o",
-                "-name",
-                "*.ko",
-                "-o",
-                "-name",
-                "*.a",
-                "-o",
-                "-name",
-                "*.so",
-                "-o",
-                "-name",
-                "*.so.*",
-                "-o",
-                "-name",
-                "*.cmd",
-                "-o",
-                "-name",
-                "*.d",
-                "-o",
-                "-name",
-                "*.tmp_*",
-                "-o",
-                "-name",
-                "conftest*",
-                "-o",
-                "-name",
-                "config.log",
-                "-o",
-                "-name",
-                "config.status",
-                "-o",
-                "-name",
-                ".ltvm-*",
-                ")",
-                "-prune",
-                "-o",
-                "-newer",
-                str(stamp),
-                "-print",
-                "-quit",
-            ],
-            capture_output=True,
-            text=True,
-        )
-        if r.returncode != 0:
-            return False  # treat find errors conservatively as stale
-        return r.stdout.strip() == ""
-
-    if userspace_only:
-        # No compat gate here: --userspace-only installs userspace RPMs
-        # only, never triggers a Lustre rebuild.  The staging was
-        # vetted when it was originally built.  --force-compat is a
-        # no-op on this branch by design.
-        if not staging.is_dir():
-            return _error(
-                f"No staging for {target} -- run: ltvm build lustre "
-                f"{target} --lustre-tree {build_path}",
-                use_json,
-            )
+            return _staging_error(status, vm.name, use_json)
         if not use_json:
             print("  Userspace-only deploy (skipping kernel modules)")
-    elif bundled_snapshot is not None:
-        # Bundled snapshot: staging was either just mirrored or already
-        # populated.  Don't run _staging_is_fresh -- build_path here is
-        # the snapshot's DESTDIR layout, NOT a Lustre source tree, so
-        # falling through to `ltvm build lustre --lustre-tree <snapshot>`
-        # would error out with "not a Lustre source tree".
-        # --force-compat is a no-op on this branch: the snapshot was
-        # compat-gated by the publisher at package time.
-        if not use_json:
-            print("  Using bundled staging, skipping source build")
-    else:
-        staging_fresh = _staging_is_fresh(staging, build_path)
-
-        if staging_fresh:
-            if not use_json:
-                print("  Staging up to date, skipping build")
-        else:
-            _cli_attr("_gate_lustre_validation")(
-                tc,
-                build_path,
-                force=args.force_compat,
-                kernel_build_tree=tc.kernel_output_dir(kernel=deploy_kernel)
-                / "build-tree",
-                kernel=deploy_kernel,
-            )
-            build_cmd = [
-                "ltvm",
-                "build",
-                "lustre",
-                target,
-                "--lustre-tree",
-                str(build_path),
-            ]
-            # Forward the VM's actual kernel to build-lustre.  Without
-            # this, a VM created with a non-default kernel rebuilds
-            # Lustre against the target's *default* kernel tree, producing
-            # modules that the running kernel can't load.  Cluster deploy
-            # already does this; single-node deploy was missing it.
-            if vm.kernel:
-                kernel_name = Path(vm.kernel).parent.name
-                if kernel_name:
-                    build_cmd += ["--kernel", kernel_name]
-            # Forward the VM's arch unconditionally so cross-arch builds
-            # end up in the right staging dir and link against the right
-            # toolchain.  Comparing against the literal "x86_64" was
-            # wrong for a target whose default arch is something else:
-            # an x86_64 VM built against an aarch64-default target would
-            # then NOT forward --arch, and the inner build-lustre would
-            # default to aarch64 and deploy the wrong modules.  Idempotent
-            # for x86_64-default targets too, so just always forward.
-            build_cmd += ["--arch", vm_arch]
-            # Forward the VM's variant for the same reason as --kernel
-            # and --arch above.  staging was computed with the VM's
-            # variant (which nests one level deeper for non-base), so
-            # without this the child builds the base variant, writes to
-            # the base staging dir, and the check below fails with
-            # "no staging with modules" after a full build.
-            if vm_variant and vm_variant != "base":
-                build_cmd += ["--variant", vm_variant]
-            # Forward --force-compat.  The parent has already run the
-            # compat gate with force=True and passed, but the child
-            # `ltvm build lustre` re-runs the same gate with
-            # force=False and SystemExit(1)s -- so the flag the help
-            # text promises applies to "deploy-lustre ... when it
-            # rebuilds from source" could never actually override a
-            # refusal.  cmd_cluster_deploy already forwards it.
-            if args.force_compat:
-                build_cmd += ["--force-compat"]
-            if want_zfs:
-                build_cmd += ["--zfs"]
-                if zfs_version_arg:
-                    build_cmd += ["--zfs-version", zfs_version_arg]
-            sudo_user = os.environ.get("SUDO_USER")
-            if sudo_user:
-                build_cmd = ["sudo", "-u", sudo_user] + build_cmd
-            # Under --json the child's human output would land in the
-            # middle of this command's JSON document, so it goes to
-            # stderr instead -- still live, still visible, just not in
-            # the stream a consumer is parsing.  (--json is not
-            # forwarded: the child's own envelope is not this
-            # command's.)
-            build_proc = subprocess.run(
-                build_cmd,
-                capture_output=False,
-                stdout=sys.stderr if use_json else None,
-            )
-            if build_proc.returncode != 0:
-                return _error(
-                    f"Lustre build failed (rc={build_proc.returncode})",
-                    use_json,
-                )
-
-            if not staging.is_dir() or not any(staging.rglob("*.ko")):
-                return _error(
-                    f"Lustre build succeeded but no staging with modules for {target}",
-                    use_json,
-                )
+    elif not status.usable:
+        return _staging_error(status, vm.name, use_json)
 
     # Which ZFS to ship is the staged build's decision, not the
     # command line's: osd_zfs.ko is linked against one specific ZFS
@@ -518,7 +267,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     if staged_zfs_version and not userspace_only:
         from ltvm_pkg.zfs_build import zfs_staging_dir
 
-        zfs_staging = zfs_staging_dir(tc, deploy_kernel, staged_zfs_version)
+        zfs_staging = zfs_staging_dir(tc, kernel, staged_zfs_version)
         if not any((zfs_staging / "lib" / "modules").rglob("zfs.ko*")):
             return _error(
                 f"Lustre staging was built against ZFS "
@@ -526,18 +275,16 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 f"from {zfs_staging}",
                 use_json,
                 hint=f"Run: ltvm build zfs {target} --kernel "
-                f"{deploy_kernel} --zfs-version {staged_zfs_version}",
+                f"{kernel} --zfs-version {staged_zfs_version}",
             )
         if not use_json:
             print(f"  Shipping ZFS {staged_zfs_version}")
-    elif want_zfs and not userspace_only:
+    elif fstype == "zfs" and not userspace_only:
         return _error(
-            "ZFS was requested but the Lustre staging being deployed "
-            "was not built with it",
+            "--fstype zfs, but the Lustre staging being deployed was not "
+            "built with ZFS",
             use_json,
-            hint="This happens with a bundled snapshot from `ltvm "
-            "fetch`, which is published without ZFS.  Pass "
-            "--lustre-tree <source tree> to build one with it.",
+            hint=f"{status.build_command()} --zfs",
         )
 
     try:
@@ -555,22 +302,17 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     except RuntimeError as e:
         return _error(str(e), use_json)
 
-    # Record successful deploy.  Swallow VMNotFound: the deploy itself
-    # already succeeded, so a concurrent `ltvm destroy` racing with the
-    # final .info write shouldn't turn the whole command into a
-    # traceback.  Round 17 made _update_fields raise instead of silently
-    # no-op'ing, so we now explicitly handle the race here -- cmd_deploy
-    # is dispatched directly (not through _vm_call), so without this
-    # catch the exception leaks as a Python traceback to the user.
+    cfg_dir = getattr(args, "cfg_dir", None)
+    if cfg_dir:
+        rc = _distribute_cfg(vm, Path(cfg_dir), os_family, use_json)
+        if rc != EXIT_OK:
+            return rc
+
+    # Record the kver just deployed, not vm.kver (the kernel running when
+    # the VM booted): after a deploy the installed kernel may differ from
+    # the running one.  Source of truth is the staging meta.
     import time as _time
 
-    # Record the kver we actually just deployed, not vm.kver (which is
-    # the *running* kernel at the time the VM booted).  After a deploy
-    # the on-disk /boot kernel may differ from the running one -- the
-    # VM needs a reboot to actually pick up the new kernel, but the
-    # recorded kver should reflect what's installed, not what's
-    # currently running.  Source of truth: .ltvm-staging-meta.json under
-    # the staging dir we just deployed from.
     staging_meta = read_staging_meta(staging)
     kver = (
         staging_meta.get("kernel_version")
@@ -582,8 +324,8 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     except PermissionError:
         # sockets/ is root-owned and sudo would need a password.  The
         # modules are already on the VM; only LAST_DEPLOY/BUILD_PATH/
-        # KVER in the .info go unrecorded.  deploy-lustre must never
-        # prompt -- an unattended deploy+test loop would hang on it.
+        # KVER in the .info go unrecorded.  deploy must never prompt --
+        # an unattended deploy+test loop would hang on it.
         if not use_json:
             print(
                 "  Warning: deploy metadata not recorded (sockets dir "
@@ -593,51 +335,59 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 file=sys.stderr,
             )
     except VMNotFound:
+        # A concurrent `ltvm destroy` racing the final .info write must
+        # not turn a successful deploy into a traceback.
         if not use_json:
             print(
-                f"  Warning: VM '{args.vm}' was destroyed mid-deploy; "
+                f"  Warning: VM '{vm.name}' was destroyed mid-deploy; "
                 f"metadata not recorded",
                 file=sys.stderr,
             )
 
     if not use_json:
-        print(f"  Deployed Lustre to {args.vm}")
-
-    # Optionally mount Lustre
-    mounted = False
-    if args.mount:
-        # _cli_attr resolves at call time (so tests can patch), which
-        # means it is typed Any; the callee returns an exit code.
-        rc = int(
-            _cli_attr("lustre_mount_vm")(args.vm, os_family, quiet=use_json)
-        )
-        if rc != EXIT_OK:
-            return rc
-        mounted = True
-        if not use_json:
-            print(f"  Lustre mounted on {args.vm}")
-
-    # The success envelope.  Every print in this function is
-    # `if not use_json`-guarded and there was no final _output, so
-    # `deploy-lustre --json` wrote nothing at all to stdout on success
-    # -- an empty document for the consumers --json exists for.
-    if use_json:
+        print(f"  Deployed Lustre to {vm.name}")
+        print(f"  mount it with: ltvm llmount {vm.name}")
+    else:
         _output(
             {
-                "action": "deploy-lustre",
-                "vm": args.vm,
+                "action": "deploy",
+                "vm": vm.name,
                 "target": target,
-                "kernel": deploy_kernel,
+                "kernel": kernel,
                 "kernel_version": kver,
                 "build_path": str(build_path),
                 "staging": str(staging),
                 "os_family": os_family,
-                "zfs": want_zfs,
-                "mounted": mounted,
+                "zfs": staged_zfs_version,
+                "fstype": fstype,
             },
             use_json,
         )
+    return EXIT_OK
 
+
+def _distribute_cfg(
+    vm: Any, cfg_dir: Path, os_family: str, use_json: bool
+) -> int:
+    """Copy every ``*.sh`` auster profile in *cfg_dir* onto one VM."""
+    from ltvm_pkg.vm_cluster import _load_cfg_profiles, _write_cluster_cfg
+    from ltvm_pkg.vm_net import SSH_OPTS
+
+    try:
+        profiles = _load_cfg_profiles(cfg_dir.expanduser().resolve())
+    except SystemExit as e:
+        return int(e.code) if e.code is not None else EXIT_ERROR
+    for cfg_name, content in profiles:
+        _, rc, out = _write_cluster_cfg(
+            vm.name, vm.ip, cfg_name, content, SSH_OPTS, os_family
+        )
+        if rc != 0:
+            return _error(
+                f"{cfg_name}.sh distribution failed for {vm.name}: {out}",
+                use_json,
+            )
+        if not use_json:
+            print(f"  {cfg_name}.sh written to {vm.name}")
     return EXIT_OK
 
 

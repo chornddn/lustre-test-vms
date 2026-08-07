@@ -191,10 +191,10 @@ class TestCmdClusterDispatch:
         assert rc == EXIT_OK
         self._assert_only("cmd_cluster_destroy")
 
-    def test_deploy_routes_to_deploy(self) -> None:
+    def test_deploy_is_retired_and_routes_nowhere(self) -> None:
         rc = cmd_cluster(_ns("deploy", "co1"))
-        assert rc == EXIT_OK
-        self._assert_only("cmd_cluster_deploy")
+        assert rc == EXIT_ERROR
+        assert not any(m.called for m in self.mocks.values())
 
     def test_status_routes_to_status(self) -> None:
         rc = cmd_cluster(_ns("status", "co1"))
@@ -490,15 +490,6 @@ class TestClusterCreateRoot:
         assert rc == EXIT_ERROR
         assert not m.called
 
-    def test_deploy_does_not_require_root(self) -> None:
-        with (
-            patch("ltvm_pkg.vm_cluster.cmd_cluster_deploy") as m,
-            patch("os.getuid", return_value=1000),
-        ):
-            rc = cmd_cluster(_ns("deploy", "co1"))
-        assert rc == EXIT_OK
-        assert m.called
-
     def test_list_does_not_require_root(self) -> None:
         with (
             patch("ltvm_pkg.vm_cluster.cmd_cluster_list") as m,
@@ -510,84 +501,23 @@ class TestClusterCreateRoot:
 
 
 # ─────────────────────────────────────────────────────────
-# cmd_cluster deploy: argument parsing
+# cmd_cluster deploy: retired spelling
 # ─────────────────────────────────────────────────────────
 
 
-class TestClusterDeployArgs:
-    """``cluster deploy`` parses --build/--mount/--server-only/--force-compat."""
+class TestClusterDeployRetired:
+    """``cluster deploy`` names its replacement instead of running."""
 
-    @pytest.fixture(autouse=True)
-    def _patch(self) -> Any:
+    def test_prints_the_new_form_and_fails(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
         with patch("ltvm_pkg.vm_cluster.cmd_cluster_deploy") as m:
-            self.handler = m
-            yield m
-
-    def _ns_call(self) -> argparse.Namespace:
-        assert self.handler.called
-        return self.handler.call_args.args[0]
-
-    def test_defaults(self) -> None:
-        rc = cmd_cluster(_ns("deploy", "co1"))
-        assert rc == EXIT_OK
-        ns = self._ns_call()
-        assert ns.name == "co1"
-        # Default --build is "." (cwd).
-        assert ns.lustre_source == "."
-        assert ns.mount is False
-        assert ns.server_only is False
-        assert ns.force_compat is False
-
-    def test_build_flag(self) -> None:
-        cmd_cluster(_ns("deploy", "co1", "--build", "/path/to/lustre"))
-        ns = self._ns_call()
-        assert ns.lustre_source == "/path/to/lustre"
-
-    def test_mount_flag(self) -> None:
-        cmd_cluster(_ns("deploy", "co1", "--mount"))
-        ns = self._ns_call()
-        assert ns.mount is True
-
-    def test_server_only_flag(self) -> None:
-        cmd_cluster(_ns("deploy", "co1", "--server-only"))
-        ns = self._ns_call()
-        assert ns.server_only is True
-
-    def test_force_compat_flag(self) -> None:
-        cmd_cluster(_ns("deploy", "co1", "--force-compat"))
-        ns = self._ns_call()
-        assert ns.force_compat is True
-
-    def test_all_flags_combined(self) -> None:
-        cmd_cluster(
-            _ns(
-                "deploy",
-                "co1",
-                "--build",
-                "/x",
-                "--mount",
-                "--server-only",
-                "--force-compat",
-            )
-        )
-        ns = self._ns_call()
-        assert ns.lustre_source == "/x"
-        assert ns.mount and ns.server_only and ns.force_compat
-
-    def test_unknown_flag_errors(self) -> None:
-        err = _expect_usage_error("deploy", "co1", "--frob")
-        assert "--frob" in err
-        assert not self.handler.called
-
-    def test_invalid_fstype_errors(self) -> None:
-        """--fstype was validated by hand; argparse choices do it now."""
-        err = _expect_usage_error("deploy", "co1", "--fstype", "btrfs")
-        assert "invalid choice" in err
-        assert not self.handler.called
-
-    def test_missing_name_errors(self) -> None:
-        _expect_usage_error("deploy")
-        assert not self.handler.called
+            rc = cmd_cluster(_ns("deploy", "co1", "--build", "/x"))
+        assert rc == EXIT_ERROR
+        assert not m.called
+        err = capsys.readouterr().err
+        assert "ltvm deploy co1" in err
+        assert "--configure" in err
 
 
 # ─────────────────────────────────────────────────────────
@@ -812,7 +742,7 @@ class TestJsonErrorOutput:
     def test_a_malformed_command_line_is_argparses_to_report(self) -> None:
         """Not a JSON envelope: argparse owns the command line now, and
         reports it the same way for every ltvm subcommand."""
-        assert "--bad" in _expect_usage_error("deploy", "co1", "--bad")
+        assert "--bad" in _expect_usage_error("status", "co1", "--bad")
 
 
 # ─────────────────────────────────────────────────────────

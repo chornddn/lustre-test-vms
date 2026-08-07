@@ -664,12 +664,13 @@ class _FakeVM:
         self.name = name
         self.ip = ip
         self.kver = "5.14"
+        self.variant = "base"
 
     def update_deploy(self, *a, **kw) -> None:
         pass
 
 
-def _deploy_harness(monkeypatch, tmp_path: Path, write_rc):
+def _deploy_harness(monkeypatch, tmp_path: Path, write_rc, staging=True):
     """Patch cmd_cluster_deploy's I/O; return the list of cfg writes."""
     cluster = _cluster(
         ("co2-mds", ["mgs", "mds"], 1, 0, "10.0.0.10"),
@@ -683,6 +684,13 @@ def _deploy_harness(monkeypatch, tmp_path: Path, write_rc):
     (src / "lustre").mkdir(parents=True)
     (src / "lnet").mkdir()
     (src / "configure.ac").write_text("")
+    if staging:
+        from ltvm_pkg.lustre_build import staging_path as _sp
+
+        stage = _sp(src, "rocky9", arch="x86_64", kernel="5.14-rhel9.7")
+        stage.mkdir(parents=True)
+        (stage / "lustre.ko").write_text("")
+        (stage / ".ltvm-staging-stamp").write_text("5.14.0\n")
 
     writes: list[tuple[str, str, str]] = []
 
@@ -703,13 +711,14 @@ def _deploy_harness(monkeypatch, tmp_path: Path, write_rc):
         vm_cluster,
         "cluster_build_params",
         lambda c: vm_cluster.ClusterBuildParams(
-            target="rocky9", os_family="rhel", kernel=None, arch="x86_64"
+            target="rocky9", os_family="rhel",
+            kernel="5.14-rhel9.7", arch="x86_64",
         ),
     )
 
     def fake_run(argv, **kwargs):
-        # The Lustre build; cfg writes go through subprocess.run too but
-        # carry input=.
+        # cfg writes carry input=; anything else would be a build, which
+        # deploy must never spawn.
         if "input" not in kwargs:
             return _FakeCompleted(0)
         cmd = [a for a in argv if "/tests/cfg/" in a][0]
@@ -736,8 +745,7 @@ class TestDeployCfgDir:
 
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_source=str(src), mount=False,
-                server_only=False, force_compat=False, cfg_dir=str(cfg_dir),
+                name="co2", lustre_tree=str(src), cfg_dir=str(cfg_dir),
             )
         )
 
@@ -763,8 +771,7 @@ class TestDeployCfgDir:
         with pytest.raises(SystemExit):
             vm_cluster.cmd_cluster_deploy(
                 argparse.Namespace(
-                    name="co2", lustre_source=str(src), mount=False,
-                    server_only=False, force_compat=False,
+                    name="co2", lustre_tree=str(src),
                     cfg_dir=str(cfg_dir),
                 )
             )
@@ -775,11 +782,28 @@ class TestDeployCfgDir:
         src, writes = _deploy_harness(monkeypatch, tmp_path, lambda c: 0)
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_source=str(src), mount=False,
-                server_only=False, force_compat=False, cfg_dir=None,
+                name="co2", lustre_tree=str(src), cfg_dir=None,
             )
         )
         assert {c.rsplit("/", 1)[-1] for _, c, _ in writes} == {"local.sh"}
+
+    def test_missing_staging_refuses_and_builds_nothing(
+        self, monkeypatch, tmp_path: Path, capsys
+    ) -> None:
+        """Deploy names the build command rather than running one."""
+        src, writes = _deploy_harness(
+            monkeypatch, tmp_path, lambda c: 0, staging=False
+        )
+        with pytest.raises(SystemExit):
+            vm_cluster.cmd_cluster_deploy(
+                argparse.Namespace(
+                    name="co2", lustre_tree=str(src), cfg_dir=None
+                )
+            )
+        out = capsys.readouterr()
+        assert "ltvm build lustre --for-cluster testc" in out.out + out.err
+        assert "--configure" in out.out + out.err
+        assert writes == []
 
     def test_cfg_dir_with_local_sh_is_rejected_before_the_build(
         self, monkeypatch, tmp_path: Path
@@ -792,8 +816,7 @@ class TestDeployCfgDir:
         with pytest.raises(SystemExit):
             vm_cluster.cmd_cluster_deploy(
                 argparse.Namespace(
-                    name="co2", lustre_source=str(src), mount=False,
-                    server_only=False, force_compat=False,
+                    name="co2", lustre_tree=str(src),
                     cfg_dir=str(cfg_dir),
                 )
             )

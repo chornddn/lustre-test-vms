@@ -211,33 +211,6 @@ class TestCreateTargetForms:
 
 
 # ---------------------------------------------------------------------------
-# deploy-lustre: currently --target flag; must accept positional too
-# ---------------------------------------------------------------------------
-
-
-class TestDeployLustreTargetForms:
-    def test_deploy_flag(self) -> None:
-        args = _parse(["deploy-lustre", "vm1", "--target", "rocky9"])
-        assert args.target == "rocky9"
-        assert args.vm == "vm1"
-
-    def test_deploy_positional(self) -> None:
-        args = _parse(["deploy-lustre", "vm1", "rocky9"])
-        assert args.target == "rocky9"
-        assert args.vm == "vm1"
-
-    def test_deploy_no_target(self) -> None:
-        # Omitting is allowed: cmd_deploy auto-detects from VM.
-        args = _parse(["deploy-lustre", "vm1"])
-        assert args.target is None
-
-    def test_deploy_conflict(self, capsys: pytest.CaptureFixture[str]) -> None:
-        _parse_expect_conflict(
-            ["deploy-lustre", "vm1", "rocky9", "--target", "rocky10"], capsys
-        )
-
-
-# ---------------------------------------------------------------------------
 # Sentinel dest is stripped before dispatch
 # ---------------------------------------------------------------------------
 

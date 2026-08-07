@@ -541,150 +541,7 @@ class TestLustreMountVm:
 
 
 # --------------------------------------------------------------------------
-# cmd_deploy: per-kernel staging resolution (lustre_test_vms_v2-eh9)
-# --------------------------------------------------------------------------
-
-
-class TestCmdDeployPerKernelStaging:
-    """cmd_deploy resolves staging per-kernel and refuses when the
-    legacy per-target staging exists but the per-kernel one doesn't.
-    """
-
-    def _setup_lustre_tree(self, build_path: Path) -> None:
-        (build_path / "lustre").mkdir(parents=True)
-        (build_path / "lnet").mkdir()
-        (build_path / "configure.ac").write_text("")
-
-    def test_resolves_under_kernel_subdir(
-        self, tmp_sockets: Path, tmp_path: Path
-    ) -> None:
-        """The staging path used by cmd_deploy is keyed by kernel."""
-        import argparse as ap
-
-        from ltvm_pkg import cli as cli_mod
-
-        build_path = tmp_path / "lustre-release"
-        self._setup_lustre_tree(build_path)
-        # Seed a fresh per-kernel staging dir with a .ko so the build
-        # step is skipped and we can assert the path was used.
-        from ltvm_pkg.lustre_build import staging_path
-
-        staging = staging_path(
-            build_path, "rocky9", arch="x86_64", kernel="5.14-rhel9.7"
-        )
-        staging.mkdir(parents=True)
-        (staging / "lustre.ko").write_text("")
-        (staging / ".ltvm-staging-stamp").write_text("5.14.0-foo\n")
-        _mark_staging_fresh(staging, build_path, _stub_tc())
-
-        vm = _make_vm(name="co1-eh9", ip="192.168.100.60")
-        vm.os_id = "rocky9"
-        vm.save()
-
-        # Full stub: cmd_deploy's freshness check reads the kernel
-        # build-tree's Module.symvers, so kernel_output_dir must be a
-        # real path rather than an auto-created MagicMock attribute.
-        tc = _stub_tc()
-
-        captured: dict = {}
-
-        def fake_deploy_to_vm(vm_arg, staging_arg, **kwargs):
-            captured["staging"] = Path(staging_arg)
-
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=tc),
-            patch("ltvm_pkg.cli.deploy_to_vm", side_effect=fake_deploy_to_vm),
-            patch("subprocess.run") as run_mock,
-        ):
-            # If _staging_is_fresh does get invoked it calls `find`,
-            # which we short-circuit to return "fresh" (empty stdout).
-            run_mock.return_value = MagicMock(returncode=0, stdout="")
-            args = ap.Namespace(
-                vm="co1-eh9",
-                lustre_tree=str(build_path),
-                mount=False,
-                target=None,
-                kernel=None,
-                json=False,
-                userspace_only=False,
-                force_compat=False,
-            )
-            cli_mod.cmd_deploy(args)
-
-        assert "staging" in captured
-        assert captured["staging"] == staging
-        assert captured["staging"].name == "5.14-rhel9.7"
-
-    def test_legacy_staging_triggers_clear_error(
-        self, tmp_sockets: Path, tmp_path: Path
-    ) -> None:
-        """Legacy per-target staging present + per-kernel missing must
-        not silently ship the legacy modules.
-
-        cmd_deploy reaches that by rebuilding, so the `ltvm build lustre`
-        child is mocked to fail.  Without the mock this test ran a real
-        `ltvm build lustre` and passed only because that failed -- on a
-        host with no ltvm on PATH it died with FileNotFoundError, and on
-        a host with one it was one missing-artifact check away from
-        starting an actual build from the test suite.
-        """
-        import argparse as ap
-
-        from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.cli import deploy as cli_deploy
-
-        build_path = tmp_path / "lustre-release"
-        self._setup_lustre_tree(build_path)
-        legacy = build_path / ".ltvm-staging" / "rocky9" / "x86_64"
-        legacy.mkdir(parents=True)
-        (legacy / "old.ko").write_text("")
-
-        vm = _make_vm(name="co1-eh9-legacy", ip="192.168.100.61")
-        vm.os_id = "rocky9"
-        vm.save()
-
-        tc = MagicMock()
-        tc.os_family = "rhel"
-        tc.arch = "x86_64"
-        tc.resolve_kernel.side_effect = lambda k: k or "5.14-rhel9.7"
-
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=tc),
-            patch.object(cli_mod, "_gate_lustre_validation"),
-            patch("ltvm_pkg.cli.deploy_to_vm") as deploy_mock,
-            patch.object(
-                cli_deploy.subprocess,
-                "run",
-                return_value=MagicMock(returncode=1, stdout="", stderr=""),
-            ) as run_mock,
-        ):
-            args = ap.Namespace(
-                vm="co1-eh9-legacy",
-                lustre_tree=str(build_path),
-                mount=False,
-                target=None,
-                kernel=None,
-                json=False,
-                userspace_only=False,
-                force_compat=False,
-            )
-            rc = cli_mod.cmd_deploy(args)
-
-        from ltvm_pkg.cli import EXIT_ERROR
-
-        assert rc == EXIT_ERROR
-        assert not deploy_mock.called
-        # It failed at the rebuild, not somewhere earlier for an
-        # unrelated reason -- which is what makes the assertion above
-        # evidence that legacy modules are not shipped.
-        assert any(
-            call.args[0][:3] == ["ltvm", "build", "lustre"]
-            for call in run_mock.call_args_list
-        )
-
-
-# --------------------------------------------------------------------------
-# cmd_deploy: full decision-tree coverage for refactor safety
+# cmd_deploy: target resolution, staging refusal, no build
 # --------------------------------------------------------------------------
 
 
@@ -694,29 +551,42 @@ def _setup_lustre_tree(build_path: Path) -> None:
     (build_path / "configure.ac").write_text("")
 
 
+def _seed_staging(
+    build_path: Path,
+    kernel: str = "5.14-rhel9.7",
+    variant: str = "base",
+    module: str = "lustre.ko",
+) -> Path:
+    """Lay down a staging tree that reads as freshly built."""
+    from ltvm_pkg.lustre_build import staging_path
+
+    staging = staging_path(
+        build_path, "rocky9", arch="x86_64", kernel=kernel, variant=variant
+    )
+    staging.mkdir(parents=True)
+    (staging / module).write_text("")
+    (staging / ".ltvm-staging-stamp").write_text("5.14.0-foo\n")
+    return staging
+
+
 def _deploy_args(
-    vm: str = "co-test",
+    name: str = "co-test",
     lustre_tree: str | None = None,
     *,
-    mount: bool = False,
-    target: str | None = None,
-    kernel: str | None = None,
     json: bool = False,
     userspace_only: bool = False,
-    force_compat: bool = False,
+    cfg_dir: str | None = None,
+    arch: str | None = None,
 ) -> argparse.Namespace:
-    # Post-merge, cmd_deploy reads the tree from args.lustre_tree
-    # (unified with other subcommands); ``build`` here is kept as the
-    # test-side kwarg for readability.
     return argparse.Namespace(
-        vm=vm,
+        name=name,
         lustre_tree=lustre_tree,
-        mount=mount,
-        target=target,
-        kernel=kernel,
         json=json,
         userspace_only=userspace_only,
-        force_compat=force_compat,
+        cfg_dir=cfg_dir,
+        arch=arch,
+        as_owner=None,
+        force=False,
     )
 
 
@@ -785,142 +655,346 @@ def _stub_tc() -> MagicMock:
     return tc
 
 
-class TestCmdDeployErrorPaths:
-    """Error-path branches of cmd_deploy that gate downstream work."""
+class TestCmdDeployNameResolution:
+    """`deploy <name>` takes a VM or a cluster and says so when neither."""
 
-    def test_vm_not_found_returns_error(self, tmp_sockets: Path) -> None:
-        """A missing VM exits with EXIT_ERROR, never touches build."""
-        from ltvm_pkg import cli as cli_mod
-
-        args = _deploy_args(vm="ghost", lustre_tree=None)
-        with patch("ltvm_pkg.cli.TargetConfig") as tc_mock:
-            rc = cli_mod.cmd_deploy(args)
-        assert rc == 1
-        # TargetConfig is never even instantiated when VM lookup fails.
-        tc_mock.assert_not_called()
-
-    def test_no_target_and_no_os_id_errors(self, tmp_sockets: Path) -> None:
-        """VM with no os_id and no --target gives a clear error."""
-        from ltvm_pkg import cli as cli_mod
-
-        vm = _make_vm(name="co1-no-target", ip="10.0.0.10")
-        vm.os_id = ""  # no recorded OS
-        vm.save()
-
-        args = _deploy_args(vm="co1-no-target", lustre_tree=None)
-        rc = cli_mod.cmd_deploy(args)
-        assert rc == 1
-
-    def test_unknown_target_yields_targetconfig_error(
+    def test_resolves_a_vm_name(
         self, tmp_sockets: Path, tmp_path: Path
     ) -> None:
-        """A ValueError out of TargetConfig is surfaced as a friendly error."""
         from ltvm_pkg import cli as cli_mod
 
-        vm = _make_vm(name="co1-unknown", ip="10.0.0.11")
-        vm.os_id = "bogusos"
+        build_path = tmp_path / "lustre-release"
+        _setup_lustre_tree(build_path)
+        staging = _seed_staging(build_path)
+
+        vm = _make_vm(name="co1-vm", ip="10.0.1.1")
+        vm.os_id = "rocky9"
         vm.save()
 
-        args = _deploy_args(vm="co1-unknown", lustre_tree=str(tmp_path))
-        with patch.object(
-            cli_mod, "TargetConfig", side_effect=ValueError("nope")
+        captured: dict = {}
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
+            patch(
+                "ltvm_pkg.cli.deploy_to_vm",
+                side_effect=lambda v, s, **kw: captured.update(staging=Path(s)),
+            ),
         ):
-            rc = cli_mod.cmd_deploy(args)
-        assert rc == 1
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(name="co1-vm", lustre_tree=str(build_path))
+            )
 
-    def test_build_path_missing_errors(
-        self, tmp_sockets: Path, tmp_path: Path
+        assert rc == 0
+        assert captured["staging"] == staging
+
+    def test_resolves_a_cluster_name(self, tmp_sockets: Path) -> None:
+        from ltvm_pkg import cli as cli_mod
+        from ltvm_pkg.vm_state import ClusterInfo
+
+        ClusterInfo(
+            name="co9",
+            nodes=[{"name": "co9-mds", "roles": ["mgs", "mds"]}],
+        ).save()
+
+        seen: dict = {}
+        with patch(
+            "ltvm_pkg.vm_cluster.cmd_cluster_deploy",
+            side_effect=lambda ns: seen.update(
+                name=ns.name, tree=ns.lustre_tree
+            ),
+        ):
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(name="co9", lustre_tree="/some/tree")
+            )
+
+        assert rc == 0
+        assert seen == {"name": "co9", "tree": "/some/tree"}
+
+    def test_unknown_name_names_both_lookups(
+        self, tmp_sockets: Path, capsys
     ) -> None:
-        """An explicit --build that points at a nonexistent dir errors."""
         from ltvm_pkg import cli as cli_mod
 
-        vm = _make_vm(name="co1-nodir", ip="10.0.0.12")
+        rc = cli_mod.cmd_deploy(_deploy_args(name="ghost"))
+        assert rc == 1
+        err = capsys.readouterr().err
+        assert "cluster" in err and "VM" in err
+
+    def test_name_that_is_both_is_refused(self, tmp_sockets: Path) -> None:
+        """Picking a winner silently would deploy somewhere unintended."""
+        from ltvm_pkg import cli as cli_mod
+        from ltvm_pkg.vm_state import ClusterInfo
+
+        vm = _make_vm(name="twin", ip="10.0.1.2")
+        vm.os_id = "rocky9"
+        vm.save()
+        ClusterInfo(
+            name="twin", nodes=[{"name": "twin-mds", "roles": ["mgs"]}]
+        ).save()
+
+        with patch("ltvm_pkg.cli.deploy_to_vm") as deploy_mock:
+            rc = cli_mod.cmd_deploy(_deploy_args(name="twin"))
+        assert rc == 1
+        deploy_mock.assert_not_called()
+
+
+class TestCmdDeployDerivesBuildInputs:
+    """Kernel, arch and variant come from the target, never from a flag."""
+
+    def test_vm_kernel_beats_target_default(
+        self, tmp_sockets: Path, tmp_path: Path
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        build_path = tmp_path / "lustre-release"
+        _setup_lustre_tree(build_path)
+        _seed_staging(build_path, kernel="5.14-rhel9.5")
+
+        vm = _make_vm(name="co1-altkern", ip="10.0.1.3")
+        vm.os_id = "rocky9"
+        vm.kernel = "/fake/artifacts/rocky9/x86_64/kernels/5.14-rhel9.5/vmlinux"
+        vm.save()
+
+        captured: dict = {}
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
+            patch(
+                "ltvm_pkg.cli.deploy_to_vm",
+                side_effect=lambda v, s, **kw: captured.update(staging=Path(s)),
+            ),
+        ):
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(name="co1-altkern", lustre_tree=str(build_path))
+            )
+
+        assert rc == 0
+        assert captured["staging"].name == "5.14-rhel9.5"
+
+    def test_mofed_variant_routes_to_mofed_staging(
+        self, tmp_sockets: Path, tmp_path: Path
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        build_path = tmp_path / "lustre-release"
+        _setup_lustre_tree(build_path)
+        _seed_staging(build_path, variant="mofed-24", module="ko2iblnd.ko")
+
+        vm = _make_vm(name="co1-mofed", ip="10.0.1.4")
+        vm.os_id = "rocky9"
+        vm.variant = "mofed-24"
+        vm.save()
+
+        captured: dict = {}
+        with (
+            patch.object(
+                cli_mod, "TargetConfig", return_value=_stub_tc()
+            ) as tc_mock,
+            patch(
+                "ltvm_pkg.cli.deploy_to_vm",
+                side_effect=lambda v, s, **kw: captured.update(staging=Path(s)),
+            ),
+        ):
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(name="co1-mofed", lustre_tree=str(build_path))
+            )
+
+        assert rc == 0
+        assert tc_mock.call_args.kwargs.get("variant") == "mofed-24"
+        assert captured["staging"].name == "mofed-24"
+
+    def test_arch_flag_is_refused(
+        self, tmp_sockets: Path, tmp_path: Path
+    ) -> None:
+        """--arch rides in from the shared parent parser; deploy rejects it."""
+        from ltvm_pkg import cli as cli_mod
+
+        vm = _make_vm(name="co1-arch", ip="10.0.1.5")
         vm.os_id = "rocky9"
         vm.save()
 
-        args = _deploy_args(
-            vm="co1-nodir", lustre_tree=str(tmp_path / "does-not-exist")
-        )
-        with patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()):
-            rc = cli_mod.cmd_deploy(args)
+        with patch("ltvm_pkg.cli.deploy_to_vm") as deploy_mock:
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(name="co1-arch", arch="aarch64")
+            )
         assert rc == 1
+        deploy_mock.assert_not_called()
 
-    def test_build_path_not_lustre_tree_errors(
-        self, tmp_sockets: Path, tmp_path: Path
+
+class TestCmdDeployNeverBuilds:
+    """Missing or stale staging is a hard error, not an implicit build."""
+
+    def test_no_staging_names_the_build_and_spawns_nothing(
+        self, tmp_sockets: Path, tmp_path: Path, capsys
     ) -> None:
-        """A --build dir that lacks configure.ac/lustre/lnet fails fast."""
-        from ltvm_pkg import cli as cli_mod
-
-        bad = tmp_path / "not-a-lustre-tree"
-        bad.mkdir()
-
-        vm = _make_vm(name="co1-bad", ip="10.0.0.13")
-        vm.os_id = "rocky9"
-        vm.save()
-
-        args = _deploy_args(vm="co1-bad", lustre_tree=str(bad))
-        with patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()):
-            rc = cli_mod.cmd_deploy(args)
-        assert rc == 1
-
-    def test_userspace_only_no_staging_errors(
-        self, tmp_sockets: Path, tmp_path: Path
-    ) -> None:
-        """--userspace-only with no pre-existing staging exits with error."""
         from ltvm_pkg import cli as cli_mod
 
         build_path = tmp_path / "lustre-release"
         _setup_lustre_tree(build_path)
 
-        vm = _make_vm(name="co1-uspace", ip="10.0.0.14")
+        vm = _make_vm(name="co1-nostaging", ip="10.0.1.6")
         vm.os_id = "rocky9"
         vm.save()
 
-        args = _deploy_args(
-            vm="co1-uspace", lustre_tree=str(build_path), userspace_only=True
-        )
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
+            patch("ltvm_pkg.cli.deploy_to_vm") as deploy_mock,
+            patch("subprocess.run") as run_mock,
+        ):
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(name="co1-nostaging", lustre_tree=str(build_path))
+            )
+
+        assert rc == 1
+        deploy_mock.assert_not_called()
+        run_mock.assert_not_called()
+        err = capsys.readouterr().err
+        assert "ltvm build lustre" in err
+        assert "--configure" in err
+
+    def test_stale_staging_is_refused(
+        self, tmp_sockets: Path, tmp_path: Path
+    ) -> None:
+        """A source edit after the build stamp refuses rather than ships."""
+        import os as _os
+        import time as _time
+
+        from ltvm_pkg import cli as cli_mod
+
+        build_path = tmp_path / "lustre-release"
+        _setup_lustre_tree(build_path)
+        _seed_staging(build_path)
+        edited = build_path / "lustre" / "later.c"
+        edited.write_text("")
+        future = _time.time() + 60
+        _os.utime(edited, (future, future))
+
+        vm = _make_vm(name="co1-stale", ip="10.0.1.7")
+        vm.os_id = "rocky9"
+        vm.save()
+
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
             patch("ltvm_pkg.cli.deploy_to_vm") as deploy_mock,
         ):
-            rc = cli_mod.cmd_deploy(args)
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(name="co1-stale", lustre_tree=str(build_path))
+            )
+
+        assert rc == 1
+        deploy_mock.assert_not_called()
+
+
+class TestCmdDeployErrorPaths:
+    """Error-path branches of cmd_deploy that gate downstream work."""
+
+    def test_no_os_id_errors(self, tmp_sockets: Path) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        vm = _make_vm(name="co1-no-target", ip="10.0.1.8")
+        vm.os_id = ""
+        vm.save()
+
+        assert cli_mod.cmd_deploy(_deploy_args(name="co1-no-target")) == 1
+
+    def test_unknown_target_yields_targetconfig_error(
+        self, tmp_sockets: Path, tmp_path: Path
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        vm = _make_vm(name="co1-unknown", ip="10.0.1.9")
+        vm.os_id = "bogusos"
+        vm.save()
+
+        with patch.object(
+            cli_mod, "TargetConfig", side_effect=ValueError("nope")
+        ):
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(name="co1-unknown", lustre_tree=str(tmp_path))
+            )
+        assert rc == 1
+
+    def test_lustre_tree_missing_errors(
+        self, tmp_sockets: Path, tmp_path: Path
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        vm = _make_vm(name="co1-nodir", ip="10.0.1.10")
+        vm.os_id = "rocky9"
+        vm.save()
+
+        with patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()):
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(
+                    name="co1-nodir",
+                    lustre_tree=str(tmp_path / "does-not-exist"),
+                )
+            )
+        assert rc == 1
+
+    def test_lustre_tree_not_a_tree_errors(
+        self, tmp_sockets: Path, tmp_path: Path
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        bad = tmp_path / "not-a-lustre-tree"
+        bad.mkdir()
+        vm = _make_vm(name="co1-bad", ip="10.0.1.11")
+        vm.os_id = "rocky9"
+        vm.save()
+
+        with patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()):
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(name="co1-bad", lustre_tree=str(bad))
+            )
+        assert rc == 1
+
+    def test_userspace_only_no_staging_errors(
+        self, tmp_sockets: Path, tmp_path: Path
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        build_path = tmp_path / "lustre-release"
+        _setup_lustre_tree(build_path)
+        vm = _make_vm(name="co1-uspace", ip="10.0.1.12")
+        vm.os_id = "rocky9"
+        vm.save()
+
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
+            patch("ltvm_pkg.cli.deploy_to_vm") as deploy_mock,
+        ):
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(
+                    name="co1-uspace",
+                    lustre_tree=str(build_path),
+                    userspace_only=True,
+                )
+            )
         assert rc == 1
         deploy_mock.assert_not_called()
 
     def test_deploy_to_vm_runtimeerror_returns_error(
         self, tmp_sockets: Path, tmp_path: Path
     ) -> None:
-        """deploy_to_vm raising RuntimeError flows back as EXIT_ERROR."""
         from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.lustre_build import staging_path
 
         build_path = tmp_path / "lustre-release"
         _setup_lustre_tree(build_path)
-        staging = staging_path(
-            build_path, "rocky9", arch="x86_64", kernel="5.14-rhel9.7"
-        )
-        staging.mkdir(parents=True)
-        (staging / "lustre.ko").write_text("")
-        (staging / ".ltvm-staging-stamp").write_text("")
-        _mark_staging_fresh(staging, build_path, _stub_tc())
+        _seed_staging(build_path)
 
-        vm = _make_vm(name="co1-rterr", ip="10.0.0.15")
+        vm = _make_vm(name="co1-rterr", ip="10.0.1.13")
         vm.os_id = "rocky9"
         vm.save()
 
-        args = _deploy_args(vm="co1-rterr", lustre_tree=str(build_path))
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
             patch(
                 "ltvm_pkg.cli.deploy_to_vm",
                 side_effect=RuntimeError("ssh died"),
             ),
-            patch(
-                "subprocess.run",
-                return_value=MagicMock(returncode=0, stdout=""),
-            ),
         ):
-            rc = cli_mod.cmd_deploy(args)
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(name="co1-rterr", lustre_tree=str(build_path))
+            )
         assert rc == 1
 
 
@@ -931,19 +1005,12 @@ class TestCmdDeployUserspaceOnly:
         self, tmp_sockets: Path, tmp_path: Path
     ) -> None:
         from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.lustre_build import staging_path
 
         build_path = tmp_path / "lustre-release"
         _setup_lustre_tree(build_path)
-        staging = staging_path(
-            build_path, "rocky9", arch="x86_64", kernel="5.14-rhel9.7"
-        )
-        staging.mkdir(parents=True)
-        (staging / "lustre.ko").write_text("")
-        (staging / ".ltvm-staging-stamp").write_text("")
-        _mark_staging_fresh(staging, build_path, _stub_tc())
+        staging = _seed_staging(build_path)
 
-        vm = _make_vm(name="co1-uspace-ok", ip="10.0.0.16")
+        vm = _make_vm(name="co1-uspace-ok", ip="10.0.1.14")
         vm.os_id = "rocky9"
         vm.save()
 
@@ -953,23 +1020,96 @@ class TestCmdDeployUserspaceOnly:
             captured.update(kwargs)
             captured["staging"] = Path(staging_arg)
 
-        args = _deploy_args(
-            vm="co1-uspace-ok",
-            lustre_tree=str(build_path),
-            userspace_only=True,
-        )
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
-            patch(
-                "ltvm_pkg.cli.deploy_to_vm",
-                side_effect=fake_deploy_to_vm,
-            ),
+            patch("ltvm_pkg.cli.deploy_to_vm", side_effect=fake_deploy_to_vm),
         ):
-            rc = cli_mod.cmd_deploy(args)
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(
+                    name="co1-uspace-ok",
+                    lustre_tree=str(build_path),
+                    userspace_only=True,
+                )
+            )
 
         assert rc == 0
         assert captured.get("userspace_only") is True
         assert captured["staging"] == staging
+
+
+class TestCmdDeployCfgDir:
+    """--cfg-dir distributes auster profiles to a standalone VM."""
+
+    def test_profiles_are_written(
+        self, tmp_sockets: Path, tmp_path: Path
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        build_path = tmp_path / "lustre-release"
+        _setup_lustre_tree(build_path)
+        _seed_staging(build_path)
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+        (cfg_dir / "co1sn.sh").write_text(". local.sh\n")
+
+        vm = _make_vm(name="co1-cfg", ip="10.0.1.15")
+        vm.os_id = "rocky9"
+        vm.save()
+
+        writes: list = []
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
+            patch("ltvm_pkg.cli.deploy_to_vm"),
+            patch(
+                "ltvm_pkg.vm_cluster._write_cluster_cfg",
+                side_effect=lambda n, ip, cfg, content, opts, fam: (
+                    writes.append((n, cfg, content)) or (n, 0, "ok")
+                ),
+            ),
+        ):
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(
+                    name="co1-cfg",
+                    lustre_tree=str(build_path),
+                    cfg_dir=str(cfg_dir),
+                )
+            )
+
+        assert rc == 0
+        assert writes == [("co1-cfg", "co1sn", ". local.sh\n")]
+
+    def test_a_failed_write_is_fatal(
+        self, tmp_sockets: Path, tmp_path: Path
+    ) -> None:
+        from ltvm_pkg import cli as cli_mod
+
+        build_path = tmp_path / "lustre-release"
+        _setup_lustre_tree(build_path)
+        _seed_staging(build_path)
+        cfg_dir = tmp_path / "cfg"
+        cfg_dir.mkdir()
+        (cfg_dir / "co1sn.sh").write_text("x\n")
+
+        vm = _make_vm(name="co1-cfg-fail", ip="10.0.1.16")
+        vm.os_id = "rocky9"
+        vm.save()
+
+        with (
+            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
+            patch("ltvm_pkg.cli.deploy_to_vm"),
+            patch(
+                "ltvm_pkg.vm_cluster._write_cluster_cfg",
+                return_value=("co1-cfg-fail", 1, "no space"),
+            ),
+        ):
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(
+                    name="co1-cfg-fail",
+                    lustre_tree=str(build_path),
+                    cfg_dir=str(cfg_dir),
+                )
+            )
+        assert rc == 1
 
 
 class TestCmdDeployBundledSnapshot:
@@ -982,22 +1122,20 @@ class TestCmdDeployBundledSnapshot:
         snap = tc_output_dir / "kernels" / kernel / "lustre-artifacts"
         snap.mkdir(parents=True)
         (snap / ".ltvm-snapshot.json").write_text("{}")
-        # Real snapshot would contain usr/, lib/modules/, etc.
         (snap / "usr").mkdir()
         (snap / "lib").mkdir()
         (snap / "marker.ko").write_text("from-snapshot")
         return snap
 
-    def test_bundled_snapshot_used_when_no_build_arg(
+    def test_bundled_snapshot_used_when_no_tree_given(
         self, tmp_sockets: Path, tmp_path: Path
     ) -> None:
-        """No --build + bundled snapshot present -> snapshot is the source."""
         from ltvm_pkg import cli as cli_mod
 
         tc_out = tmp_path / "tc-out"
         snap = self._make_snapshot(tc_out)
 
-        vm = _make_vm(name="co1-bundled", ip="10.0.0.17")
+        vm = _make_vm(name="co1-bundled", ip="10.0.1.17")
         vm.os_id = "rocky9"
         vm.save()
 
@@ -1005,19 +1143,12 @@ class TestCmdDeployBundledSnapshot:
         tc.output_dir = tc_out
 
         captured: dict = {}
-
-        def fake_deploy_to_vm(vm_arg, staging_arg, **kwargs):
-            captured["staging"] = Path(staging_arg)
-
         rsync_calls: list = []
 
         def fake_run(cmd, *args, **kwargs):
             rsync_calls.append(cmd)
             return MagicMock(returncode=0, stdout="", stderr="")
 
-        args = _deploy_args(vm="co1-bundled", lustre_tree=None)
-        # Run from snapshot dir so cwd-fallback wouldn't trigger; but
-        # since the snapshot marker exists, snapshot path wins regardless.
         import os as _os
 
         old = _os.getcwd()
@@ -1027,24 +1158,24 @@ class TestCmdDeployBundledSnapshot:
                 patch.object(cli_mod, "TargetConfig", return_value=tc),
                 patch(
                     "ltvm_pkg.cli.deploy_to_vm",
-                    side_effect=fake_deploy_to_vm,
+                    side_effect=lambda v, s, **kw: captured.update(
+                        staging=Path(s)
+                    ),
                 ),
                 patch("subprocess.run", side_effect=fake_run),
             ):
-                rc = cli_mod.cmd_deploy(args)
+                rc = cli_mod.cmd_deploy(
+                    _deploy_args(name="co1-bundled", lustre_tree=None)
+                )
         finally:
             _os.chdir(old)
 
         assert rc == 0
-        # First subprocess.run is the rsync mirror
         assert rsync_calls, "expected rsync to be invoked"
         rsync = rsync_calls[0]
         assert rsync[0] == "rsync"
         assert "--delete" in rsync
         assert str(snap) + "/" in rsync
-        # Staging should be in build_path tree, not under tc.output_dir.
-        # build_path was set to the snapshot itself, so staging lives
-        # under snapshot/.ltvm-staging/.
         staging = captured["staging"]
         assert ".ltvm-staging" in str(staging)
         assert staging.name == "5.14-rhel9.7"
@@ -1057,23 +1188,26 @@ class TestCmdDeployBundledSnapshot:
         tc_out = tmp_path / "tc-out"
         self._make_snapshot(tc_out)
 
-        vm = _make_vm(name="co1-rsync-fail", ip="10.0.0.18")
+        vm = _make_vm(name="co1-rsync-fail", ip="10.0.1.18")
         vm.os_id = "rocky9"
         vm.save()
 
         tc = _stub_tc()
         tc.output_dir = tc_out
 
-        def fake_run(cmd, *args, **kwargs):
-            return MagicMock(returncode=23, stdout="", stderr="rsync: nope")
-
-        args = _deploy_args(vm="co1-rsync-fail", lustre_tree=None)
         with (
             patch.object(cli_mod, "TargetConfig", return_value=tc),
             patch("ltvm_pkg.cli.deploy_to_vm") as deploy_mock,
-            patch("subprocess.run", side_effect=fake_run),
+            patch(
+                "subprocess.run",
+                return_value=MagicMock(
+                    returncode=23, stdout="", stderr="rsync: nope"
+                ),
+            ),
         ):
-            rc = cli_mod.cmd_deploy(args)
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(name="co1-rsync-fail", lustre_tree=None)
+            )
 
         assert rc == 1
         deploy_mock.assert_not_called()
@@ -1086,12 +1220,9 @@ class TestCmdDeployBundledSnapshot:
 
         tc_out = tmp_path / "tc-out"
         snap = self._make_snapshot(tc_out)
-
-        # Sanity: the snapshot dir really does NOT look like a lustre tree.
         assert not (snap / "configure.ac").exists()
-        assert not (snap / "lustre").exists()
 
-        vm = _make_vm(name="co1-snap-ok", ip="10.0.0.19")
+        vm = _make_vm(name="co1-snap-ok", ip="10.0.1.19")
         vm.os_id = "rocky9"
         vm.save()
 
@@ -1106,455 +1237,26 @@ class TestCmdDeployBundledSnapshot:
                 return_value=MagicMock(returncode=0, stdout="", stderr=""),
             ),
         ):
-            args = _deploy_args(vm="co1-snap-ok", lustre_tree=None)
-            rc = cli_mod.cmd_deploy(args)
-
-        # Should succeed (rc=0), not bail with "not a Lustre source tree".
-        assert rc == 0
-
-
-class TestCmdDeployVariantPropagation:
-    """Variant-aware staging path resolution."""
-
-    def test_mofed_variant_routes_to_mofed_staging(
-        self, tmp_sockets: Path, tmp_path: Path
-    ) -> None:
-        """A VM with variant=mofed-24 deploys from the mofed-24 staging dir."""
-        from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.lustre_build import staging_path
-
-        build_path = tmp_path / "lustre-release"
-        _setup_lustre_tree(build_path)
-        staging = staging_path(
-            build_path,
-            "rocky9",
-            arch="x86_64",
-            kernel="5.14-rhel9.7",
-            variant="mofed-24",
-        )
-        staging.mkdir(parents=True)
-        (staging / "ko2iblnd.ko").write_text("")
-        (staging / ".ltvm-staging-stamp").write_text("")
-        _mark_staging_fresh(staging, build_path, _stub_tc())
-
-        vm = _make_vm(name="co1-mofed", ip="10.0.0.20")
-        vm.os_id = "rocky9"
-        vm.variant = "mofed-24"
-        vm.save()
-
-        captured: dict = {}
-
-        def fake_deploy_to_vm(vm_arg, staging_arg, **kwargs):
-            captured["staging"] = Path(staging_arg)
-
-        args = _deploy_args(vm="co1-mofed", lustre_tree=str(build_path))
-        with (
-            patch.object(
-                cli_mod, "TargetConfig", return_value=_stub_tc()
-            ) as tc_mock,
-            patch(
-                "ltvm_pkg.cli.deploy_to_vm",
-                side_effect=fake_deploy_to_vm,
-            ),
-            patch(
-                "subprocess.run",
-                return_value=MagicMock(returncode=0, stdout=""),
-            ),
-        ):
-            rc = cli_mod.cmd_deploy(args)
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(name="co1-snap-ok", lustre_tree=None)
+            )
 
         assert rc == 0
-        # TargetConfig must be invoked with variant=mofed-24
-        kwargs = tc_mock.call_args.kwargs
-        assert kwargs.get("variant") == "mofed-24"
-        # Staging is the variant's own dir, a sibling of the base
-        # kernel dir rather than nested inside it.
-        assert captured["staging"].name == "5.14-rhel9.7__mofed-24"
-        assert captured["staging"].parent.name == "x86_64"
 
 
-class TestCmdDeployKernelMismatch:
-    """VM kernel vs target default kernel routing."""
-
-    def test_vm_kernel_overrides_target_default_for_staging(
-        self, tmp_sockets: Path, tmp_path: Path
-    ) -> None:
-        """A VM booted on a non-default kernel gets staging keyed to that kernel."""
-        from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.lustre_build import staging_path
-
-        build_path = tmp_path / "lustre-release"
-        _setup_lustre_tree(build_path)
-        # Note: target default is 5.14-rhel9.7; VM is on 5.14-rhel9.5.
-        staging = staging_path(
-            build_path,
-            "rocky9",
-            arch="x86_64",
-            kernel="5.14-rhel9.5",
-        )
-        staging.mkdir(parents=True)
-        (staging / "lustre.ko").write_text("")
-        (staging / ".ltvm-staging-stamp").write_text("")
-        _mark_staging_fresh(
-            staging, build_path, _stub_tc(), kernel="5.14-rhel9.5"
-        )
-
-        vm = _make_vm(name="co1-altkern", ip="10.0.0.21")
-        vm.os_id = "rocky9"
-        # vm.kernel is a path-like value -- the parent dir name is the
-        # kernel key. Mirror what create writes: <kerndir>/vmlinux.
-        vm.kernel = "/fake/artifacts/rocky9/x86_64/kernels/5.14-rhel9.5/vmlinux"
-        vm.save()
-
-        captured: dict = {}
-
-        def fake_deploy_to_vm(vm_arg, staging_arg, **kwargs):
-            captured["staging"] = Path(staging_arg)
-
-        args = _deploy_args(vm="co1-altkern", lustre_tree=str(build_path))
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
-            patch(
-                "ltvm_pkg.cli.deploy_to_vm",
-                side_effect=fake_deploy_to_vm,
-            ),
-            patch(
-                "subprocess.run",
-                return_value=MagicMock(returncode=0, stdout=""),
-            ),
-        ):
-            rc = cli_mod.cmd_deploy(args)
-
-        assert rc == 0
-        # Staging dir is keyed by the VM's kernel (rhel9.5), not the
-        # target default (rhel9.7).
-        assert captured["staging"].name == "5.14-rhel9.5"
-
-    def test_vm_kernel_forwarded_to_build_lustre_subprocess(
-        self, tmp_sockets: Path, tmp_path: Path
-    ) -> None:
-        """When build is invoked, --kernel <vm_kernel> is forwarded."""
-        from ltvm_pkg import cli as cli_mod
-
-        build_path = tmp_path / "lustre-release"
-        _setup_lustre_tree(build_path)
-        # No fresh staging -> build_lustre is invoked.
-
-        vm = _make_vm(name="co1-fwd", ip="10.0.0.22")
-        vm.os_id = "rocky9"
-        vm.kernel = "/fake/artifacts/rocky9/x86_64/kernels/5.14-rhel9.5/vmlinux"
-        vm.save()
-
-        run_calls: list = []
-
-        def fake_run(cmd, *args, **kwargs):
-            run_calls.append(cmd)
-            # Build returns 1 so we abort cleanly after capturing the cmd.
-            return MagicMock(returncode=1, stdout="", stderr="")
-
-        args = _deploy_args(vm="co1-fwd", lustre_tree=str(build_path))
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
-            patch.object(cli_mod, "_gate_lustre_validation"),
-            patch("subprocess.run", side_effect=fake_run),
-        ):
-            rc = cli_mod.cmd_deploy(args)
-
-        assert rc == 1
-        # find the ltvm build lustre subprocess
-        build_calls = [
-            c
-            for c in run_calls
-            if isinstance(c, list)
-            and len(c) >= 3
-            and c[0:3] == ["ltvm", "build", "lustre"]
-        ]
-        # Could also be sudo-prefixed
-        if not build_calls:
-            build_calls = [
-                c
-                for c in run_calls
-                if isinstance(c, list)
-                and "ltvm" in c
-                and "build" in c
-                and "lustre" in c
-            ]
-        assert build_calls, f"build subprocess not found in {run_calls}"
-        cmd = build_calls[0]
-        assert "--kernel" in cmd
-        idx = cmd.index("--kernel")
-        assert cmd[idx + 1] == "5.14-rhel9.5"
-        assert "--arch" in cmd
-        assert cmd[cmd.index("--arch") + 1] == "x86_64"
-
-
-class TestCmdDeployForceCompat:
-    """--force-compat silences refuse but not hard error in the deploy path."""
-
-    def test_force_compat_threaded_into_gate(
-        self, tmp_sockets: Path, tmp_path: Path
-    ) -> None:
-        """force_compat=True is forwarded to _gate_lustre_validation."""
-        from ltvm_pkg import cli as cli_mod
-
-        build_path = tmp_path / "lustre-release"
-        _setup_lustre_tree(build_path)
-
-        vm = _make_vm(name="co1-fc", ip="10.0.0.23")
-        vm.os_id = "rocky9"
-        vm.save()
-
-        gate_calls: list = []
-
-        def fake_gate(
-            tc, lustre_tree, *, force, kernel_build_tree=None, kernel=None
-        ):
-            gate_calls.append({"force": force, "kernel": kernel})
-
-        args = _deploy_args(
-            vm="co1-fc", lustre_tree=str(build_path), force_compat=True
-        )
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
-            patch.object(
-                cli_mod, "_gate_lustre_validation", side_effect=fake_gate
-            ),
-            # Build subprocess fails -> stops before deploy.
-            patch(
-                "subprocess.run",
-                return_value=MagicMock(returncode=1, stdout=""),
-            ),
-        ):
-            cli_mod.cmd_deploy(args)
-
-        assert gate_calls, "_gate_lustre_validation was not called"
-        assert gate_calls[0]["force"] is True
-        # The gate must be told which kernel is being deployed, not left
-        # to fall back to the target's default.
-        assert gate_calls[0]["kernel"] == "5.14-rhel9.7"
-
-    def test_force_compat_does_not_silence_hard_error(
-        self, tmp_sockets: Path, tmp_path: Path
-    ) -> None:
-        """--force-compat overrides 'refuse' but NOT 'error' (hard parse fail)."""
-        from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.lustre_compat import ValidationResult
-
-        build_path = tmp_path / "lustre-release"
-        _setup_lustre_tree(build_path)
-
-        vm = _make_vm(name="co1-fc-hard", ip="10.0.0.24")
-        vm.os_id = "rocky9"
-        vm.save()
-
-        hard_err = ValidationResult(
-            status="error",
-            mode=None,
-            kernel_version=None,
-            matched_in=None,
-            message="parse failure",
-        )
-
-        args = _deploy_args(
-            vm="co1-fc-hard", lustre_tree=str(build_path), force_compat=True
-        )
-        # _gate_lustre_validation raises SystemExit on "error" even with
-        # force.  cmd_deploy is dispatched directly (not through _vm_call)
-        # so SystemExit propagates -- this is intentional, since the
-        # caller is the top-level dispatch table which converts it to rc.
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
-            patch.object(cli_mod, "validate_target", return_value=hard_err),
-            patch("ltvm_pkg.cli.deploy_to_vm") as deploy_mock,
-        ):
-            with pytest.raises(SystemExit) as exc:
-                cli_mod.cmd_deploy(args)
-
-        assert exc.value.code == 1
-        deploy_mock.assert_not_called()
-
-
-class TestCmdDeployMountAndKver:
-    """--mount triggers lustre_mount_vm; staging meta drives kver recording."""
-
-    def test_mount_invokes_lustre_mount_vm(
-        self, tmp_sockets: Path, tmp_path: Path
-    ) -> None:
-        from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.lustre_build import staging_path
-
-        build_path = tmp_path / "lustre-release"
-        _setup_lustre_tree(build_path)
-        staging = staging_path(
-            build_path, "rocky9", arch="x86_64", kernel="5.14-rhel9.7"
-        )
-        staging.mkdir(parents=True)
-        (staging / "lustre.ko").write_text("")
-        (staging / ".ltvm-staging-stamp").write_text("")
-        _mark_staging_fresh(staging, build_path, _stub_tc())
-
-        vm = _make_vm(name="co1-mount", ip="10.0.0.25")
-        vm.os_id = "rocky9"
-        vm.save()
-
-        args = _deploy_args(
-            vm="co1-mount", lustre_tree=str(build_path), mount=True
-        )
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
-            patch("ltvm_pkg.cli.deploy_to_vm"),
-            patch(
-                "subprocess.run",
-                return_value=MagicMock(returncode=0, stdout=""),
-            ),
-            patch("ltvm_pkg.cli.lustre_mount_vm", return_value=0) as mount_mock,
-        ):
-            rc = cli_mod.cmd_deploy(args)
-
-        assert rc == 0
-        # quiet= is how --json keeps llmount's stdout out of the JSON
-        # document; this is the human path, so it is False.
-        mount_mock.assert_called_once_with("co1-mount", "rhel", quiet=False)
-
-    def test_json_emits_an_envelope_on_success(
-        self, tmp_sockets: Path, tmp_path: Path, capsys: pytest.CaptureFixture
-    ) -> None:
-        """Every print in cmd_deploy is `if not use_json`-guarded and
-        there was no final _output, so `deploy-lustre --json` wrote
-        nothing at all to stdout on success -- an empty document for
-        exactly the consumers --json exists for."""
-        import json as _json
-
-        from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.lustre_build import staging_path
-
-        build_path = tmp_path / "lustre-release"
-        _setup_lustre_tree(build_path)
-        staging = staging_path(
-            build_path, "rocky9", arch="x86_64", kernel="5.14-rhel9.7"
-        )
-        staging.mkdir(parents=True)
-        (staging / "lustre.ko").write_text("")
-        (staging / ".ltvm-staging-stamp").write_text("")
-        _mark_staging_fresh(staging, build_path, _stub_tc())
-
-        vm = _make_vm(name="co1-json", ip="10.0.0.26")
-        vm.os_id = "rocky9"
-        vm.save()
-
-        args = _deploy_args(
-            vm="co1-json", lustre_tree=str(build_path), json=True
-        )
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
-            patch("ltvm_pkg.cli.deploy_to_vm"),
-            patch(
-                "subprocess.run",
-                return_value=MagicMock(returncode=0, stdout=""),
-            ),
-        ):
-            rc = cli_mod.cmd_deploy(args)
-
-        assert rc == 0
-        payload = _json.loads(capsys.readouterr().out)
-        assert payload["action"] == "deploy-lustre"
-        assert payload["vm"] == "co1-json"
-        assert payload["target"] == "rocky9"
-        assert payload["mounted"] is False
-        assert payload["staging"] == str(staging)
-
-    def test_json_mount_keeps_llmount_output_off_stdout(
-        self, tmp_sockets: Path, tmp_path: Path
-    ) -> None:
-        """llmount's own stdout was printed unconditionally, landing in
-        the middle of the JSON document under --mount --json."""
-        from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.lustre_build import staging_path
-
-        build_path = tmp_path / "lustre-release"
-        _setup_lustre_tree(build_path)
-        staging = staging_path(
-            build_path, "rocky9", arch="x86_64", kernel="5.14-rhel9.7"
-        )
-        staging.mkdir(parents=True)
-        (staging / "lustre.ko").write_text("")
-        (staging / ".ltvm-staging-stamp").write_text("")
-        _mark_staging_fresh(staging, build_path, _stub_tc())
-
-        vm = _make_vm(name="co1-jmount", ip="10.0.0.27")
-        vm.os_id = "rocky9"
-        vm.save()
-
-        args = _deploy_args(
-            vm="co1-jmount",
-            lustre_tree=str(build_path),
-            mount=True,
-            json=True,
-        )
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
-            patch("ltvm_pkg.cli.deploy_to_vm"),
-            patch(
-                "subprocess.run",
-                return_value=MagicMock(returncode=0, stdout=""),
-            ),
-            patch("ltvm_pkg.cli.lustre_mount_vm", return_value=0) as mount_mock,
-        ):
-            rc = cli_mod.cmd_deploy(args)
-
-        assert rc == 0
-        mount_mock.assert_called_once_with("co1-jmount", "rhel", quiet=True)
-
-    def test_mount_failure_propagates(
-        self, tmp_sockets: Path, tmp_path: Path
-    ) -> None:
-        from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.lustre_build import staging_path
-
-        build_path = tmp_path / "lustre-release"
-        _setup_lustre_tree(build_path)
-        staging = staging_path(
-            build_path, "rocky9", arch="x86_64", kernel="5.14-rhel9.7"
-        )
-        staging.mkdir(parents=True)
-        (staging / "lustre.ko").write_text("")
-        (staging / ".ltvm-staging-stamp").write_text("")
-        _mark_staging_fresh(staging, build_path, _stub_tc())
-
-        vm = _make_vm(name="co1-mount-fail", ip="10.0.0.26")
-        vm.os_id = "rocky9"
-        vm.save()
-
-        args = _deploy_args(
-            vm="co1-mount-fail", lustre_tree=str(build_path), mount=True
-        )
-        with (
-            patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
-            patch("ltvm_pkg.cli.deploy_to_vm"),
-            patch(
-                "subprocess.run",
-                return_value=MagicMock(returncode=0, stdout=""),
-            ),
-            patch("ltvm_pkg.cli.lustre_mount_vm", return_value=7),
-        ):
-            rc = cli_mod.cmd_deploy(args)
-        assert rc == 7
+class TestCmdDeployKverRecording:
+    """Staging meta drives the recorded kver; bookkeeping never fails a
+    deploy that already happened."""
 
     def test_kver_from_staging_meta_recorded(
         self, tmp_sockets: Path, tmp_path: Path
     ) -> None:
-        """The kver from .ltvm-staging-meta.json is recorded on the VM."""
         from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.lustre_build import staging_path
+        from ltvm_pkg.vm_state import VMInfo as _VMI
 
         build_path = tmp_path / "lustre-release"
         _setup_lustre_tree(build_path)
-        staging = staging_path(
-            build_path, "rocky9", arch="x86_64", kernel="5.14-rhel9.7"
-        )
-        staging.mkdir(parents=True)
-        (staging / "lustre.ko").write_text("")
-        (staging / ".ltvm-staging-stamp").write_text("")
+        staging = _seed_staging(build_path)
         (staging / ".ltvm-staging-meta.json").write_text(
             '{"kernel_version": "5.14.0-from-staging"}'
         )
@@ -1562,30 +1264,25 @@ class TestCmdDeployMountAndKver:
         # freshness fields into whatever meta is already there.
         _mark_staging_fresh(staging, build_path, _stub_tc())
 
-        vm = _make_vm(name="co1-kver", ip="10.0.0.27")
+        vm = _make_vm(name="co1-kver", ip="10.0.1.20")
         vm.os_id = "rocky9"
         vm.save()
 
-        args = _deploy_args(vm="co1-kver", lustre_tree=str(build_path))
         update_calls: list = []
-        from ltvm_pkg.vm_state import VMInfo as _VMI
-
         orig = _VMI.update_deploy
 
-        def capture(self, epoch, build_path, kver):
-            update_calls.append({"kver": kver, "build_path": build_path})
-            return orig(self, epoch, build_path, kver)
+        def capture(self, epoch, build_path_arg, kver):
+            update_calls.append({"kver": kver})
+            return orig(self, epoch, build_path_arg, kver)
 
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
             patch("ltvm_pkg.cli.deploy_to_vm"),
-            patch(
-                "subprocess.run",
-                return_value=MagicMock(returncode=0, stdout=""),
-            ),
             patch.object(_VMI, "update_deploy", capture),
         ):
-            cli_mod.cmd_deploy(args)
+            cli_mod.cmd_deploy(
+                _deploy_args(name="co1-kver", lustre_tree=str(build_path))
+            )
 
         assert update_calls
         assert update_calls[0]["kver"] == "5.14.0-from-staging"
@@ -1593,39 +1290,27 @@ class TestCmdDeployMountAndKver:
     def test_update_deploy_permissionerror_warns_not_fail(
         self, tmp_sockets: Path, tmp_path: Path
     ) -> None:
-        """PermissionError on metadata save is a warning, not failure."""
         from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.lustre_build import staging_path
         from ltvm_pkg.vm_state import VMInfo as _VMI
 
         build_path = tmp_path / "lustre-release"
         _setup_lustre_tree(build_path)
-        staging = staging_path(
-            build_path, "rocky9", arch="x86_64", kernel="5.14-rhel9.7"
-        )
-        staging.mkdir(parents=True)
-        (staging / "lustre.ko").write_text("")
-        (staging / ".ltvm-staging-stamp").write_text("")
-        _mark_staging_fresh(staging, build_path, _stub_tc())
+        _seed_staging(build_path)
 
-        vm = _make_vm(name="co1-perm", ip="10.0.0.28")
+        vm = _make_vm(name="co1-perm", ip="10.0.1.21")
         vm.os_id = "rocky9"
         vm.save()
 
-        args = _deploy_args(vm="co1-perm", lustre_tree=str(build_path))
         with (
             patch.object(cli_mod, "TargetConfig", return_value=_stub_tc()),
             patch("ltvm_pkg.cli.deploy_to_vm"),
-            patch(
-                "subprocess.run",
-                return_value=MagicMock(returncode=0, stdout=""),
-            ),
             patch.object(
                 _VMI, "update_deploy", side_effect=PermissionError("nope")
             ),
         ):
-            rc = cli_mod.cmd_deploy(args)
-        # Still successful: deploy itself worked, only the bookkeeping failed.
+            rc = cli_mod.cmd_deploy(
+                _deploy_args(name="co1-perm", lustre_tree=str(build_path))
+            )
         assert rc == 0
 
 
@@ -1724,6 +1409,65 @@ class TestCmdLlmount:
             )
             rc = cli_mod.cmd_llmount(args)
         assert rc == 0
+
+
+class TestCmdDeployVariantPropagation:
+    """Variant-aware staging path resolution."""
+
+    def test_mofed_variant_routes_to_mofed_staging(
+        self, tmp_sockets: Path, tmp_path: Path
+    ) -> None:
+        """A VM with variant=mofed-24 deploys from the mofed-24 staging dir."""
+        from ltvm_pkg import cli as cli_mod
+        from ltvm_pkg.lustre_build import staging_path
+
+        build_path = tmp_path / "lustre-release"
+        _setup_lustre_tree(build_path)
+        staging = staging_path(
+            build_path,
+            "rocky9",
+            arch="x86_64",
+            kernel="5.14-rhel9.7",
+            variant="mofed-24",
+        )
+        staging.mkdir(parents=True)
+        (staging / "ko2iblnd.ko").write_text("")
+        (staging / ".ltvm-staging-stamp").write_text("")
+
+        vm = _make_vm(name="co1-mofed", ip="10.0.0.20")
+        vm.os_id = "rocky9"
+        vm.variant = "mofed-24"
+        vm.save()
+
+        captured: dict = {}
+
+        def fake_deploy_to_vm(vm_arg, staging_arg, **kwargs):
+            captured["staging"] = Path(staging_arg)
+
+        args = _deploy_args(name="co1-mofed", lustre_tree=str(build_path))
+        with (
+            patch.object(
+                cli_mod, "TargetConfig", return_value=_stub_tc()
+            ) as tc_mock,
+            patch(
+                "ltvm_pkg.cli.deploy_to_vm",
+                side_effect=fake_deploy_to_vm,
+            ),
+            patch(
+                "subprocess.run",
+                return_value=MagicMock(returncode=0, stdout=""),
+            ),
+        ):
+            rc = cli_mod.cmd_deploy(args)
+
+        assert rc == 0
+        # TargetConfig must be invoked with variant=mofed-24
+        kwargs = tc_mock.call_args.kwargs
+        assert kwargs.get("variant") == "mofed-24"
+        # Staging is the variant's own dir, a sibling of the base
+        # kernel dir rather than nested inside it.
+        assert captured["staging"].name == "5.14-rhel9.7__mofed-24"
+        assert captured["staging"].parent.name == "x86_64"
 
 
 class TestVerifyDeployedModules:

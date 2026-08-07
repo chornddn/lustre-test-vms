@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import sys
 from typing import Any
 
 from ltvm_pkg.cli.util import (
@@ -197,23 +198,22 @@ def cmd_cluster_stop(args: argparse.Namespace) -> int:
 
 
 def cmd_cluster_deploy(args: argparse.Namespace) -> int:
-    """Build and deploy Lustre to every node in a cluster."""
-    use_json = args.json
-    return _call(
-        _handler("cmd_cluster_deploy"),
-        _qemu_ns(
-            name=args.name,
-            lustre_source=args.lustre_source,
-            mount=args.mount,
-            server_only=args.server_only,
-            force_compat=args.force_compat,
-            zfs=args.zfs,
-            zfs_version=args.zfs_version,
-            fstype=args.fstype,
-            cfg_dir=args.cfg_dir,
-        ),
-        use_json,
+    """Retired in favour of the top-level ``deploy``.
+
+    Kept so an old command line gets the new spelling rather than an
+    argparse "invalid choice" error.
+    """
+    rest = list(getattr(args, "rest", None) or [])
+    name = next((a for a in rest if not a.startswith("-")), "<cluster>")
+    print(
+        f"cluster deploy has been replaced by deploy:\n"
+        f"  ltvm build lustre --for-cluster {name} --lustre-tree PATH "
+        f'[--configure="..."]\n'
+        f"  ltvm deploy {name} --lustre-tree PATH\n"
+        f"  ltvm cluster llmount {name}",
+        file=sys.stderr,
     )
+    return EXIT_ERROR
 
 
 def cmd_cluster_llmount(args: argparse.Namespace) -> int:

@@ -251,7 +251,9 @@ class TestClusterActionsDispatch:
             ["cluster", action, *_CLUSTER_ARGS.get(action, [])]
         )
 
-    @pytest.mark.parametrize("action", _cluster_parser_choices())
+    @pytest.mark.parametrize(
+        "action", [a for a in _cluster_parser_choices() if a != "deploy"]
+    )
     def test_cluster_action_reaches_a_handler(self, action: str) -> None:
         args = self._make_args(action)
         assert getattr(args, "func", None) is not None
@@ -280,6 +282,16 @@ class TestClusterActionsDispatch:
             f"cluster action '{action}' did not dispatch cleanly "
             f"(returned {result})"
         )
+
+    def test_deploy_is_accepted_only_to_name_its_replacement(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """`deploy` stays a valid choice so the retirement message can
+        print instead of an argparse 'invalid choice' error."""
+        assert "deploy" in _cluster_parser_choices()
+        args = self._make_args("deploy")
+        assert args.func(args) == 1
+        assert "ltvm deploy co1" in capsys.readouterr().err
 
 
 # ---------------------------------------------------------------------------

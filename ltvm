@@ -271,6 +271,24 @@ log = logging.getLogger("ltvm")
 _TARGET_FLAG_DEST = "_target_flag"
 
 
+def _retired_deploy_lustre(args: argparse.Namespace) -> int:
+    """Point `deploy-lustre` at its replacement.
+
+    Kept as an explicit branch so an old command line gets the new
+    spelling rather than an argparse "invalid choice" error.
+    """
+    rest = [a for a in getattr(args, "rest", []) if not a.startswith("-")]
+    name = rest[0] if rest else "<vm>"
+    print(
+        f"deploy-lustre has been replaced by deploy:\n"
+        f"  ltvm build lustre --for-cluster <cluster> --lustre-tree PATH\n"
+        f"  ltvm deploy {name} --lustre-tree PATH\n"
+        f"  ltvm llmount {name}",
+        file=sys.stderr,
+    )
+    return EXIT_ERROR
+
+
 def _add_target_arg(
     subparser: argparse.ArgumentParser,
     *,
@@ -1660,27 +1678,23 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sp.set_defaults(func=cmd_prune)
 
-    # -- deploy-lustre --
+    # -- deploy --
+    #
+    # No build options here.  Target, kernel and arch come from the VM or
+    # cluster being deployed to, so a deploy cannot contradict what the
+    # nodes actually run, and `ltvm build lustre` stays the only home for
+    # --configure / --kernel / --arch / --force-compat.
     sp = sub.add_parser(
-        "deploy-lustre",
-        parents=[common, kernel_arg, force_compat_arg],
-        help="Deploy Lustre to a VM",
+        "deploy",
+        parents=[common],
+        help="Deploy built Lustre staging to a VM or a cluster",
     )
-    _dep_vm = sp.add_argument("vm", help="VM name")
-    _dep_vm.completer = complete_vms  # type: ignore[attr-defined]
-    # Optional positional target; also accepts --target.
-    _dep_target = sp.add_argument(
-        "target",
-        nargs="?",
-        default=None,
-        help="OS target for kernel modules (default: auto-detect from VM); "
-        "also accepts --target",
-    )
-    _dep_target.completer = complete_targets  # type: ignore[attr-defined]
+    _dep_name = sp.add_argument("name", help="VM or cluster name")
+    _dep_name.completer = complete_vms  # type: ignore[attr-defined]
     sp.add_argument(
         "--lustre-tree",
         default=None,
-        help="Path to Lustre source tree "
+        help="Path to the Lustre source tree holding the staging "
         "(default: bundled fetch output, else cwd)",
     )
     sp.add_argument(
@@ -1688,9 +1702,6 @@ def build_parser() -> argparse.ArgumentParser:
         dest="lustre_tree",
         default=None,
         help="Alias for --lustre-tree (matches `cluster deploy`)",
-    )
-    sp.add_argument(
-        "--mount", action="store_true", help="Mount filesystem after deploy"
     )
     sp.add_argument(
         "--userspace-only",
@@ -1725,36 +1736,29 @@ def build_parser() -> argparse.ArgumentParser:
         help="Put the MDT on a ram device too (default: leave it alone)",
     )
     sp.add_argument(
-        "--zfs",
-        action="store_true",
-        default=False,
-        help="Build Lustre --with-zfs and install ZFS into the VM "
-        "alongside it.  Implies --fstype zfs unless --fstype says "
-        "otherwise.",
-    )
-    sp.add_argument(
-        "--zfs-version",
-        default=None,
-        metavar="VER",
-        help="OpenZFS release to use (default: the target's zfs.version "
-        "in targets.yaml).  Implies --zfs.",
-    )
-    sp.add_argument(
         "--fstype",
         choices=["ldiskfs", "zfs"],
         default=None,
-        help="Pin FSTYPE in the VM's cfg/local.sh, which is what "
-        "llmount.sh and auster read (default: leave the file's "
-        "existing setting alone)",
+        help="Pin FSTYPE in cfg/local.sh, which is what llmount.sh and "
+        "auster read.  zfs needs staging built with `build lustre --zfs`.",
     )
-    _dep_tflag = sp.add_argument(
-        "--target",
-        dest=_TARGET_FLAG_DEST,
+    sp.add_argument(
+        "--cfg-dir",
         default=None,
-        help=argparse.SUPPRESS,
+        metavar="DIR",
+        help="Distribute every *.sh auster profile in DIR to the nodes",
     )
-    _dep_tflag.completer = complete_targets  # type: ignore[attr-defined]
     sp.set_defaults(func=cmd_deploy)
+
+    # -- deploy-lustre (retired) --
+    sp = sub.add_parser(
+        "deploy-lustre",
+        parents=[common],
+        help=argparse.SUPPRESS,
+        description=argparse.SUPPRESS,
+    )
+    sp.add_argument("rest", nargs=argparse.REMAINDER)
+    sp.set_defaults(func=_retired_deploy_lustre)
 
     # -- make-install / make-uninstall / make-reinstall --
     # These run ON a machine ltvm built (an ltvm VM, or a cloud node
@@ -2097,64 +2101,16 @@ def build_parser() -> argparse.ArgumentParser:
     _cstopp_names.completer = complete_clusters  # type: ignore[attr-defined]
     cstopp.set_defaults(func=cmd_cluster_stop)
 
+    # Retired: accepted only so `cluster deploy` can name its replacement
+    # (the top-level `deploy`, which takes a VM or a cluster and never
+    # builds) instead of raising an argparse choices error.
     cdpl = cluster_sub.add_parser(
         "deploy",
         parents=[common],
-        help="Build and deploy Lustre to every node in a cluster",
+        help=argparse.SUPPRESS,
+        description=argparse.SUPPRESS,
     )
-    _cdpl_name = cdpl.add_argument("name", help="Cluster name")
-    _cdpl_name.completer = complete_clusters  # type: ignore[attr-defined]
-    _cdpl_build = cdpl.add_argument(
-        "--build",
-        "--lustre-tree",
-        dest="lustre_source",
-        default=".",
-        help="Lustre source tree to build and deploy (default: cwd)",
-    )
-    _cdpl_build.completer = complete_directories  # type: ignore[attr-defined]
-    _cdpl_cfg = cdpl.add_argument(
-        "--cfg-dir",
-        dest="cfg_dir",
-        default=None,
-        metavar="DIR",
-        help="Extra test-config profiles (*.sh) to copy into every "
-        "node's cfg/ alongside the generated local.sh",
-    )
-    _cdpl_cfg.completer = complete_directories  # type: ignore[attr-defined]
-    cdpl.add_argument(
-        "--mount", action="store_true", help="Mount Lustre after deploying"
-    )
-    cdpl.add_argument(
-        "--server-only",
-        dest="server_only",
-        action="store_true",
-        help="Deploy to server nodes only, skipping clients",
-    )
-    cdpl.add_argument(
-        "--force-compat",
-        dest="force_compat",
-        action="store_true",
-        help="Override a Lustre-tree compatibility refusal (not errors)",
-    )
-    cdpl.add_argument(
-        "--zfs",
-        action="store_true",
-        help="Ship ZFS and run the cluster on it (implies --fstype zfs)",
-    )
-    _cdpl_zfsv = cdpl.add_argument(
-        "--zfs-version",
-        dest="zfs_version",
-        default=None,
-        metavar="VER",
-        help="OpenZFS release to use (implies --zfs)",
-    )
-    _cdpl_zfsv.completer = complete_zfs_versions  # type: ignore[attr-defined]
-    cdpl.add_argument(
-        "--fstype",
-        choices=["ldiskfs", "zfs"],
-        default=None,
-        help="OSD backend written into the cluster's cfg/local.sh",
-    )
+    cdpl.add_argument("rest", nargs=argparse.REMAINDER)
     cdpl.set_defaults(func=cmd_cluster_deploy)
 
     cllm = cluster_sub.add_parser(

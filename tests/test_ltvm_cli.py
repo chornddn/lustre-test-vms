@@ -114,9 +114,27 @@ class TestBuildParser:
 
     def test_deploy_subcommand(self) -> None:
         p = ltvm.build_parser()
-        args = p.parse_args(["deploy-lustre", "myvm", "--mount"])
-        assert args.vm == "myvm"
-        assert args.mount is True
+        args = p.parse_args(["deploy", "myvm", "--lustre-tree", "/t"])
+        assert args.name == "myvm"
+        assert args.lustre_tree == "/t"
+
+    def test_deploy_rejects_build_options(self) -> None:
+        """Build flags live on `build lustre`; deploy derives its inputs."""
+        p = ltvm.build_parser()
+        for flag in ("--kernel", "--target"):
+            with pytest.raises(SystemExit):
+                p.parse_args(["deploy", "myvm", flag, "x"])
+        for flag in ("--mount", "--force-compat"):
+            with pytest.raises(SystemExit):
+                p.parse_args(["deploy", "myvm", flag])
+
+    def test_retired_deploy_spellings_name_the_new_one(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        p = ltvm.build_parser()
+        args = p.parse_args(["deploy-lustre", "myvm"])
+        assert args.func(args) != 0
+        assert "ltvm deploy myvm" in capsys.readouterr().err
 
     @pytest.mark.parametrize("flag", ["--owner", "--owner-id"])
     def test_create_owner_flag_aliases(self, flag: str) -> None:
@@ -1242,243 +1260,6 @@ class TestValidationGating:
         assert not rl.called
         assert not upl.called
 
-    def test_deploy_refuse_aborts(
-        self,
-        capsys: pytest.CaptureFixture[str],
-        tmp_targets: Path,
-        tmp_path: Path,
-    ) -> None:
-        """cmd_deploy gate fires when --build triggers a rebuild."""
-        import argparse as ap
-
-        from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.vm_state import VMInfo
-
-        sockets_dir = tmp_path / "sockets"
-        sockets_dir.mkdir()
-        build_path = tmp_path / "lustre-release"
-        (build_path / "lustre").mkdir(parents=True)
-        (build_path / "lnet").mkdir()
-        (build_path / "configure.ac").write_text("")
-
-        tc = self._tc(tmp_targets)
-
-        with patch("ltvm_pkg.vm_state.SOCKETS", sockets_dir):
-            vm = VMInfo(
-                name="co1-gate-test",
-                ip="192.168.100.51",
-                os_id="rocky9",
-            )
-            vm.save()
-
-            with (
-                patch("ltvm_pkg.vm_state.VMInfo.load", return_value=vm),
-                patch.object(cli_mod, "TargetConfig", return_value=tc),
-                patch.object(
-                    cli_mod,
-                    "validate_target",
-                    return_value=self._vr("refuse", "nope"),
-                ),
-                patch("subprocess.run") as run_mock,
-            ):
-                args = ap.Namespace(
-                    vm="co1-gate-test",
-                    lustre_tree=str(build_path),
-                    mount=False,
-                    target=None,
-                    kernel=None,
-                    json=False,
-                    userspace_only=False,
-                    force_compat=False,
-                )
-                with pytest.raises(SystemExit) as exc:
-                    cli_mod.cmd_deploy(args)
-
-        assert exc.value.code == EXIT_ERROR
-        # subprocess.run must NOT have been called to spawn build-lustre.
-        calls = [
-            c
-            for c in run_mock.call_args_list
-            if c.args
-            and isinstance(c.args[0], list)
-            and len(c.args[0]) > 1
-            and len(c.args[0]) > 2
-            and c.args[0][1] == "build"
-            and c.args[0][2] == "lustre"
-        ]
-        assert calls == []
-
-
-# ---------------------------------------------------------------------------
-# cmd_deploy: build gating
-# ---------------------------------------------------------------------------
-
-
-class TestCmdDeployBuildGating:
-    """cmd_deploy must abort when build-lustre fails or staging has no .ko files."""
-
-    def test_build_failure_returns_error(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """When build-lustre returns non-zero, cmd_deploy returns EXIT_ERROR."""
-        from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.vm_state import VMInfo
-
-        sockets_dir = tmp_path / "sockets"
-        sockets_dir.mkdir()
-        build_path = tmp_path / "lustre-release"
-        build_path.mkdir()
-
-        with patch("ltvm_pkg.vm_state.SOCKETS", sockets_dir):
-            vm = VMInfo(
-                name="co1-deploy-test",
-                ip="192.168.100.50",
-                os_id="rocky9",
-            )
-            vm.save()
-
-            def _load_vm(name: str) -> VMInfo:
-                return VMInfo.load(name)
-
-            fail_result = MagicMock()
-            fail_result.returncode = 1
-
-            with (
-                patch("ltvm_pkg.vm_state.VMInfo.load", return_value=vm),
-                patch("ltvm_pkg.cli.TargetConfig") as mock_tc,
-                patch("subprocess.run", return_value=fail_result),
-            ):
-                mock_tc.return_value.os_family = "rhel"
-                mock_tc.return_value.resolve_kernel.return_value = (
-                    "5.14-rhel9.7"
-                )
-
-                args = argparse.Namespace(
-                    vm="co1-deploy-test",
-                    lustre_tree=str(build_path),
-                    mount=False,
-                    target=None,
-                    kernel=None,
-                    json=False,
-                )
-                rc = cli_mod.cmd_deploy(args)
-
-        assert rc == EXIT_ERROR
-
-    def test_build_success_no_ko_files_returns_error(
-        self, tmp_path: Path, capsys: pytest.CaptureFixture[str]
-    ) -> None:
-        """When build succeeds but staging has no .ko files, cmd_deploy errors."""
-        from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.vm_state import VMInfo
-
-        sockets_dir = tmp_path / "sockets"
-        sockets_dir.mkdir()
-        build_path = tmp_path / "lustre-release"
-        build_path.mkdir()
-
-        # Create staging dir (in-tree, the new layout) with NO .ko files.
-        # build_path is the lustre tree; staging lives at
-        # <build_path>/.ltvm-staging/<target>/<arch>/.
-        staging = build_path / ".ltvm-staging" / "rocky9" / "x86_64"
-        staging.mkdir(parents=True)
-        (staging / "some-file.txt").write_text("not a kernel module")
-
-        with patch("ltvm_pkg.vm_state.SOCKETS", sockets_dir):
-            vm = VMInfo(
-                name="co1-deploy-test",
-                ip="192.168.100.50",
-                os_id="rocky9",
-            )
-            vm.save()
-
-            ok_result = MagicMock()
-            ok_result.returncode = 0
-
-            with (
-                patch("ltvm_pkg.vm_state.VMInfo.load", return_value=vm),
-                patch("ltvm_pkg.cli.TargetConfig") as mock_tc,
-                patch("subprocess.run", return_value=ok_result),
-            ):
-                mock_tc.return_value.os_family = "rhel"
-                mock_tc.return_value.resolve_kernel.return_value = (
-                    "5.14-rhel9.7"
-                )
-
-                args = argparse.Namespace(
-                    vm="co1-deploy-test",
-                    lustre_tree=str(build_path),
-                    mount=False,
-                    target=None,
-                    kernel=None,
-                    json=False,
-                )
-                rc = cli_mod.cmd_deploy(args)
-
-        assert rc == EXIT_ERROR
-
-    def test_build_failure_does_not_reach_tar_ssh(self, tmp_path: Path) -> None:
-        """When build fails, the tar/ssh deploy step is never executed."""
-        from ltvm_pkg import cli as cli_mod
-        from ltvm_pkg.vm_state import VMInfo
-
-        sockets_dir = tmp_path / "sockets"
-        sockets_dir.mkdir()
-        build_path = tmp_path / "lustre-release"
-        build_path.mkdir()
-
-        with patch("ltvm_pkg.vm_state.SOCKETS", sockets_dir):
-            vm = VMInfo(
-                name="co1-deploy-test",
-                ip="192.168.100.50",
-                os_id="rocky9",
-            )
-            vm.save()
-
-            fail_result = MagicMock()
-            fail_result.returncode = 1
-            subprocess_calls: list = []
-
-            def _track_run(cmd, *args, **kwargs):
-                subprocess_calls.append(cmd)
-                return fail_result
-
-            with (
-                patch("ltvm_pkg.vm_state.VMInfo.load", return_value=vm),
-                patch("ltvm_pkg.cli.TargetConfig") as mock_tc,
-                patch("subprocess.run", side_effect=_track_run),
-            ):
-                mock_tc.return_value.os_family = "rhel"
-                mock_tc.return_value.resolve_kernel.return_value = (
-                    "5.14-rhel9.7"
-                )
-
-                args = argparse.Namespace(
-                    vm="co1-deploy-test",
-                    lustre_tree=str(build_path),
-                    mount=False,
-                    target=None,
-                    kernel=None,
-                    json=False,
-                )
-                cli_mod.cmd_deploy(args)
-
-        # Only the build command should have been called (via subprocess.run).
-        # The tar/ssh deploy uses subprocess.run with ["bash", "-c", tar_cmd].
-        bash_calls = [
-            c
-            for c in subprocess_calls
-            if isinstance(c, list) and c[:1] == ["bash"]
-        ]
-        assert bash_calls == [], (
-            "tar/ssh deploy must not be called after build failure"
-        )
-
-
-# ---------------------------------------------------------------------------
-# --kernel argparse propagation for build-image and build-all
-# ---------------------------------------------------------------------------
-
 
 class TestKernelArgPropagation:
     """Verify --kernel is forwarded to the underlying build functions."""
@@ -1827,14 +1608,14 @@ class TestNoRootRequiredForReadCommands:
             patch("ltvm_pkg.cli._require_root") as mock_rr,
         ):
             args = argparse.Namespace(
-                vm="co1-dr-test",
+                name="co1-dr-test",
                 lustre_tree=str(build_path),
-                mount=False,
-                target=None,
-                kernel=None,
                 json=False,
                 userspace_only=False,
-                force_compat=False,
+                cfg_dir=None,
+                arch=None,
+                as_owner=None,
+                force=False,
             )
             cli_mod.cmd_deploy(args)
 

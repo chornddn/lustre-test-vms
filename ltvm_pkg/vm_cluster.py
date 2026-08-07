@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from . import vm_claim
+from .lustre_build import read_staging_meta, staging_status
 from .qemu_run import die, is_running, run
 from .vm_net import SSH_OPTS, run_ssh, sshpass_ssh_argv
 from .vm_owner import resolve_owner_id
@@ -934,7 +935,7 @@ def cluster_build_params(cluster: ClusterInfo) -> ClusterBuildParams:
 def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     cluster = ClusterInfo.load(args.name)
     nodes = cluster.get_nodes()
-    src = Path(args.lustre_source).expanduser().resolve()
+    src = Path(args.lustre_tree).expanduser().resolve()
     _validate_lustre_source(src)
     build = str(src)
     vm_claim.require_all([n.name for n in nodes], "deploy to")
@@ -945,21 +946,13 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
         die(str(e))
 
     # Read the profiles up front: a typo in --cfg-dir should not cost a
-    # full Lustre build before it is reported.
+    # whole deploy before it is reported.
     cfg_dir_arg = getattr(args, "cfg_dir", None)
     cfg_profiles: list[tuple[str, str]] = []
     if cfg_dir_arg:
         cfg_profiles = _load_cfg_profiles(
             Path(cfg_dir_arg).expanduser().resolve()
         )
-
-    # --server-only only affects the llmount.sh invocation, which only
-    # runs when --mount is set.  Reject the combination instead of
-    # silently dropping the flag.
-    if getattr(args, "server_only", False) and not getattr(
-        args, "mount", False
-    ):
-        die("--server-only requires --mount")
 
     params = cluster_build_params(cluster)
     os_family = params.os_family
@@ -968,79 +961,45 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     arch = params.arch
 
     print(f"=== Deploying to cluster '{cluster.name}' ===")
-    print(f"    Build: {build}")
+    print(f"    Lustre tree: {build}")
 
-    # Build Lustre from source before deploying.  All nodes share the
-    # same target+kernel+arch, so we run build-lustre once and every
-    # node rsyncs from the same staging dir.
-    # --zfs-version implies --zfs; --fstype zfs implies both, since
-    # the cluster cannot mount a ZFS target without ZFS on its nodes.
-    # And --zfs on a deploy means "run on ZFS" unless --fstype says
-    # otherwise -- same rule as single-node deploy-lustre.
-    fstype = getattr(args, "fstype", None)
-    zfs_version_arg = getattr(args, "zfs_version", None)
-    want_zfs = (
-        bool(getattr(args, "zfs", False))
-        or bool(zfs_version_arg)
-        or fstype == "zfs"
+    # Deploy never builds.  Build options live on `build lustre` alone,
+    # so a deploy that shelled out to it had to mirror every one of them
+    # by hand and silently dropped --configure -- which shipped a cluster
+    # without ko2iblnd and reported success.
+    if kernel_name is None:
+        die(
+            f"cluster {cluster.name!r}: cannot resolve the node kernel; "
+            f"recreate the cluster"
+        )
+    status = staging_status(
+        build, target, arch=arch, kernel=kernel_name,
+        variant=params.variant,
     )
-    if want_zfs and fstype is None:
-        fstype = "zfs"
-    if fstype is None:
-        fstype = "ldiskfs"
+    if not status.usable:
+        die(
+            f"no usable Lustre staging for {cluster.name} "
+            f"({target}/{arch}/{kernel_name}): {status.reason}\n"
+            f"  looked in: {status.path}\n"
+            f"  build it first:\n"
+            f"    {status.build_command(cluster=cluster.name)}"
+        )
 
-    build_cmd = ["ltvm", "build", "lustre", target, "--lustre-tree", build]
-    if kernel_name:
-        build_cmd += ["--kernel", kernel_name]
-    # Forward --arch unconditionally.  Comparing against the literal
-    # "x86_64" is wrong for a target whose default arch is something
-    # else -- see the matching cmd_deploy comment.
-    build_cmd += ["--arch", arch]
-    # Each node deploys from its variant's staging dir, which a base
-    # build does not write.
-    if params.variant != "base":
-        build_cmd += ["--variant", params.variant]
-    if getattr(args, "force_compat", False):
-        build_cmd += ["--force-compat"]
-    if want_zfs:
-        build_cmd += ["--zfs"]
-        if zfs_version_arg:
-            build_cmd += ["--zfs-version", zfs_version_arg]
-    sudo_user = os.environ.get("SUDO_USER")
-    if sudo_user:
-        build_cmd = ["sudo", "-u", sudo_user] + build_cmd
-    print(f"--- Building Lustre against {target} kernel tree...")
-    rb = subprocess.run(build_cmd)
-    if rb.returncode != 0:
-        die(f"Lustre build failed (rc={rb.returncode})")
+    print(f"    Staging: {status.path}")
 
-    # Which ZFS to ship is the staged build's decision (osd_zfs.ko is
-    # linked against one specific build), and every node in a cluster
-    # shares one target+kernel+arch -- so resolve it once here rather
-    # than per node.
+    # FSTYPE is a deploy-time choice written into local.sh; whether ZFS
+    # is available is the staged build's.  Every node shares one
+    # target+kernel+arch, so resolve the ZFS to ship once, from the
+    # staging meta -- osd_zfs.ko is linked against one specific build.
+    fstype = getattr(args, "fstype", None) or "ldiskfs"
     zfs_staging: Path | None = None
-    if want_zfs:
-        from .lustre_build import read_staging_meta
-        from .lustre_build import staging_path as _staging_path
+    meta = read_staging_meta(status.path)
+    staged_zfs = meta.get("zfs_version") if isinstance(meta, dict) else None
+    if staged_zfs:
         from .target_config import TargetConfig
         from .zfs_build import zfs_staging_dir
 
-        tc = TargetConfig(target, arch=arch, variant=params.variant)
-        meta = read_staging_meta(
-            _staging_path(
-                build,
-                target,
-                arch=arch,
-                kernel=kernel_name or tc.default_kernel,
-                variant=params.variant,
-            )
-        )
-        staged_zfs = meta.get("zfs_version") if isinstance(meta, dict) else None
-        if not staged_zfs:
-            die(
-                "ZFS was requested but the Lustre build produced no ZFS "
-                "record -- rerun with --force to reconfigure"
-            )
+        tc = TargetConfig(target, arch=arch, variant=status.variant)
         zfs_staging = zfs_staging_dir(tc, kernel_name, staged_zfs)
         if not any((zfs_staging / "lib" / "modules").rglob("zfs.ko*")):
             die(
@@ -1048,7 +1007,13 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
                 f"build artifact is missing from {zfs_staging}"
             )
         print(f"    ZFS: {staged_zfs}")
-
+    elif fstype == "zfs":
+        die(
+            f"--fstype zfs, but the staging for {cluster.name} was not "
+            f"built with ZFS\n"
+            f"  build it first:\n"
+            f"    {status.build_command(cluster=cluster.name)} --zfs"
+        )
     print(f"    Deploying to {len(nodes)} nodes in parallel...")
 
     # Deploy to all nodes in parallel -- same as single-node deploy,
@@ -1140,14 +1105,8 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
                     f"{', '.join(failed_cfg)}"
                 )
 
-    if args.mount:
-        print("=== Mounting Lustre filesystem ===")
-        _run_llmount(
-            cluster, os_family, server_only=args.server_only, timeout=300
-        )
-        print("=== Lustre mounted ===")
-
     print(f"\n=== Cluster '{cluster.name}' deployed ===")
+    print(f"    mount it with: ltvm cluster llmount {cluster.name}")
 
 
 def _run_llmount(
