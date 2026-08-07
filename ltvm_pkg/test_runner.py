@@ -476,21 +476,38 @@ def evaluate_preflight(
                 f"{cluster} && ltvm cluster deploy {cluster}"
             )
 
-    # 3. lnet.conf must not name a net the cluster config does not use
+    # 3. every statement of the cluster's net must name the same one
     for p in live:
-        if not p.cfg_present or not p.lnet_conf:
+        if not p.cfg_present:
             continue
         nettype = _cfg_value(p.cfg_text, "NETTYPE")
         if not nettype:
             continue
         expected = nettype.strip().rstrip("0123456789")
-        stale = [t for t in _lnet_net_types(p.lnet_conf) if t != expected]
-        if stale:
-            errors.append(
-                f"{p.node}: /etc/modprobe.d/lnet.conf configures "
-                f"{', '.join(stale)} but the cluster config uses "
-                f"NETTYPE={nettype}; remove or fix lnet.conf"
-            )
+
+        if p.lnet_conf:
+            stale = [t for t in _lnet_net_types(p.lnet_conf) if t != expected]
+            if stale:
+                errors.append(
+                    f"{p.node}: /etc/modprobe.d/lnet.conf configures "
+                    f"{', '.join(stale)} but the cluster config uses "
+                    f"NETTYPE={nettype}; remove or fix lnet.conf"
+                )
+
+        # MGSNID's net has to be NETTYPE's too.  A correct lnet.conf and
+        # a correct NETTYPE with an MGSNID still on the old net is the
+        # one mismatch a net switch can leave behind, and it surfaces as
+        # `no connections available: rc = -22` at mount -- a Lustre
+        # fault to read, a config fault in fact.
+        mgsnid = _cfg_value(p.cfg_text, "MGSNID")
+        if mgsnid and "@" in mgsnid:
+            nid_net = mgsnid.rsplit("@", 1)[1].strip().rstrip("0123456789")
+            if nid_net and nid_net != expected:
+                errors.append(
+                    f"{p.node}: cfg/{cfg}.sh has MGSNID={mgsnid} on "
+                    f"{nid_net} but NETTYPE={nettype}; redeploy with "
+                    f"ltvm deploy {cluster} --net {expected}"
+                )
     return errors
 
 

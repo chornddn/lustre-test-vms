@@ -324,6 +324,51 @@ class TestPreflight:
         ]
         assert tr.evaluate_preflight(probes, cluster="co2") == []
 
+    def test_mgsnid_on_another_net_is_an_error(self) -> None:
+        """The mismatch a net switch can leave behind.
+
+        lnet.conf and NETTYPE both say o2ib, MGSNID still points at the
+        old net's address.  Mount then fails with `no connections
+        available: rc = -22`, which reads as a Lustre fault.
+        """
+        probes = [
+            self._probe(
+                "a",
+                lnet_conf='options lnet networks="o2ib0(eth1)"',
+                cfg="FSNAME=lustre\nNETTYPE=o2ib\n"
+                    "MGSNID=192.168.105.10@tcp\n",
+            )
+        ]
+        errs = tr.evaluate_preflight(probes, cluster="co2")
+        assert len(errs) == 1
+        assert "MGSNID=192.168.105.10@tcp" in errs[0]
+        assert "NETTYPE=o2ib" in errs[0]
+        assert "cfg/local.sh" in errs[0]
+        assert "--net o2ib" in errs[0]
+
+    def test_matching_mgsnid_is_accepted(self) -> None:
+        probes = [
+            self._probe(
+                "a",
+                lnet_conf='options lnet networks="o2ib0(eth1)"',
+                cfg="FSNAME=lustre\nNETTYPE=o2ib\n"
+                    "MGSNID=172.16.100.203@o2ib\n",
+            )
+        ]
+        assert tr.evaluate_preflight(probes, cluster="co2") == []
+
+    def test_indexed_mgsnid_matches_bare_nettype(self) -> None:
+        """`@o2ib0` and `@o2ib` name the same net."""
+        probes = [
+            self._probe(
+                "a",
+                lnet_conf='options lnet networks="o2ib0(eth1)"',
+                cfg="FSNAME=lustre\nNETTYPE=o2ib\n"
+                    "MGSNID=172.16.100.203@o2ib0\n",
+            )
+        ]
+        assert tr.evaluate_preflight(probes, cluster="co2") == []
+
     def test_unreachable_node_is_an_error(self) -> None:
         probes = [tr.NodeProbe(node="a", reachable=False, error="timed out")]
         errs = tr.evaluate_preflight(probes, cluster="co2")
