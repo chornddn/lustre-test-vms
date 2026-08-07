@@ -764,6 +764,9 @@ def _deploy_harness(
         return _FakeCompleted(write_rc(written))
 
     monkeypatch.setattr(vm_cluster.subprocess, "run", fake_run)
+    monkeypatch.setattr(
+        vm_cluster, "run_ssh", lambda ip, cmd, timeout=0: _FakeCompleted(0)
+    )
     return src, writes
 
 
@@ -1048,5 +1051,60 @@ class TestDeployNet:
                 argparse.Namespace(
                     name="co2", lustre_tree=str(src), cfg_dir=None,
                     net="ib",
+                )
+            )
+
+
+class TestStaleLnetCheck:
+    """A net change is inert until the running LNet is dropped.
+
+    lnet.conf is read by modprobe, so a node with LNet already loaded
+    keeps serving the old net while both config files name the new one
+    -- the same drift, one layer down.
+    """
+
+    def test_leaves_a_node_already_on_the_net_alone(self) -> None:
+        """A same-net redeploy must not disturb a mounted filesystem."""
+        script = vm_cluster.stale_lnet_check("tcp")
+        assert "exit 0" in script
+        assert "lustre_rmmod" in script
+
+    def test_ignores_the_loopback_nid(self) -> None:
+        """0@lo is on every node and belongs to no net; counting it
+        would make every node look mismatched."""
+        assert "@lo$" in vm_cluster.stale_lnet_check("o2ib")
+
+    def test_matches_indexed_nids(self) -> None:
+        """`@o2ib0` and `@o2ib` name the same net."""
+        assert "@o2ib[0-9]*$" in vm_cluster.stale_lnet_check("o2ib")
+
+    def test_a_node_that_cannot_unload_names_the_cleanup(
+        self, monkeypatch
+    ) -> None:
+        monkeypatch.setattr(
+            vm_cluster, "run_ssh",
+            lambda ip, cmd, timeout=0: _FakeCompleted(1),
+        )
+        name, rc, out = vm_cluster._drop_stale_lnet(
+            "co2-oss", "10.0.0.11", "o2ib"
+        )
+        assert rc != 0
+        assert "llmount co2-oss --cleanup" in out
+
+    def test_deploy_fails_when_a_node_keeps_the_old_net(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        src, _ = _deploy_harness(
+            monkeypatch, tmp_path, lambda c: 0, nics=("softroce",)
+        )
+        monkeypatch.setattr(
+            vm_cluster, "run_ssh",
+            lambda ip, cmd, timeout=0: _FakeCompleted(1),
+        )
+        with pytest.raises(SystemExit):
+            vm_cluster.cmd_cluster_deploy(
+                argparse.Namespace(
+                    name="co2", lustre_tree=str(src), cfg_dir=None,
+                    net="o2ib",
                 )
             )

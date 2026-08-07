@@ -821,6 +821,50 @@ def _write_lnet_conf(
     return node_name, r.returncode, combined.rstrip("\n")
 
 
+def stale_lnet_check(net_type: str) -> str:
+    """Shell that drops a running LNet configured for another net.
+
+    ``lnet.conf`` is read by ``modprobe``, so a net change does nothing
+    to an LNet already loaded: the node keeps serving the old net while
+    both config files name the new one, which is the drift this whole
+    path exists to remove.  A node with no LNet loaded, or one already
+    on the right net, is left alone -- so a same-net redeploy does not
+    disturb a mounted filesystem.
+    """
+    return (
+        # No LNet loaded: nothing to drop.
+        "if ! lsmod | grep -q '^lnet '; then exit 0; fi; "
+        # 0@lo is on every node and belongs to no net.
+        "nids=$(lctl list_nids 2>/dev/null | grep -v '@lo$'); "
+        # Every NID already on the target net: leave it running.
+        "if [ -n \"$nids\" ] && "
+        f"! printf '%s\\n' \"$nids\" | grep -qv '@{net_type}[0-9]*$'; "
+        "then exit 0; fi; "
+        "lustre_rmmod"
+    )
+
+
+def _drop_stale_lnet(
+    node_name: str,
+    node_ip: str,
+    net_type: str,
+) -> tuple[str, int, str]:
+    """Unload an LNet still running the net the node just moved off."""
+    try:
+        r = run_ssh(node_ip, stale_lnet_check(net_type), timeout=120)
+    except subprocess.TimeoutExpired as e:
+        return node_name, 1, f"timed out after {e.timeout}s unloading LNet"
+    if r.returncode != 0:
+        return (
+            node_name,
+            r.returncode,
+            f"{(r.stderr or r.stdout or '').strip()}\n"
+            f"  Lustre is still loaded on the old net. Unmount first:\n"
+            f"    ltvm llmount {node_name} --cleanup",
+        )
+    return node_name, 0, "ok"
+
+
 def _load_cfg_profiles(cfg_dir: Path) -> list[tuple[str, str]]:
     """Read every ``*.sh`` auster profile out of *cfg_dir*.
 
@@ -1175,6 +1219,20 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
 
     if failed_sh:
         die(f"local.sh distribution failed for: {', '.join(failed_sh)}")
+
+    failed_unload = _parallel_cluster_op(
+        nodes,
+        lambda node: _drop_stale_lnet(
+            node.name, node_ips[node.name], net.net_type
+        ),
+        success_verb=f"LNet ready for {net.net_type}",
+        failure_verb="LNet still on the old net",
+    )
+    if failed_unload:
+        die(
+            f"the new lnet.conf cannot take effect on: "
+            f"{', '.join(failed_unload)}"
+        )
 
     # Profiles go out after local.sh, so a profile that sources it finds
     # it already in place.
