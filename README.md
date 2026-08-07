@@ -35,7 +35,8 @@ ltvm llmount co1-single
 
 ```bash
 ltvm build lustre rocky9 --lustre-tree ~/lustre-release   # incremental, fast
-ltvm deploy-lustre co1-single --lustre-tree ~/lustre-release --mount
+ltvm deploy co1-single --lustre-tree ~/lustre-release
+ltvm llmount co1-single
 ```
 
 ## Running on macOS (Apple Silicon)
@@ -121,7 +122,7 @@ ltvm create     <name>          Create a VM (idempotent; --root-size sets
                                 --wait SECONDS waits for host memory)
 ltvm start|stop|destroy <name>  VM power / removal (start takes --wait)
 ltvm list                       Show all VMs
-ltvm deploy-lustre <vm>         Deploy Lustre into a running VM
+ltvm deploy <vm|cluster>        Deploy Lustre into a running VM
 ltvm make-install               Build + install Lustre onto THIS machine
                                 (run inside an ltvm VM or cloud node)
 ltvm make-uninstall             Remove what make-install put here

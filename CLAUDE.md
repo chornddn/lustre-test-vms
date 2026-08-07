@@ -436,10 +436,11 @@ excludes `mofed-kmods/`: a fetcher who never passes
 ltvm create co1-single --vcpus 2 --mem 4096 --mdt-disks 1 --ost-disks 3
 ltvm create co1-single --root-size 20G   # OS disk (default 8G)
 ltvm create co1-single rocky9 --dry-run  # resolve + validate, write nothing
-ltvm deploy-lustre co1-single --lustre-tree ~/lustre-release --mount
-ssh co1-single 'lctl dl'
+ltvm build lustre rocky9 --lustre-tree ~/lustre-release
+ltvm deploy co1-single --lustre-tree ~/lustre-release
 ltvm llmount co1-single               # mount
 ltvm llumount co1-single              # unmount (= llmount --cleanup)
+ssh co1-single 'lctl dl'
 ltvm vm console-log co1-single
 ltvm vm console-log co1-single -f     # keep streaming (tail -F semantics)
 ltvm vm nmi co1-single                # inject NMI -> kdump
@@ -558,14 +559,47 @@ Everything the user then touches is theirs: `.info` and `.log` 0644,
 unavailable.  Once sudo has refused, later elevations in the same
 process use `sudo -n`.
 
-`build *`, `target *`, `deploy-lustre`, `llmount`, `list`, `vm *` and
+`build *`, `target *`, `deploy`, `llmount`, `list`, `vm *` and
 the remaining `cluster` actions need nothing.
 
 Verified 2026-09-11 by running the whole lifecycle as a non-root user.
 
+## One Way to Build, Deploy, Mount and Test
+
+Four verbs, one job each:
+
+```bash
+ltvm build lustre --for-cluster co1 --lustre-tree ~/lustre-release \
+    --configure="--with-o2ib=yes"
+ltvm deploy co1 --lustre-tree ~/lustre-release
+ltvm llmount co1-mds
+ltvm test co1 sanity-lnet --except 50,109
+```
+
+**Build options exist only on `build lustre`.**  `--configure`,
+`--kernel`, `--arch` and `--force-compat` have exactly one home.
+A build flag appearing on `deploy` would mean deploy is
+building again -- which is how a cluster once received
+`lnet.ko` and `ksocklnd.ko` but no `ko2iblnd.ko`, silently,
+because the deploy re-ran configure without the
+`--configure` args it had no way to forward.
+
+**`deploy` takes a VM or a cluster** and asks it what it runs:
+target, kernel, arch and variant come from the node metadata,
+so a deploy cannot contradict the nodes.  There is no
+`--kernel` / `--arch` override; `build lustre` already has one.
+
+**`deploy` never builds.**  Missing or stale staging is a hard
+error naming the exact `build lustre --for-cluster` line to
+run.  Staging counts as stale when the source tree is newer
+than the `.ltvm-staging-stamp` written at the end of the build.
+
+**`llmount` is the mount command.**  Neither `build` nor
+`deploy` mounts anything.
+
 ### Running ltvm inside a VM it built
 
-`deploy-lustre` runs on the build host and pushes Lustre
+`deploy` runs on the build host and pushes Lustre
 *into* a VM over ssh.  The `make-*` commands are the other
 direction: ltvm running **inside** a machine it produced --
 an ltvm VM, or a cloud node booted from `ltvm target export
@@ -644,7 +678,8 @@ lustre`, then unloading it again), and
 
 ```bash
 sudo ltvm cluster create co2 mgs+mds:co2-mds:1 oss:co2-oss:3
-ltvm cluster deploy co2 --mount
+ltvm build lustre --for-cluster co2 --lustre-tree ~/lustre-release
+ltvm deploy co2 --lustre-tree ~/lustre-release
 ltvm cluster exec co2 oss 'lctl dl'    # runs on EVERY oss node
 ltvm cluster exec co2 co2-oss2 'lctl dl'   # or one node by name
 ltvm cluster ssh co2 mds               # interactive; one node
@@ -656,15 +691,17 @@ sudo ltvm cluster destroy co2
 `cluster exec <role>` fans out across every node holding the role and
 exits non-zero if any node did; `cluster ssh <role>` opens a session on
 the first, since it execs a single interactive ssh.
+
 #### Distributing extra test-config profiles
 
-`cluster deploy` always adds the generated cluster block
-to `<lustre libdir>/tests/cfg/local.sh` on every node.
-Pass `--cfg-dir DIR` to distribute additional auster
-profiles alongside it:
+Deploying to a cluster always adds the generated cluster
+block to `<lustre libdir>/tests/cfg/local.sh` on every
+node.  Pass `--cfg-dir DIR` to distribute additional
+auster profiles alongside it:
 
 ```bash
-ltvm cluster deploy co2 --cfg-dir ~/lustre-dev/test-scripts/clusters/co2/cfg
+ltvm deploy co2 --lustre-tree ~/lustre-release \
+    --cfg-dir ~/lustre-dev/test-scripts/clusters/co2/cfg
 cd /usr/lib64/lustre/tests && NAME=co2sn ./auster -r -v conf-sanity --only 57c
 ```
 
@@ -942,12 +979,15 @@ Watch for:
   host, single-VM lifecycle commands elevate the individual host
   operations that need it, so do not require users to invoke the whole
   command through sudo; cluster create/destroy still require root.
-  Read/observe (console-log, deploy-lustre, llmount, crash-collect,
-  cluster deploy/exec/status, list) don't.  Build commands don't.
+  Read/observe (console-log, deploy, llmount, crash-collect,
+  cluster exec/status, list) don't.  Build commands don't.
 - **Root in the shared VM directories.** Any root write there must not
   follow a symlink a group member planted.
 - **`--force-compat`** silences compat *refusals* but not
   hard errors -- only for known WIP branches.
+- **A build option on a non-build command.** Each option has
+  exactly one home.  A `--configure` / `--kernel` / `--arch`
+  appearing on `deploy` means deploy started building again.
 
 ## Issue Tracking
 

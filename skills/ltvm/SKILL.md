@@ -49,7 +49,9 @@ booting the wrong modules. A Lustre build lands in the tree's
 
 ```bash
 ltvm create co1-single --vcpus 2 --mem 4096 --mdt-disks 1 --ost-disks 3
-ltvm deploy-lustre co1-single --lustre-tree <tree> --mount
+ltvm build lustre rocky9 --lustre-tree <tree>
+ltvm deploy co1-single --lustre-tree <tree>
+ltvm llmount co1-single
 ssh co1-single 'lctl dl'
 ```
 
@@ -114,19 +116,21 @@ one. Name VMs `co<N>-<role>` after the checkout they serve -- `co1-single`,
 `co2-mds`, `co5-ec-dom`. Never a bare `testvm`: the number is what tells a
 later session which tree the VM belongs to.
 
-`deploy-lustre` is idempotent: it unmounts and unloads first, builds the
-tree if the staging is stale, pushes it over ssh, and mounts with
-`--mount`. The unload takes down every Lustre mount on the VM, however it
-was made -- llmount.sh or a hand `mount -t lustre` -- and if Lustre will
-not unload, the deploy stops before copying anything rather than leave
-the old modules running; `cluster deploy` does the same on every node.
-`--userspace-only` leaves a running Lustre alone. **The tree flag is never positional** -- `--lustre-tree <path>`
-(`cluster deploy` also accepts `--build`).
+`deploy` takes a VM or a cluster and is idempotent: it unmounts and
+unloads first and pushes the staging over ssh. The unload takes down
+every Lustre mount on the VM, however it was made -- llmount.sh or a hand
+`mount -t lustre` -- and if Lustre will not unload, the deploy stops
+before copying anything rather than leave the old modules running; a
+cluster deploy does the same on every node. `--userspace-only` leaves a
+running Lustre alone. It never builds -- missing or stale staging is an
+error naming the `build lustre` line to run -- and never mounts;
+`llmount` does that. **The tree flag is never positional** --
+`--lustre-tree <path>` (`--build` is an alias).
 
 Do not use host `make` or `fullbuild` to produce something for a VM. The
 host kernel is not the VM kernel; `ltvm build lustre <target>
 --lustre-tree <tree>` builds inside the target's build container, which is
-what `deploy-lustre` invokes.
+what `deploy` ships.
 
 ltvm's build path detects two staleness traps that a host build still
 walks into, and both look like something else:
@@ -193,8 +197,8 @@ and targets were used. No paths, names or error text.
   prompts once for sudo, and `cluster create/destroy` need root.
 - **Always root:** `install`, `update`, and any VM with a `passthrough`
   NIC.
-- **Never:** `list`, `build *`, `target *`, `deploy-lustre`, `llmount`,
-  `vm *`, `cluster deploy/exec/status/ssh`.
+- **Never:** `list`, `build *`, `target *`, `deploy`, `llmount`,
+  `vm *`, `cluster exec/status/ssh`.
 
 If `doctor` reports that this user is not in the `ltvm` group, that is
 for the human to fix (`sudo usermod -aG ltvm <user>`, then a new login);
@@ -241,7 +245,9 @@ it costs nothing.
 
 ```bash
 ltvm cluster create co2 mgs+mds:co2-mds:1 oss:co2-oss:3 client:co2-client
-ltvm cluster deploy co2 --build <tree> --mount
+ltvm build lustre --for-cluster co2 --lustre-tree <tree>
+ltvm deploy co2 --lustre-tree <tree>
+ltvm cluster llmount co2
 ltvm cluster exec co2 oss 'lctl dl'        # every node with the role
 ltvm cluster exec co2 co2-oss2 'lctl dl'   # one node by name
 ltvm cluster status co2
@@ -326,8 +332,8 @@ The gate reads `lustre/kernel_patches/which_patch` for `server_ldiskfs`
 and `lustre/ChangeLog` for `server_zfs`, and refuses combinations Lustre
 upstream does not declare supported. `--force-compat` silences refusals,
 not hard errors, and is for known work-in-progress branches only. It is
-accepted by `build all`, `build kernel`, `build lustre`, `target publish`
-and `deploy-lustre`.
+accepted by `build all`, `build kernel`, `build lustre` and `target
+publish`.
 
 ## Sharing what was built
 
@@ -341,7 +347,7 @@ it; re-running when the local tree is current finishes in under a second.
 
 ## Inside a VM rather than on the host
 
-`deploy-lustre` pushes Lustre into a VM from the host. The `make-*`
+`deploy` pushes Lustre into a VM from the host. The `make-*`
 commands are the other direction -- ltvm running inside a machine it
 built, installing onto that machine's own root:
 
@@ -390,12 +396,12 @@ released, and a hand deploy never claims.
 
 `--json` for machine-readable output, `--verbose`, `--arch <arch>` to
 override the target's configured architecture, `--kernel <name>` on the
-commands that act on one kernel, and `--force-compat` on build, publish
-and deploy.
+commands that act on one kernel, and `--force-compat` on build and
+publish.
 
 `--json` is accepted everywhere but only some commands have anything
 structured to say.  The ones worth parsing: `list`, `build status`,
-`target show/validate/fetch/delete`, `create`, `deploy-lustre`, and
+`target show/validate/fetch/delete`, `create`, `deploy` (single VM), and
 `cluster status/list/exec`.  The other `cluster` actions stream
 human progress under `--json` too, and `cluster ssh` execs an
 interactive session, so don't parse those.

@@ -107,7 +107,7 @@ find ~/lustre-release/.ltvm-staging -name 'ko2iblnd.ko'
 sudo ltvm cluster create co1 --target rocky9 --arch aarch64 \
     --kernel 5.14-rhel9.5 --nic softroce --vcpus 2 --mem 4096 \
     mgs+mds+oss:co1-srv:1 client:co1-cli
-ltvm cluster deploy co1 --build ~/lustre-release
+ltvm deploy co1 --lustre-tree ~/lustre-release
 ```
 
 `--nic softroce` gets `rdma_rxe` loaded at boot and sets `fc_nics=`
@@ -205,7 +205,7 @@ ssh co1-cli 'ib_write_bw -d rxe0 -F -D 5 <server-ip>'
 
 ## 6. Running sanity-lnet over o2ib
 
-Point the test config at the o2ib net. `cluster deploy` installs the
+Point the test config at the o2ib net. `ltvm deploy` installs the
 stock `cfg/local.sh`, which defaults to `tcp`; append overrides rather
 than replacing the file, or you will drop the `${VAR:-default}`
 definitions that `init_test_env` derives `DIR`/`MOUNT1` from (the

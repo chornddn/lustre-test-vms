@@ -95,7 +95,8 @@ If the fetched artifacts include a pre-built Lustre snapshot,
 you can deploy directly:
 
 ```bash
-ltvm deploy-lustre co1-single --mount
+ltvm deploy co1-single
+sudo ltvm llmount co1-single
 ```
 
 ### 4. Build and deploy your own Lustre (optional)
@@ -104,7 +105,8 @@ To test your own Lustre changes, build from source and deploy:
 
 ```bash
 ltvm build lustre rocky9 --lustre-tree ~/lustre-release
-ltvm deploy-lustre co1-single --lustre-tree ~/lustre-release --mount
+ltvm deploy co1-single --lustre-tree ~/lustre-release
+sudo ltvm llmount co1-single
 ```
 
 `build-lustre` runs inside the build container against the
@@ -124,7 +126,8 @@ Edit Lustre source, then:
 
 ```bash
 ltvm build lustre rocky9 --lustre-tree ~/lustre-release
-ltvm deploy-lustre co1-single --mount
+ltvm deploy co1-single
+sudo ltvm llmount co1-single
 ```
 
 The build is incremental (make sees previous .o files).
@@ -184,7 +187,8 @@ ltvm build lustre rocky9 --lustre-tree ~/lustre-release
 ltvm create co1-single \
     --vcpus 2 --mem 4096 \
     --mdt-disks 1 --ost-disks 3
-ltvm deploy-lustre co1-single --lustre-tree ~/lustre-release --mount
+ltvm deploy co1-single --lustre-tree ~/lustre-release
+sudo ltvm llmount co1-single
 ```
 
 ### Shortcut: build-all
@@ -227,7 +231,7 @@ ltvm build lustre rocky9 --lustre-tree ~/lustre-release --kernel 5.14-rhel9.5
 Deploy with it:
 
 ```bash
-ltvm deploy-lustre co1-single --kernel 5.14-rhel9.5 --mount
+sudo ltvm deploy co1-single --kernel 5.14-rhel9.5 --mount
 ```
 
 Each kernel gets its own directory under
@@ -244,9 +248,10 @@ ltvm cluster create co2 \
     mgs+mds:co2-mds:1 \
     oss:co2-oss:3
 
-# Deploy Lustre to all nodes and mount
-ltvm cluster deploy co2 \
-    --build ~/lustre-release --mount
+# Build for the cluster's own target/kernel/arch, then deploy and mount
+ltvm build lustre --for-cluster co2 --lustre-tree ~/lustre-release
+ltvm deploy co2 --lustre-tree ~/lustre-release
+ltvm cluster llmount co2
 
 # Run a command on all OSS nodes
 ltvm cluster exec co2 oss 'lctl dl'
