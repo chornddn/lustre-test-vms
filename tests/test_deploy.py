@@ -577,6 +577,7 @@ def _deploy_args(
     userspace_only: bool = False,
     cfg_dir: str | None = None,
     arch: str | None = None,
+    net: str | None = None,
 ) -> argparse.Namespace:
     return argparse.Namespace(
         name=name,
@@ -585,6 +586,7 @@ def _deploy_args(
         userspace_only=userspace_only,
         cfg_dir=cfg_dir,
         arch=arch,
+        net=net,
         as_owner=None,
         force=False,
     )
@@ -815,6 +817,22 @@ class TestCmdDeployDerivesBuildInputs:
             rc = cli_mod.cmd_deploy(
                 _deploy_args(name="co1-arch", arch="aarch64")
             )
+        assert rc == 1
+        deploy_mock.assert_not_called()
+
+    def test_net_flag_is_refused_for_a_single_vm(
+        self, tmp_sockets: Path, tmp_path: Path
+    ) -> None:
+        """--net names a whole cluster's LNet: every node has to agree
+        on one MGS NID, so it cannot be set one node at a time."""
+        from ltvm_pkg import cli as cli_mod
+
+        vm = _make_vm(name="co1-net", ip="10.0.1.7")
+        vm.os_id = "rocky9"
+        vm.save()
+
+        with patch("ltvm_pkg.cli.deploy_to_vm") as deploy_mock:
+            rc = cli_mod.cmd_deploy(_deploy_args(name="co1-net", net="o2ib"))
         assert rc == 1
         deploy_mock.assert_not_called()
 

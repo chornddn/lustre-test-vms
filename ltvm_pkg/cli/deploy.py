@@ -115,6 +115,7 @@ def _deploy_cluster(name: str, args: argparse.Namespace, use_json: bool) -> int:
                 lustre_tree=tree,
                 cfg_dir=getattr(args, "cfg_dir", None),
                 fstype=getattr(args, "fstype", None),
+                net=getattr(args, "net", None),
             )
         )
         return EXIT_OK
@@ -127,6 +128,17 @@ def _deploy_vm(vm: Any, args: argparse.Namespace, use_json: bool) -> int:
     from ltvm_pkg import vm_claim
     from ltvm_pkg.lustre_build import staging_status
     from ltvm_pkg.vm_state import VMNotFound
+
+    # --net configures a whole cluster's LNet: local.sh names one MGS
+    # NID that every node has to agree on, so it cannot be set one node
+    # at a time.  Deploying the cluster is how you change it.
+    if getattr(args, "net", None):
+        return _error(
+            "deploy --net names a cluster's network; "
+            f"'{vm.name}' is a single VM",
+            use_json,
+            hint="deploy the cluster instead: ltvm deploy <cluster> --net ...",
+        )
 
     try:
         vm_claim.check(vm.name, "deploy to")

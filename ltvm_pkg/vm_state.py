@@ -13,7 +13,7 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import IO
+from typing import IO, Any
 
 
 def _atomic_write(
@@ -916,6 +916,11 @@ class ClusterInfo:
     # Copied to every member VM at create time.  None accepts cluster state
     # written before owner metadata existed.
     owner_id: str | None = None
+    # The LNet net the last `ltvm deploy --net` configured ("tcp" /
+    # "o2ib"), or "" for a cluster never deployed with one.  A bare
+    # `ltvm deploy` reuses it, so a redeploy does not silently move a
+    # cluster back to the default net.
+    net: str = ""
 
     @property
     def path(self) -> Path:
@@ -929,11 +934,13 @@ class ClusterInfo:
             from .vm_owner import validate_owner_id
 
             validate_owner_id(self.owner_id)
-        data = {
+        data: dict[str, Any] = {
             "name": self.name,
             "nodes": self.nodes,
             "owner_id": self.owner_id,
         }
+        if self.net:
+            data["net"] = self.net
         text = json.dumps(data, indent=2) + "\n"
         _atomic_write(self.path, text)
 
@@ -965,6 +972,7 @@ class ClusterInfo:
             name=data.get("name", name),
             nodes=data["nodes"],
             owner_id=data.get("owner_id"),
+            net=data.get("net", ""),
         )
 
     @staticmethod

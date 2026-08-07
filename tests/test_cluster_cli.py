@@ -1627,3 +1627,22 @@ class TestClusterCreateDryRun:
             "create", "coY", "mgs+mds:coY-a:1", "--dry-run", "--nope"
         )
         assert "--nope" in err
+class TestClusterNetPersistence:
+    """The cluster remembers the net its nodes were configured for."""
+
+    def test_net_round_trips(self, tmp_sockets: Path) -> None:
+        c = _save_cluster()
+        c.net = "o2ib"
+        c.save()
+        assert ClusterInfo.load("co1").net == "o2ib"
+
+    def test_a_cluster_without_a_net_loads_as_empty(
+        self, tmp_sockets: Path
+    ) -> None:
+        """Cluster files written before --net existed carry no net key
+        and must still load."""
+        _save_cluster()
+        assert "net" not in json.loads(
+            (tmp_sockets / "co1.cluster").read_text()
+        )
+        assert ClusterInfo.load("co1").net == ""

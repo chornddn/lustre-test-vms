@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from . import vm_claim
+from .lnet_net import ClusterNet, NetUnavailable, has_passthrough, resolve_net
 from .lustre_build import read_staging_meta, staging_status
 from .qemu_run import die, is_running, run
 from .vm_net import SSH_OPTS, run_ssh, sshpass_ssh_argv
@@ -100,6 +101,7 @@ CLUSTER_BLOCK_END = "# --- END cluster configuration"
 
 def generate_local_sh(
     cluster: ClusterInfo,
+    net: ClusterNet,
     os_family: str = "rhel",
     fstype: str = "ldiskfs",
 ) -> str:
@@ -110,6 +112,11 @@ def generate_local_sh(
     what every suite reads -- TSTUSR, RUNAS, QUOTA_USERS and the rest --
     with ``${VAR:-default}``, and this block overrides only what the
     cluster decides.
+
+    *net* is required, and deliberately has no default: NETTYPE and
+    MGSNID have to name the same net as the lnet.conf deploy writes, and
+    a default here would let a caller reintroduce a hardcoded net
+    without touching this function.
 
     ``fstype`` selects the OSD backend.  Only this line changes for
     ZFS: the MDSDEV*/OSTDEV* written above are the *vdevs* ZFS builds
@@ -129,7 +136,7 @@ def generate_local_sh(
         f"# Cluster: {cluster.name}",
         "",
         "FSNAME=lustre",
-        "NETTYPE=tcp",
+        f"NETTYPE={net.net_type}",
         "",
         f"LUSTRE={lustre_dir}",
         f"RLUSTRE={lustre_dir}",
@@ -138,7 +145,7 @@ def generate_local_sh(
     ]
 
     lines.append(f"mgs_HOST={mgs.name}")
-    lines.append(f"MGSNID={mgs.ip}@tcp")
+    lines.append(f"MGSNID={net.nid(mgs.name)}")
 
     combined = mgs.is_mds
     if not combined:
@@ -776,6 +783,44 @@ def _write_cluster_cfg(
     return node_name, r.returncode, combined.rstrip("\n")
 
 
+LNET_CONF_PATH = "/etc/modprobe.d/lnet.conf"
+
+
+def _write_lnet_conf(
+    node_name: str,
+    node_ip: str,
+    content: str,
+) -> tuple[str, int, str]:
+    """Overwrite ``/etc/modprobe.d/lnet.conf`` on one node.
+
+    Written next to ``local.sh`` and from the same resolved net: the two
+    files name the same network or the node cannot mount.  Overwriting
+    is deliberate -- ``rc.local`` only composes an lnet.conf when none
+    exists, so what deploy writes here is what the node keeps across
+    reboots.
+
+    Returns (node_name, returncode, output).
+    """
+    try:
+        r = subprocess.run(
+            sshpass_ssh_argv(node_ip, f"cat > {LNET_CONF_PATH}"),
+            input=content,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired as e:
+        return (
+            node_name,
+            1,
+            f"timed out after {e.timeout}s writing {LNET_CONF_PATH}",
+        )
+    combined = r.stdout
+    if r.stderr:
+        combined = combined + r.stderr if combined else r.stderr
+    return node_name, r.returncode, combined.rstrip("\n")
+
+
 def _load_cfg_profiles(cfg_dir: Path) -> list[tuple[str, str]]:
     """Read every ``*.sh`` auster profile out of *cfg_dir*.
 
@@ -932,6 +977,33 @@ def cluster_build_params(cluster: ClusterInfo) -> ClusterBuildParams:
     )
 
 
+def _resolve_deploy_net(
+    cluster: ClusterInfo, requested: str | None
+) -> ClusterNet:
+    """Decide which LNet net this deploy configures, and resolve it.
+
+    ``--net`` wins; without it the cluster keeps the net it was last
+    deployed with, and a cluster that has never been deployed with one
+    gets tcp -- the net every generated config used before ``--net``
+    existed.
+
+    Dies before any node is touched: a cluster left half-configured for
+    two different nets is worse than one left alone.
+    """
+    net_type = requested or cluster.net or "tcp"
+    if requested is None and not cluster.net and has_passthrough(cluster):
+        die(
+            f"cluster {cluster.name!r} has a passthrough NIC and no "
+            f"recorded net; pass --net explicitly so deploy does not "
+            f"overwrite the lnet.conf its HCA was configured with"
+        )
+    try:
+        return resolve_net(cluster, net_type)
+    except NetUnavailable as e:
+        die(f"cluster {cluster.name!r} cannot run --net {net_type}: {e}")
+        raise AssertionError("unreachable")
+
+
 def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     cluster = ClusterInfo.load(args.name)
     nodes = cluster.get_nodes()
@@ -953,6 +1025,10 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
         cfg_profiles = _load_cfg_profiles(
             Path(cfg_dir_arg).expanduser().resolve()
         )
+
+    # Resolve the net before anything is deployed: an unrunnable net is
+    # an argument error, not a half-configured cluster.
+    net = _resolve_deploy_net(cluster, getattr(args, "net", None))
 
     params = cluster_build_params(cluster)
     os_family = params.os_family
@@ -1055,8 +1131,10 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
         )
 
     # After each node's own disk block, so the cluster topology wins.
-    local_sh = generate_local_sh(cluster, os_family=os_family, fstype=fstype)
-    print("\n--- Distributing cluster config (local.sh)...")
+    local_sh = generate_local_sh(
+        cluster, net, os_family=os_family, fstype=fstype
+    )
+    print(f"\n--- Distributing cluster config (net {net.net_name})...")
     print(local_sh)
 
     ssh_opts = SSH_OPTS
@@ -1064,6 +1142,24 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
         node_ips = {node.name: VMInfo.load(node.name).ip for node in nodes}
     except VMNotFound as e:
         die(f"cluster node missing: {e}")
+
+    # lnet.conf goes out first and local.sh immediately after, from the
+    # one resolved net.  A node holding one without the other names two
+    # different networks and fails to mount with `no connections
+    # available: rc = -22`, which reads as a Lustre fault.
+    failed_lnet = _parallel_cluster_op(
+        nodes,
+        lambda node: _write_lnet_conf(
+            node.name,
+            node_ips[node.name],
+            net.lnet_conf(node.name),
+        ),
+        success_verb="lnet.conf written",
+        failure_verb="lnet.conf FAILED",
+    )
+    if failed_lnet:
+        die(f"lnet.conf distribution failed for: {', '.join(failed_lnet)}")
+
     failed_sh = _parallel_cluster_op(
         nodes,
         lambda node: _write_cluster_local_sh(
@@ -1105,7 +1201,16 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
                     f"{', '.join(failed_cfg)}"
                 )
 
-    print(f"\n=== Cluster '{cluster.name}' deployed ===")
+    # Persist the net only once both files are on every node, so the
+    # recorded net always describes what the nodes actually hold.
+    if cluster.net != net.net_type:
+        cluster.net = net.net_type
+        try:
+            cluster.save()
+        except OSError as e:
+            print(f"    warning: cannot record net={net.net_type}: {e}")
+
+    print(f"\n=== Cluster '{cluster.name}' deployed (net {net.net_type}) ===")
     print(f"    mount it with: ltvm cluster llmount {cluster.name}")
 
 

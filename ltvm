@@ -248,6 +248,7 @@ try:
         complete_vms,
         complete_zfs_versions,
     )
+    from ltvm_pkg.lnet_net import NET_TYPES  # noqa: E402
     from ltvm_pkg.shell_completion import (  # noqa: E402
         SHELLS as SHELL_COMPLETION_SHELLS,
     )
@@ -1747,6 +1748,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="DIR",
         help="Distribute every *.sh auster profile in DIR to the nodes",
+    )
+    # A cluster runs one LNet net at a time and deploy is the only thing
+    # that sets it: cfg/local.sh and /etc/modprobe.d/lnet.conf have to
+    # name the same net, and they only can if one code path writes both.
+    sp.add_argument(
+        "--net",
+        choices=list(NET_TYPES),
+        default=None,
+        help="LNet network to configure the cluster for "
+        "(default: the net it was last deployed with, else tcp)",
     )
     sp.set_defaults(func=cmd_deploy)
 
