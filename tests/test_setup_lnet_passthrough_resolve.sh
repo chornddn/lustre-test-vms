@@ -131,17 +131,19 @@ check "1pt+1sr: only passthrough resolved" \
 	"$RESULT"
 
 # --- Case: 2 passthrough -------------------------------------------
-# Emitter's canonical output for fc_nics=passthrough,passthrough:
-#   tcp0(eth0),o2ib0(@ib-of-eth1)),o2ib1(@ib-of-eth2))
+# Emitter's canonical output for fc_nics=passthrough,passthrough.
+# Both VFs are rails of ONE o2ib net; each placeholder still carries
+# its own ')', which is what the resolver keys on.
+#   tcp0(eth0),o2ib0(@ib-of-eth1),@ib-of-eth2))
 run_case "2pt" "passthrough,passthrough" "mlx5_0 mlx5_1" \
-	'options lnet networks="tcp0(eth0),o2ib0(@ib-of-eth1)),o2ib1(@ib-of-eth2))"'
-check "2pt: both resolved in order" \
-	'options lnet networks="tcp0(eth0),o2ib0(mlx5_0),o2ib1(mlx5_1)"' \
+	'options lnet networks="tcp0(eth0),o2ib0(@ib-of-eth1),@ib-of-eth2))"'
+check "2pt: both rails resolved in order" \
+	'options lnet networks="tcp0(eth0),o2ib0(mlx5_0,mlx5_1)"' \
 	"$RESULT"
 
 # --- Case: mismatched counts (warn, keep placeholder) --------------
 # 2 passthrough declared, only 1 non-rxe ibdev present.
-mismatch_initial='options lnet networks="tcp0(eth0),o2ib0(@ib-of-eth1)),o2ib1(@ib-of-eth2))"'
+mismatch_initial='options lnet networks="tcp0(eth0),o2ib0(@ib-of-eth1),@ib-of-eth2))"'
 run_case "mismatch" "passthrough,passthrough" "mlx5_0" \
 	"$mismatch_initial"
 check "mismatch: conf unchanged" \

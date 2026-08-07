@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
 # Emit /etc/modprobe.d/lnet.conf body from an fc_nics= cmdline value.
 #
-# Consumed by the multi-NIC foundation (-oc8) and softroce backend
-# (-r55).  This script is the source of truth for the emitter logic;
-# ltvm_pkg/lnet_config.py mirrors it for unit testing convenience.
+# This script is the source of truth for the emitter logic; its test
+# is tests/test_setup_lnet_config.sh, which drives it end-to-end.
 #
 # Usage:
 #     setup-lnet-config.sh                      # reads /proc/cmdline, stdout
@@ -17,15 +16,17 @@
 # --nic, so LNet is exactly the --nic list).  Subsequent elements
 # apply to eth1, eth2, ...
 #
-# Net-name assignment:
+# Net-name assignment.  NICs of the SAME type share one net, so their
+# interfaces are rails of one multi-rail LNet network -- two --nic
+# softroce give o2ib0(eth1,eth2), not o2ib0(eth1),o2ib1(eth2).  The
+# net index counts within a protocol family, so softroce and
+# passthrough (different fabrics, both o2ib) still get their own nets.
 #   none        -> (skipped; keeps eth slot for later entries)
-#   tcp         -> tcpK(ethI)              I = eth index (slot), K =
-#                                          tcp index (per-type counter)
-#   softroce    -> o2ibK(ethI)             K = o2ib index, I = eth
-#                                          index.  Lustre's ko2iblnd
-#                                          takes a NETDEV name here and
-#                                          finds the rxe ibdev via
-#                                          rdma_cm -- the rxe link
+#   tcp         -> tcpK(ethI[,ethJ...])    K = tcp index
+#   softroce    -> o2ibK(ethI[,ethJ...])   K = o2ib index.  Lustre's
+#                                          ko2iblnd takes a NETDEV name
+#                                          here and finds the rxe ibdev
+#                                          via rdma_cm -- the rxe link
 #                                          itself is not a netdev and
 #                                          cannot appear in lnet.conf.
 #   passthrough -> o2ibK(@ib-of-ethI))     K = o2ib index, I = eth
@@ -40,10 +41,19 @@ emit_lnet_conf() {
 	# stdout.
 	local -a nics=("$@")
 	local -a parts=()
-	local i
+	local i j
 	local nic
 	local o2ib_idx=0
 	local tcp_idx=0
+	# Types in order of first appearance, and the interface list each
+	# one has collected.  NICs of the same type join ONE LNet net --
+	# that is what makes them rails of a multi-rail network rather
+	# than separate one-rail networks.  Bash 3.2 has no associative
+	# arrays, hence the two parallel indexed arrays.
+	local -a types=()
+	local -a ifaces=()
+	local iface
+	local found
 
 	for ((i=0; i < ${#nics[@]}; i++)); do
 		nic=${nics[$i]}
@@ -52,22 +62,50 @@ emit_lnet_conf() {
 			# Placeholder: keep eth slot (ethI) reserved but
 			# don't emit an LNet entry.  Used for mgmt (eth0)
 			# when --nic is set so it's SSH-only.
+			continue
 			;;
-		tcp)
-			parts+=("tcp${tcp_idx}(eth${i})")
-			tcp_idx=$((tcp_idx + 1))
-			;;
-		softroce)
-			parts+=("o2ib${o2ib_idx}(eth${i})")
-			o2ib_idx=$((o2ib_idx + 1))
+		tcp|softroce)
+			iface="eth${i}"
 			;;
 		passthrough)
-			parts+=("o2ib${o2ib_idx}(@ib-of-eth${i}))")
-			o2ib_idx=$((o2ib_idx + 1))
+			# '@ib-of-ethI)' -- closing paren included, so the
+			# runtime resolver can find the placeholder's end
+			# whether it stands alone or in a rail list.
+			iface="@ib-of-eth${i})"
 			;;
 		*)
 			echo "setup-lnet-config: unknown NIC type '$nic'" >&2
 			return 1
+			;;
+		esac
+
+		found=-1
+		for ((j=0; j < ${#types[@]}; j++)); do
+			if [[ ${types[$j]} == "$nic" ]]; then
+				found=$j
+				break
+			fi
+		done
+		if (( found < 0 )); then
+			types+=("$nic")
+			ifaces+=("$iface")
+		else
+			ifaces[$found]="${ifaces[$found]},${iface}"
+		fi
+	done
+
+	# One net per type.  The net index counts within a protocol
+	# family, so softroce and passthrough -- different fabrics, both
+	# o2ib -- stay separate nets.
+	for ((j=0; j < ${#types[@]}; j++)); do
+		case "${types[$j]}" in
+		tcp)
+			parts+=("tcp${tcp_idx}(${ifaces[$j]})")
+			tcp_idx=$((tcp_idx + 1))
+			;;
+		*)
+			parts+=("o2ib${o2ib_idx}(${ifaces[$j]})")
+			o2ib_idx=$((o2ib_idx + 1))
 			;;
 		esac
 	done

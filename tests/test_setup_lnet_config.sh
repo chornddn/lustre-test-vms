@@ -42,23 +42,26 @@ check() {
 # Semantics: the first positional arg is the mgmt slot (eth0).  'tcp'
 # there means mgmt doubles as LNet tcp0 (status quo, no --nic flag).
 # 'none' means mgmt is SSH-only and drops out of LNet (the new
-# --nic-present behaviour).  tcp indices renumber per-type, so
-# tcp(none, tcp, tcp) -> tcp0(eth1),tcp1(eth2).
+# --nic-present behaviour).  NICs of the same type aggregate onto
+# one net, so tcp(none, tcp, tcp) -> tcp0(eth1,eth2): two rails of
+# one multi-rail network, not two networks.
 
 check "tcp only (mgmt doubles as tcp0)" \
 	'options lnet networks="tcp0(eth0)"' \
 	"$(emit_lnet_conf tcp)"
 
+# Unreachable through main() -- mgmt only carries 'tcp' when there
+# are no extras -- but the aggregation rule applies uniformly.
 check "tcp + tcp (mgmt + extra tcp)" \
-	'options lnet networks="tcp0(eth0),tcp1(eth1)"' \
+	'options lnet networks="tcp0(eth0,eth1)"' \
 	"$(emit_lnet_conf tcp tcp)"
 
 check "tcp + softroce (mgmt + softroce)" \
 	'options lnet networks="tcp0(eth0),o2ib0(eth1)"' \
 	"$(emit_lnet_conf tcp softroce)"
 
-check "tcp + softroce + softroce" \
-	'options lnet networks="tcp0(eth0),o2ib0(eth1),o2ib1(eth2)"' \
+check "tcp + softroce + softroce (one o2ib net, two rails)" \
+	'options lnet networks="tcp0(eth0),o2ib0(eth1,eth2)"' \
 	"$(emit_lnet_conf tcp softroce softroce)"
 
 check "tcp + passthrough" \
@@ -84,11 +87,11 @@ check "none + tcp + softroce (mgmt + tcp + softroce)" \
 	"$(emit_lnet_conf none tcp softroce)"
 
 check "none + tcp + tcp (multi-rail tcp without mgmt)" \
-	'options lnet networks="tcp0(eth1),tcp1(eth2)"' \
+	'options lnet networks="tcp0(eth1,eth2)"' \
 	"$(emit_lnet_conf none tcp tcp)"
 
 check "none + softroce + softroce" \
-	'options lnet networks="o2ib0(eth1),o2ib1(eth2)"' \
+	'options lnet networks="o2ib0(eth1,eth2)"' \
 	"$(emit_lnet_conf none softroce softroce)"
 
 check "none + passthrough" \
@@ -115,7 +118,7 @@ check "cli: fc_nics=tcp (extra tcp on eth1, mgmt SSH-only)" \
 	"$(run_cli 'ro fc_ip=1.2.3.4 fc_nics=tcp console=ttyS0')"
 
 check "cli: fc_nics=tcp,tcp (multi-rail tcp without mgmt)" \
-	'options lnet networks="tcp0(eth1),tcp1(eth2)"' \
+	'options lnet networks="tcp0(eth1,eth2)"' \
 	"$(run_cli 'fc_nics=tcp,tcp')"
 
 check "cli: fc_nics=softroce (mgmt SSH-only)" \
@@ -123,7 +126,7 @@ check "cli: fc_nics=softroce (mgmt SSH-only)" \
 	"$(run_cli 'fc_nics=softroce quiet')"
 
 check "cli: fc_nics=softroce,softroce" \
-	'options lnet networks="o2ib0(eth1),o2ib1(eth2)"' \
+	'options lnet networks="o2ib0(eth1,eth2)"' \
 	"$(run_cli 'fc_nics=softroce,softroce')"
 
 check "cli: fc_nics=tcp,softroce" \
@@ -134,6 +137,24 @@ check "cli: fc_nics=passthrough (mgmt SSH-only)" \
 	'options lnet networks="o2ib0(@ib-of-eth1))"' \
 	"$(run_cli 'fc_nics=passthrough')"
 
+# Two passthrough VFs are rails of one o2ib net too.  Each placeholder
+# carries its own ')', so the runtime resolver still finds the end of
+# each one inside the rail list.
+check "cli: fc_nics=passthrough,passthrough" \
+	'options lnet networks="o2ib0(@ib-of-eth1),@ib-of-eth2))"' \
+	"$(run_cli 'fc_nics=passthrough,passthrough')"
+
+# softroce and passthrough are both o2ib but different fabrics, so
+# they must NOT aggregate.
+check "cli: fc_nics=softroce,passthrough (separate o2ib nets)" \
+	'options lnet networks="o2ib0(eth1),o2ib1(@ib-of-eth2))"' \
+	"$(run_cli 'fc_nics=softroce,passthrough')"
+
+# Three rails on one net.
+check "cli: fc_nics=softroce,softroce,softroce" \
+	'options lnet networks="o2ib0(eth1,eth2,eth3)"' \
+	"$(run_cli 'fc_nics=softroce,softroce,softroce')"
+
 # --- Write-to-file mode --------------------------------------------
 
 tmp=$(mktemp)
@@ -141,7 +162,7 @@ trap 'rm -f "$tmp"' EXIT
 printf '%s\n' 'fc_nics=softroce,softroce' | "$UUT" --stdin "$tmp"
 got_file=$(cat "$tmp")
 check "cli: writes to path arg" \
-	'options lnet networks="o2ib0(eth1),o2ib1(eth2)"' \
+	'options lnet networks="o2ib0(eth1,eth2)"' \
 	"$got_file"
 
 # --- Unknown type fails --------------------------------------------

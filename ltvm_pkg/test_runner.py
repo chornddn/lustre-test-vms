@@ -22,6 +22,7 @@ Two facts about the Lustre test framework shape this module:
 
 from __future__ import annotations
 
+import re
 import shlex
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
@@ -388,6 +389,10 @@ def _lnet_net_types(lnet_conf: str) -> list[str]:
     """Return the LNet network types named in a modprobe lnet.conf.
 
     ``options lnet networks="o2ib0(eth0)"`` yields ``["o2ib"]``.
+
+    A multi-rail net lists its interfaces comma-separated inside one
+    set of parens -- ``o2ib0(eth1,eth2)`` -- so the net names are the
+    identifiers in front of a '(', not whatever a split on ',' leaves.
     """
     types: list[str] = []
     for line in lnet_conf.splitlines():
@@ -396,8 +401,12 @@ def _lnet_net_types(lnet_conf: str) -> list[str]:
             continue
         _, _, rest = line.partition("networks")
         rest = rest.lstrip("=").strip().strip("\"'")
-        for token in rest.replace(",", " ").split():
-            net = token.split("(")[0].strip()
+        if "(" in rest:
+            nets = re.findall(r"([A-Za-z][A-Za-z0-9_]*)\s*\(", rest)
+        else:
+            # No interface lists at all, e.g. networks="tcp".
+            nets = rest.replace(",", " ").split()
+        for net in nets:
             base = net.rstrip("0123456789")
             if base and base not in types:
                 types.append(base)
