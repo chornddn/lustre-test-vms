@@ -905,3 +905,90 @@ class TestStagingStatus:
         # Without a cluster the target and its build key are spelled out.
         plain = st.build_command()
         assert "rocky9" in plain and "5.14-rhel9.7" in plain
+
+
+# ---------------------------------------------------------------------------
+# stale_ldiskfs_patch: generated ldiskfs sources have no dependency on
+# the patch series that produced them
+# ---------------------------------------------------------------------------
+
+
+class TestStaleLdiskfsPatch:
+    """A patch newer than the generated sources is refused, not cleaned."""
+
+    def _tree_with_ldiskfs(self, tmp_path: Path) -> tuple[Path, Path, Path]:
+        import os
+        import time
+
+        tree = _tree(tmp_path)
+        patch_dir = tree / "ldiskfs" / "kernel_patches" / "patches"
+        patch_dir.mkdir(parents=True)
+        patch_file = patch_dir / "ext4-misc.patch"
+        patch_file.write_text("")
+        src = tree / "ldiskfs" / "inode.c"
+        src.write_text("")
+        now = time.time()
+        os.utime(patch_file, (now - 100, now - 100))
+        os.utime(src, (now, now))
+        return tree, patch_file, src
+
+    def test_sources_newer_than_patches_proceed(
+        self, tmp_path: Path
+    ) -> None:
+        from ltvm_pkg.lustre_build import stale_ldiskfs_patch
+
+        tree, _, _ = self._tree_with_ldiskfs(tmp_path)
+        assert stale_ldiskfs_patch(tree) is None
+
+    def test_a_newer_patch_is_reported(self, tmp_path: Path) -> None:
+        import os
+        import time
+
+        from ltvm_pkg.lustre_build import stale_ldiskfs_patch
+
+        tree, patch_file, _ = self._tree_with_ldiskfs(tmp_path)
+        future = time.time() + 100
+        os.utime(patch_file, (future, future))
+        assert stale_ldiskfs_patch(tree) == (
+            "ldiskfs/kernel_patches/patches/ext4-misc.patch"
+        )
+
+    def test_no_generated_sources_is_the_first_build(
+        self, tmp_path: Path
+    ) -> None:
+        """Nothing generated yet is normal, not an error."""
+        from ltvm_pkg.lustre_build import stale_ldiskfs_patch
+
+        tree, _, src = self._tree_with_ldiskfs(tmp_path)
+        src.unlink()
+        assert stale_ldiskfs_patch(tree) is None
+
+    def test_no_ldiskfs_at_all_is_quiet(self, tmp_path: Path) -> None:
+        from ltvm_pkg.lustre_build import stale_ldiskfs_patch
+
+        assert stale_ldiskfs_patch(_tree(tmp_path)) is None
+
+    def test_build_lustre_refuses_and_deletes_nothing(
+        self, tmp_path: Path
+    ) -> None:
+        """The remedy is printed for the operator; ltvm never cleans a
+        tree it shares with other sessions."""
+        import os
+        import time
+
+        from ltvm_pkg.lustre_build import build_lustre
+
+        tree, patch_file, src = self._tree_with_ldiskfs(tmp_path)
+        future = time.time() + 100
+        os.utime(patch_file, (future, future))
+        build_tree = tmp_path / "build-tree"
+        build_tree.mkdir()
+        (build_tree / "Module.symvers").write_text("")
+
+        with pytest.raises(RuntimeError) as exc:
+            build_lustre(tree, build_tree, container_tag="ltvm-build-rocky9")
+
+        assert "clean -xdf ldiskfs/" in str(exc.value)
+        assert "ext4-misc.patch" in str(exc.value)
+        assert src.exists()
+        assert patch_file.exists()
