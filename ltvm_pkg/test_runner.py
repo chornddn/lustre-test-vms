@@ -175,6 +175,58 @@ def _log_dir_of(argv: list[str]) -> str:
 # ------------------------------------------------------------------
 
 
+# Escapes YAML accepts after a backslash inside a double-quoted scalar
+# (YAML 1.2 sec. 5.7).  Anything else makes the document invalid.
+_YAML_ESCAPES = set('0abtnvfre "/\\N_LPxuU\t')
+
+
+def _unshell_quote(text: str) -> str:
+    """Drop backslashes that shell quoting left inside YAML strings.
+
+    ``yaml.sh`` writes a failure message with
+    ``printf 'error: "%q"' "$*"``.  ``%q`` is *shell* quoting, and it
+    lands inside a *YAML* double-quoted scalar, so any message holding a
+    character bash wants to escape produces a file no YAML parser will
+    read::
+
+        error: "Health\\ hasn\\'t\\ recovered"
+
+    ``\\'`` is not a YAML escape, so the whole run becomes unreportable
+    -- and precisely when it failed, which is when the report matters.
+    This strips the backslash from any escape YAML does not define,
+    which is what the shell meant by it: quote the next character.
+
+    Only double-quoted scalars are touched.  A backslash in a plain or
+    single-quoted scalar is already literal, and YAML escapes such as
+    ``\\n`` and ``\\"`` are left alone.
+    """
+    out: list[str] = []
+    in_quotes = False
+    i = 0
+    while i < len(text):
+        c = text[i]
+        if c == "\\" and in_quotes and i + 1 < len(text):
+            nxt = text[i + 1]
+            if nxt in _YAML_ESCAPES:
+                # A real escape: copy both, so \\ cannot be split and
+                # \" cannot be mistaken for the end of the scalar.
+                out.append(c)
+                out.append(nxt)
+            else:
+                out.append(nxt)
+            i += 2
+            continue
+        if c == '"':
+            in_quotes = not in_quotes
+        elif c == "\n":
+            # An unterminated quote is a malformed line, not a licence
+            # to treat the rest of the file as one string.
+            in_quotes = False
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def _suite_records(text: str) -> list[dict]:
     """Return the suite records in a results.yml, whatever the wrapper.
 
@@ -185,8 +237,15 @@ def _suite_records(text: str) -> list[dict]:
     """
     try:
         doc = yaml.safe_load(text)
-    except yaml.YAMLError as e:
-        raise TestRunnerError(f"results.yml is not valid YAML: {e}")
+    except yaml.YAMLError as first:
+        # Repair only after a real failure, so a well-formed file is
+        # never rewritten on the way in.
+        try:
+            doc = yaml.safe_load(_unshell_quote(text))
+        except yaml.YAMLError:
+            raise TestRunnerError(
+                f"results.yml is not valid YAML: {first}"
+            ) from first
     if doc is None:
         return []
     if isinstance(doc, dict):

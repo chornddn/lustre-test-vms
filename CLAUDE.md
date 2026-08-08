@@ -839,6 +839,15 @@ silently discarded and the excluded tests run anyway.
 Results come from auster's own `results.yml` (written to
 the `-D` log dir), never from stdout.
 
+`yaml.sh` writes failure messages with
+`printf 'error: "%q"'`, which is *shell* quoting inside a
+*YAML* double-quoted scalar.  A message holding an
+apostrophe emits `"Health\ hasn\'t\ recovered"`, and `\'`
+is not a YAML escape, so the file will not parse -- on
+exactly the runs that failed.  The parser repairs this,
+but only after a real parse error, so a well-formed file
+is never rewritten.
+
 `--json` emits:
 
 ```json
