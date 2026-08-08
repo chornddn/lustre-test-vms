@@ -31,10 +31,20 @@ ltvm create co1-single --vcpus 2 --mem 4096 --mdt-disks 1 --ost-disks 3
 ltvm llmount co1-single
 ```
 
-**Day-to-day iteration (change Lustre, redeploy into a running VM):**
+**Day-to-day iteration (change Lustre, redeploy, test):**
+
+The full flow -- build, deploy, mount, test, with the cluster claimed
+for the duration -- is one section in
+[CLAUDE.md](CLAUDE.md#one-way-to-build-deploy-mount-and-test). It is
+kept in one place on purpose, so start there rather than assembling
+the verbs from this page.
+
+For a single VM rather than a cluster, pass the kernel the VM was
+created with; `--for-cluster` reads that from the cluster's nodes,
+and there is no equivalent for a bare VM:
 
 ```bash
-ltvm build lustre rocky9 --lustre-tree ~/lustre-release   # incremental, fast
+ltvm build lustre rocky9 --lustre-tree ~/lustre-release --kernel 5.14-rhel9.5
 ltvm deploy co1-single --lustre-tree ~/lustre-release
 ltvm llmount co1-single
 ```
@@ -442,6 +452,9 @@ in which opting out means nothing was ever sent.
 See [CLAUDE.md](CLAUDE.md) for the full developer reference. Agents get
 what they need from the `ltvm` skill above, which `ltvm install` links
 into their skill directories.
+Its "One Way to Build, Deploy, Mount and Test" section is the
+canonical flow -- link a Lustre workspace's AGENTS.md / CLAUDE.md at it
+rather than copying it, so the two cannot drift apart.
 
 To run Lustre over RDMA without an HCA, see
 [docs/SOFTROCE_SETUP.md](docs/SOFTROCE_SETUP.md) -- o2iblnd on top of

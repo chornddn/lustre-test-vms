@@ -3,6 +3,11 @@
 This guide walks through common workflows, from the simplest
 path to more advanced setups.
 
+Already set up and just want the day-to-day loop? It is one
+section: [One Way to Build, Deploy, Mount and
+Test](../CLAUDE.md#one-way-to-build-deploy-mount-and-test).
+This guide is for getting there the first time.
+
 ## Prerequisites
 
 - Linux host (WSL2 works)
@@ -80,7 +85,7 @@ ltvm build status
 ### 2. Create a VM
 
 ```bash
-ltvm create co1-single \
+sudo ltvm create co1-single \
     --vcpus 2 --mem 4096 \
     --mdt-disks 1 --ost-disks 3
 ```
@@ -96,7 +101,7 @@ you can deploy directly:
 
 ```bash
 ltvm deploy co1-single
-sudo ltvm llmount co1-single
+ltvm llmount co1-single
 ```
 
 ### 4. Build and deploy your own Lustre (optional)
@@ -106,7 +111,7 @@ To test your own Lustre changes, build from source and deploy:
 ```bash
 ltvm build lustre rocky9 --lustre-tree ~/lustre-release
 ltvm deploy co1-single --lustre-tree ~/lustre-release
-sudo ltvm llmount co1-single
+ltvm llmount co1-single
 ```
 
 `build-lustre` runs inside the build container against the
@@ -116,9 +121,16 @@ only changed files recompile.
 ### 5. Run a test
 
 ```bash
-ssh co1-single \
-    'sudo -E ONLY=42a bash /usr/lib64/lustre/tests/sanity.sh'
+ltvm test co1 sanity --only 42a
 ```
+
+`ltvm test` runs auster on the cluster's client node and
+parses auster's own `results.yml`, so you get a result object
+instead of console output to scrape. `--only` / `--except` are
+the only spelling that works: `run_suites()` in
+`test-framework.sh` unsets `ONLY` and `EXCEPT`, so the
+environment form is silently discarded and the tests run
+anyway.
 
 ### 6. Iterate
 
@@ -127,7 +139,7 @@ Edit Lustre source, then:
 ```bash
 ltvm build lustre rocky9 --lustre-tree ~/lustre-release
 ltvm deploy co1-single
-sudo ltvm llmount co1-single
+ltvm llmount co1-single
 ```
 
 The build is incremental (make sees previous .o files).
@@ -184,11 +196,11 @@ ltvm build lustre rocky9 --lustre-tree ~/lustre-release
 ### 5. Create VM, deploy, test
 
 ```bash
-ltvm create co1-single \
+sudo ltvm create co1-single \
     --vcpus 2 --mem 4096 \
     --mdt-disks 1 --ost-disks 3
 ltvm deploy co1-single --lustre-tree ~/lustre-release
-sudo ltvm llmount co1-single
+ltvm llmount co1-single
 ```
 
 ### Shortcut: build-all
@@ -231,8 +243,15 @@ ltvm build lustre rocky9 --lustre-tree ~/lustre-release --kernel 5.14-rhel9.5
 Deploy with it:
 
 ```bash
-sudo ltvm deploy co1-single --kernel 5.14-rhel9.5 --mount
+ltvm deploy co1-single --lustre-tree ~/lustre-release
+ltvm llmount co1-single
 ```
+
+`deploy` has no `--kernel`: it reads the target, kernel, arch
+and variant from the node's own metadata, so it cannot
+contradict what the node runs. `--kernel` belongs to
+`build lustre`, which is where the choice is actually made.
+`deploy` never mounts either -- `llmount` is the mount command.
 
 Each kernel gets its own directory under
 `artifacts/rocky9/x86_64/kernels/`, so they coexist without conflict.
@@ -308,28 +327,40 @@ libtool version check prevents stale autotools state.
 ### VM Lifecycle
 
 VMs are disposable. The base image is shared (read-only);
-each VM gets a copy-on-write qcow2 overlay. Destroying and
-recreating a VM takes ~15 seconds, which is often faster than
-debugging cleanup issues.
+each VM gets a copy-on-write qcow2 overlay.
+
+Recreating a VM is not the way to clear Lustre state, though.
+`ltvm llmount <vm> --cleanup` leaves the node with nothing
+resident, or exits non-zero naming what is still held. On a
+cluster somebody else may be using, destroy is not yours to
+run: ask the operator, and note that a destroyed VM takes its
+console log and any vmcore with it.
 
 ### Deploy is Idempotent
 
 `ltvm deploy` always:
-1. Unmounts Lustre and unloads modules
-2. Clears dm devices
-3. Rsyncs the staging tree
-4. Reconfigures disk mappings in cfg/local.sh
-5. Optionally runs llmount.sh to format and mount
+1. Clears any Lustre left running, and fails if it cannot
+2. Rsyncs the staging tree
+3. Writes `cfg/local.sh` and `/etc/modprobe.d/lnet.conf`
+   together, from one resolved LNet net
 
-### One Staging Dir Per Target
+It does not mount. `ltvm llmount` does that, as its own step.
 
-`ltvm build lustre` installs to `artifacts/<target>/lustre/staging/`.
-The last build wins. If you need two Lustre versions simultaneously,
-use two source trees:
+### One Staging Dir Per Tree
+
+`ltvm build lustre` installs to
+`<lustre-tree>/.ltvm-staging/<target>/<arch>/<kernel>[/<variant>]/`.
+
+Staging is keyed by source tree, so two trees do not collide
+and two people on one host do not overwrite each other:
 
 ```bash
-ltvm build lustre rocky9 --lustre-tree ~/lustre-v1    # staging overwritten
-ltvm build lustre rocky9 --lustre-tree ~/lustre-v2    # staging overwritten again
+ltvm build lustre rocky9 --lustre-tree ~/lustre-v1    # staging under lustre-v1
+ltvm build lustre rocky9 --lustre-tree ~/lustre-v2    # staging under lustre-v2
 ```
 
-In practice: build, deploy, test, iterate.
+`deploy` takes the same `--lustre-tree`, so it picks up the
+staging belonging to the tree you built.
+
+In practice: build, deploy, mount, test, iterate -- see
+[the canonical flow](../CLAUDE.md#one-way-to-build-deploy-mount-and-test).

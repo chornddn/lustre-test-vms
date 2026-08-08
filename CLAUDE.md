@@ -6,7 +6,14 @@ target OS: build container, kernel, VM base image, and
 Lustre staging (userland + modules per kernel), plus an
 optional fifth -- ZFS -- when a build asks for it.
 
-## LLM: Getting the User Set Up
+## LLM: Start Here
+
+To build, deploy, mount or test, go straight to
+[One Way to Build, Deploy, Mount and Test](#one-way-to-build-deploy-mount-and-test).
+Those four verbs are the whole day-to-day flow, and the
+sections above them are background.  Do not assemble a
+flow from other sections: a build without `--for-cluster`
+targets the wrong kernel, and that only surfaces at insmod.
 
 If the user has just opened this repo, walk them through
 installation proactively:
@@ -24,8 +31,10 @@ that need it -- see "Running on macOS" in README.md.
 
 Ask: **"Where is your Lustre source checkout?"**  The usage
 guidance an agent needs is the `ltvm` skill, which `ltvm
-install` links into their skill directories -- there is
-nothing to copy into a workspace CLAUDE.md.
+install` links into their skill directories.  If their
+workspace instructions need the flow too, link to the
+canonical section above rather than copying it -- a copy
+drifts, and the reader cannot tell which version they have.
 
 ## Versioning and git hooks
 
@@ -432,14 +441,14 @@ excludes `mofed-kmods/`: a fetcher who never passes
 
 ## VM Management
 
+Lifecycle and inspection only.  Building, deploying,
+mounting and testing are the four verbs in
+[One Way to Build, Deploy, Mount and Test](#one-way-to-build-deploy-mount-and-test).
+
 ```bash
 ltvm create co1-single --vcpus 2 --mem 4096 --mdt-disks 1 --ost-disks 3
 ltvm create co1-single --root-size 20G   # OS disk (default 8G)
 ltvm create co1-single rocky9 --dry-run  # resolve + validate, write nothing
-ltvm build lustre rocky9 --lustre-tree ~/lustre-release
-ltvm deploy co1-single --lustre-tree ~/lustre-release
-ltvm llmount co1-single               # mount
-ltvm llumount co1-single              # unmount (= llmount --cleanup)
 ssh co1-single 'lctl dl'
 ltvm vm console-log co1-single
 ltvm vm console-log co1-single -f     # keep streaming (tail -F semantics)
@@ -566,14 +575,24 @@ Verified 2026-09-11 by running the whole lifecycle as a non-root user.
 
 ## One Way to Build, Deploy, Mount and Test
 
-Four verbs, one job each:
+Four verbs, one job each.  `deploy` claims every node for
+an agent session, and the other commands refuse a node
+that another live session claimed (see
+[docs/VM_OWNERSHIP.md](docs/VM_OWNERSHIP.md#claims)):
 
 ```bash
 ltvm build lustre --for-cluster co1 --lustre-tree ~/lustre-release
 ltvm deploy co1 --lustre-tree ~/lustre-release --net o2ib
-ltvm llmount co1-mds
+ltvm cluster llmount co1
 ltvm test co1 sanity-lnet --except 50,109
+ltvm cluster llumount co1
+ltvm release co1-mds co1-oss co1-client
 ```
+
+Nothing here creates or destroys a cluster.  Ask the
+operator for one; `cluster create` and `cluster destroy`
+need root, and destroying somebody's cluster to work
+around dirty state loses their logs.
 
 **Build options exist only on `build lustre`.**  `--configure`,
 `--kernel`, `--arch` and `--force-compat` have exactly one home.
