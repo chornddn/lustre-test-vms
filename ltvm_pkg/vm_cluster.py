@@ -1187,6 +1187,26 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     except VMNotFound as e:
         die(f"cluster node missing: {e}")
 
+    # Drop a stale LNet BEFORE writing either config file.  A node that
+    # cannot unload keeps serving the old net whatever the files say, so
+    # writing first would leave every node reconfigured for a net the
+    # deploy then failed to reach -- config naming one net, cluster state
+    # naming the other.  Unloading first costs nothing when it fails: the
+    # node keeps the config it already had.
+    failed_unload = _parallel_cluster_op(
+        nodes,
+        lambda node: _drop_stale_lnet(
+            node.name, node_ips[node.name], net.net_type
+        ),
+        success_verb=f"LNet ready for {net.net_type}",
+        failure_verb="LNet still on the old net",
+    )
+    if failed_unload:
+        die(
+            f"cannot move to net {net.net_type} while Lustre is loaded "
+            f"on: {', '.join(failed_unload)}; no node was changed"
+        )
+
     # lnet.conf goes out first and local.sh immediately after, from the
     # one resolved net.  A node holding one without the other names two
     # different networks and fails to mount with `no connections
@@ -1219,20 +1239,6 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
 
     if failed_sh:
         die(f"local.sh distribution failed for: {', '.join(failed_sh)}")
-
-    failed_unload = _parallel_cluster_op(
-        nodes,
-        lambda node: _drop_stale_lnet(
-            node.name, node_ips[node.name], net.net_type
-        ),
-        success_verb=f"LNet ready for {net.net_type}",
-        failure_verb="LNet still on the old net",
-    )
-    if failed_unload:
-        die(
-            f"the new lnet.conf cannot take effect on: "
-            f"{', '.join(failed_unload)}"
-        )
 
     # Profiles go out after local.sh, so a profile that sources it finds
     # it already in place.

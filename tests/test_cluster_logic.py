@@ -1108,3 +1108,28 @@ class TestStaleLnetCheck:
                     net="o2ib",
                 )
             )
+
+    def test_a_node_that_cannot_unload_keeps_its_config(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """The unload is tried before either config file is written.
+
+        Writing first would leave every node holding config for a net
+        the deploy then failed to reach, while the cluster state still
+        named the old one -- both halves wrong, in opposite directions.
+        """
+        src, writes = _deploy_harness(
+            monkeypatch, tmp_path, lambda c: 0, nics=("softroce",)
+        )
+        monkeypatch.setattr(
+            vm_cluster, "run_ssh",
+            lambda ip, cmd, timeout=0: _FakeCompleted(1),
+        )
+        with pytest.raises(SystemExit):
+            vm_cluster.cmd_cluster_deploy(
+                argparse.Namespace(
+                    name="co2", lustre_tree=str(src), cfg_dir=None,
+                    net="o2ib",
+                )
+            )
+        assert writes == []
