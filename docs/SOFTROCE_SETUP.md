@@ -73,18 +73,28 @@ find $K/modules -name 'rdma_rxe.ko' -o -name 'ib_core.ko'
 
 ## 2. Lustre: build the in-kernel o2iblnd
 
-`ltvm build lustre` passes `--with-o2ib=no` by default, because the
-build container has no external OFED headers. That also means **no
-`ko2iblnd.ko` is built**, so nothing can run over RXE. Ask for the
-in-kernel LND explicitly:
+`ltvm build lustre` passes `--with-o2ib=yes` by default and builds
+`ko2iblnd.ko` against the kernel's in-kernel IB headers, so an
+ordinary build is ready for RXE:
 
 ```bash
 ltvm build lustre rocky9 --arch aarch64 --kernel 5.14-rhel9.5 \
-    --lustre-tree ~/lustre-release --configure="--with-o2ib=yes"
+    --lustre-tree ~/lustre-release
+```
+
+This used to be `--with-o2ib=no`, so a build had to ask for the LND
+explicitly. If you are reading an older note that passes
+`--configure="--with-o2ib=yes"`, it is now redundant but harmless.
+
+To opt out, or to build against a real OFED tree:
+
+```bash
+--configure="--with-o2ib=no"
+--configure="--with-o2ib=/usr/src/ofa_kernel/default"
 ```
 
 Use the `--configure=<value>` form. With a space, argparse consumes
-`--with-o2ib=yes` as a flag of its own and fails with
+the value as a flag of its own and fails with
 `argument --configure: expected one argument`.
 
 Expected in the configure output:
@@ -158,12 +168,16 @@ Verified on macOS with `--nic tcp --nic tcp`: each rail resolves its
 peer to that peer's *own* interface MAC, and traffic sourced from each
 address leaves on its matching interface.
 
-> **Not yet re-verified for o2ib.** The check above used tcp NICs.
-> `rdma_cm` performs its own address resolution rather than inheriting a
-> bound socket's route, so whether it honours these source-based rules is
-> unconfirmed. If `lnetctl ping` fails with `Network is down`, that is the
-> first thing to investigate -- not the addressing, which is now known
-> good.
+Since verified for o2ib as well, on two clusters: `lnetctl ping` both
+ways between all three nodes, a filesystem mounted over o2ib, and 256
+MiB of direct I/O read back clean. `rdma_cm` does its own address
+resolution rather than inheriting a bound socket's route, and it
+honours these rules.
+
+If `lnetctl ping` fails here with `-113 No route to host` and
+`kiblnd_cm_callback` logs `ADDR ERROR -110`, suspect the extra NIC's
+MTU before the addressing -- see the MTU entry under Gotchas. The
+addressing is known good.
 
 ## 5. Verify
 

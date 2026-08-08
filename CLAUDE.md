@@ -569,8 +569,7 @@ Verified 2026-09-11 by running the whole lifecycle as a non-root user.
 Four verbs, one job each:
 
 ```bash
-ltvm build lustre --for-cluster co1 --lustre-tree ~/lustre-release \
-    --configure="--with-o2ib=yes"
+ltvm build lustre --for-cluster co1 --lustre-tree ~/lustre-release
 ltvm deploy co1 --lustre-tree ~/lustre-release --net o2ib
 ltvm llmount co1-mds
 ltvm test co1 sanity-lnet --except 50,109
@@ -771,8 +770,8 @@ refuses.
 
 For an o2iblnd-over-SoftRoCE cluster, see
 [docs/SOFTROCE_SETUP.md](docs/SOFTROCE_SETUP.md) -- it needs
-a kernel with InfiniBand enabled and Lustre built with
-`--configure="--with-o2ib=yes"`.
+a kernel with InfiniBand enabled.  `ko2iblnd.ko` is built by
+default, so no extra `--configure` is needed.
 
 Extra NICs share a network of their own (`172.16.100.0/24`
 by default, `$LTVM_EXTRA_SUBNET` to change it), separate
