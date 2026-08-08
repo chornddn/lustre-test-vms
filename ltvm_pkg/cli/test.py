@@ -57,11 +57,75 @@ def _print_report(report: dict[str, Any]) -> None:
         print(f"  BENIGN {item['test']}: {item['why']}")
     for item in report["skip"]:
         print(f"  SKIP   {item['test']}: {item['reason']}")
+    if report.get("coverage_note"):
+        print(f"  {report['coverage_note']}")
     print(f"  logs: {report['log_dir']} on {report['node']}")
+
+
+def _print_progress(p: dict[str, Any]) -> None:
+    counts = p["counts"]
+    total = f"/{p['total']}" if p["total"] else ""
+    where = f", now {p['current']}" if p["current"] else ""
+    print(
+        f"{p['suite']} on {p['cluster']}: {p['state']} "
+        f"({p['elapsed']}s), {p['recorded']}{total} subtests"
+        f"{where} -- {counts['pass']} PASS, {counts['fail']} FAIL, "
+        f"{counts['skip']} SKIP, {counts['benign']} BENIGN"
+    )
+    for item in p["fail"]:
+        print(f"  FAIL   {item['test']}: {item['reason']}")
+    if p.get("coverage_note"):
+        print(f"  {p['coverage_note']}")
+    print(f"  logs: {p['log_dir']} on {p['node']}")
+
+
+def _cmd_test_status(args: argparse.Namespace, use_json: bool) -> int:
+    """Report on the run recorded for a cluster, from any session."""
+    import time as _time
+
+    from ltvm_pkg import test_runner as tr
+    from ltvm_pkg.vm_net import run_ssh
+
+    record = tr.RunRecord.load(args.cluster)
+    if record is None:
+        return _error(
+            f"no test run recorded for cluster {args.cluster}",
+            use_json,
+            hint=f"ltvm test {args.cluster} <suite>",
+        )
+    benign = tr.benign_for_suite(record.suite, enabled=not args.no_benign)
+
+    while True:
+        try:
+            out = run_ssh(record.ip, tr.progress_script(record), timeout=60)
+        except (subprocess.TimeoutExpired, OSError) as e:
+            return _error(f"cannot reach {record.node}: {e}", use_json)
+        progress = tr.build_progress(
+            record, tr.parse_progress_output(out.stdout), benign=benign
+        )
+        if use_json:
+            _output(progress, True)
+        else:
+            _print_progress(progress)
+        if not args.follow or progress["state"] != "running":
+            break
+        _time.sleep(args.interval)
+    return EXIT_OK
 
 
 def cmd_test(args: argparse.Namespace) -> int:
     use_json = args.json
+
+    if getattr(args, "status", False) or getattr(args, "follow", False):
+        return _cmd_test_status(args, use_json)
+
+    if not args.suite:
+        return _error(
+            "no suite given",
+            use_json,
+            hint=f"ltvm test {args.cluster} sanity-lnet, or "
+            f"ltvm test {args.cluster} --status",
+        )
 
     from ltvm_pkg import test_runner as tr
     from ltvm_pkg.vm_cluster import cluster_build_params
@@ -151,6 +215,24 @@ def cmd_test(args: argparse.Namespace) -> int:
     if not use_json:
         print(f"running on {node.name}: {command}")
 
+    # Recorded before the blocking ssh, not after: the whole point is
+    # that another session can ask about the run while it is in flight.
+    record = tr.RunRecord(
+        cluster=cluster.name,
+        suite=args.suite,
+        node=node.name,
+        ip=vm.ip,
+        log_dir=log_dir,
+        tests_dir=tests_dir,
+        cfg=args.cfg,
+        only=args.only or "",
+        excepted=getattr(args, "except") or "",
+        started=int(time.time()),
+    )
+    record.save()
+    if not use_json:
+        print(f"progress: ltvm test {cluster.name} --status")
+
     try:
         run_ssh(vm.ip, command, timeout=args.timeout)
     except subprocess.TimeoutExpired:
@@ -161,6 +243,9 @@ def cmd_test(args: argparse.Namespace) -> int:
         )
     except OSError as e:
         return _error(f"ssh to {node.name} failed: {e}", use_json)
+
+    record.finished = int(time.time())
+    record.save()
 
     # auster's own exit code is not consulted: it is non-zero for a
     # benign-listed failure too.  results.yml decides.
@@ -193,6 +278,26 @@ def cmd_test(args: argparse.Namespace) -> int:
 
     report["node"] = node.name
     report["log_dir"] = log_dir
+
+    # State the shortfall when the suite halted before its last subtest.
+    # Without this a run cut short at its first real failure reads as a
+    # clean pass over whatever fraction did run.  A --only run has no
+    # meaningful total to compare against.
+    total = 0
+    if not args.only:
+        try:
+            probe = run_ssh(
+                vm.ip, tr.suite_total_script(tests_dir, args.suite), timeout=60
+            )
+            total = tr.parse_total(probe.stdout)
+        except (subprocess.TimeoutExpired, OSError):
+            total = 0
+    recorded = sum(report["counts"].values())
+    report["recorded"] = recorded
+    report["total"] = total
+    report["coverage_note"] = tr.coverage_note(
+        recorded, total, report["last"], ended=True
+    )
 
     if use_json:
         _output(report, True)

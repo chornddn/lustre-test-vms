@@ -615,6 +615,28 @@ than the `.ltvm-staging-stamp` written at the end of the build.
 **`llmount` is the mount command.**  Neither `build` nor
 `deploy` mounts anything.
 
+**Ask `ltvm test` how a run is going; do not guess.**  A suite
+runs for tens of minutes inside one blocking call, so the
+answer needs a second command:
+
+```bash
+ltvm test co1 --status
+ltvm test co1 --follow
+```
+
+`--status` reports state, elapsed time, the subtest running
+now, the counts so far, and how many of the suite's subtests
+have been recorded (`87/172`).  It reads the run record
+`ltvm test` writes before it starts, so it works from **another
+session**, and after the session that started the run has
+died.  `--follow` repeats until the run ends.
+
+Do not reach for `pgrep`, a console tail, or a timer instead.
+Each of those has failed here: `pgrep -f auster` matches the
+shell running the `pgrep`; a run backgrounded with `&` over
+ssh dies with the session; and `cluster exec` gives up after
+120s on a run that is still perfectly alive.
+
 **`llmount --cleanup` leaves the node with no Lustre
 resident, or fails.**  `llmountcleanup.sh` on its own does
 not get there: it stops the nodes named in the test config
@@ -870,12 +892,24 @@ is never rewritten.
  "skip": [{"test": "...", "reason": "..."}],
  "benign": [{"test": "...", "reason": "...", "why": "..."}],
  "counts": {"pass": 152, "fail": 0, "skip": 19, "benign": 2},
+ "recorded": 173, "total": 172, "coverage_note": "",
  "node": "co2-cli", "log_dir": "/tmp/ltvm-test/..."}
 ```
 
 Exit is non-zero only for real failures: a non-empty
 `fail` list, a preflight refusal, or an infrastructure
 error.  Skips and benign failures exit 0.
+
+**Counts are not coverage.**  `FAIL_ON_ERROR` defaults to
+true in `cfg/local.sh`, so `test-framework.sh` exits the
+whole suite at the first real failure.  The subtests after
+it never run and are not in the counts, so a suite cut a
+third of the way in still reports `0 FAIL`.  `recorded` and
+`total` are the honest pair -- `total` counts the suite
+script's own `run_test` lines -- and `coverage_note` spells
+out the shortfall when there is one.  A benign failure halts
+the suite exactly like any other, so a non-empty `benign`
+list is also a reason to check `recorded` against `total`.
 
 Known environment-caused failures live as data in
 `BENIGN_FAILURES` in [ltvm_pkg/test_runner.py](ltvm_pkg/test_runner.py),

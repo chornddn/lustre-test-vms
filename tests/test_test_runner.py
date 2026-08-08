@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+import tempfile
+from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -587,7 +589,11 @@ class TestCmdTest:
 
         params = MagicMock()
         params.os_family = "rhel"
+        # cmd_test records the run beside the cluster state; keep that
+        # write off the host's real state dir.
+        state = tempfile.TemporaryDirectory()
         with (
+            patch("ltvm_pkg.vm_state.SOCKETS", Path(state.name)),
             patch.object(vm_state.ClusterInfo, "load", return_value=cluster),
             patch.object(vm_state.VMInfo, "load", return_value=vm),
             patch.object(vm_net, "run_ssh", fake_run_ssh),
@@ -598,6 +604,7 @@ class TestCmdTest:
             patch("subprocess.run", fake_scp_run),
         ):
             rc = cmd_test(args)
+        state.cleanup()
         return rc, ssh_calls
 
     def test_real_failure_exits_nonzero(self) -> None:
@@ -621,3 +628,245 @@ class TestCmdTest:
         auster = [c for c in calls if "auster" in c]
         assert len(auster) == 1
         assert "sanity-lnet --only 630" in auster[0]
+
+
+# ------------------------------------------------------------------
+# Progress: answering "how far in is it?" from any session
+# ------------------------------------------------------------------
+
+# results.yml as it looks mid-run: two finished subtests and a third
+# whose name is written but whose status is not, because it is running.
+PARTIAL_YML = """Tests:
+    -
+        name: sanity-lnet
+        SubTests:
+        -
+            name: test_1
+            status: PASS
+            duration: 3
+            return_code: 0
+            error:
+        -
+            name: test_218
+            status: FAIL
+            duration: 7
+            return_code: 1
+            error: "Health hasn't recovered"
+        -
+            name: test_219
+"""
+
+
+def _record(**kw: Any) -> Any:
+    from ltvm_pkg import test_runner as tr
+
+    base: dict[str, Any] = dict(
+        cluster="co2",
+        suite="sanity-lnet",
+        node="co2-cli",
+        ip="10.0.0.1",
+        log_dir="/tmp/ltvm-test/co2-sanity-lnet-1",
+        tests_dir="/usr/lib64/lustre/tests",
+        started=1000,
+    )
+    base.update(kw)
+    return tr.RunRecord(**base)
+
+
+def _sections(**kw: str) -> dict[str, str]:
+    base = {"alive": "yes", "total": "172", "current": "", "results": PARTIAL_YML}
+    base.update(kw)
+    return base
+
+
+class TestRunRecord:
+    """The record is the handle a second session has on a run."""
+
+    def test_round_trips_through_the_state_dir(self, tmp_path: Path) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        with patch("ltvm_pkg.vm_state.SOCKETS", tmp_path):
+            _record(only="630").save()
+            got = tr.RunRecord.load("co2")
+        assert got is not None
+        assert (got.suite, got.node, got.only) == ("sanity-lnet", "co2-cli", "630")
+
+    def test_absent_record_is_none_not_an_error(self, tmp_path: Path) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        with patch("ltvm_pkg.vm_state.SOCKETS", tmp_path):
+            assert tr.RunRecord.load("nosuch") is None
+
+    def test_corrupt_record_is_none_not_a_traceback(self, tmp_path: Path) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        with patch("ltvm_pkg.vm_state.SOCKETS", tmp_path):
+            tr.run_record_path("co2").write_text("{not json")
+            assert tr.RunRecord.load("co2") is None
+
+    def test_a_record_from_a_newer_ltvm_still_loads(self, tmp_path: Path) -> None:
+        """An unknown key must not make an existing run unreadable."""
+        from ltvm_pkg import test_runner as tr
+
+        with patch("ltvm_pkg.vm_state.SOCKETS", tmp_path):
+            _record().save()
+            path = tr.run_record_path("co2")
+            import json as _json
+
+            data = _json.loads(path.read_text())
+            data["something_new"] = 1
+            path.write_text(_json.dumps(data))
+            assert tr.RunRecord.load("co2") is not None
+
+
+class TestProgressScript:
+    """The liveness check every hand-rolled version gets wrong."""
+
+    def test_pgrep_pattern_cannot_match_its_own_shell(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        script = tr.progress_script(_record())
+        pgrep = next(ln for ln in script.splitlines() if ln.startswith("pgrep"))
+        # The bracket makes the pattern text differ from what it matches,
+        # so the process running it is not itself a hit.
+        assert "[a]uster" in pgrep
+        assert "auster" not in pgrep.replace("[a]uster", "")
+
+    def test_pattern_identifies_this_run_not_any_auster(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        script = tr.progress_script(_record(log_dir="/tmp/ltvm-test/mine"))
+        assert "/tmp/ltvm\\-test/mine" in script or "/tmp/ltvm-test/mine" in script
+
+    def test_results_section_is_last(self) -> None:
+        """A newline inside results.yml must not open a later section."""
+        from ltvm_pkg import test_runner as tr
+
+        script = tr.progress_script(_record())
+        markers = [ln for ln in script.splitlines() if ln.startswith("echo '@@")]
+        assert markers[-1].endswith("results'")
+
+    def test_sections_split_and_keep_result_newlines(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        text = (
+            "@@ltvm-preflight:alive\nyes\n"
+            "@@ltvm-preflight:total\n172\n"
+            "@@ltvm-preflight:current\n\n"
+            "@@ltvm-preflight:results\na\nb\n"
+        )
+        got = tr.parse_progress_output(text)
+        assert got["alive"] == "yes"
+        assert got["total"] == "172"
+        assert got["results"] == "a\nb"
+
+    def test_total_comes_from_the_suite_script(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        assert "run_test" in tr.suite_total_script("/t", "sanity-lnet")
+        assert "sanity-lnet.sh" in tr.suite_total_script("/t", "sanity-lnet")
+        assert tr.parse_total("172\n") == 172
+        assert tr.parse_total("grep: no such file") == 0
+
+
+class TestBuildProgress:
+    """What a watcher is told about a run in flight."""
+
+    def test_running_run_reports_counts_and_position(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        p = tr.build_progress(_record(), _sections(), now=1060)
+        assert p["state"] == "running"
+        assert p["elapsed"] == 60
+        assert (p["recorded"], p["total"]) == (2, 172)
+
+    def test_the_live_subtest_is_not_counted_as_a_failure(self) -> None:
+        """yaml.sh writes the name at begin and the status at end."""
+        from ltvm_pkg import test_runner as tr
+
+        p = tr.build_progress(_record(), _sections())
+        assert p["current"] == "test_219"
+        assert [f["test"] for f in p["fail"]] == ["test_218"]
+        assert p["counts"]["fail"] == 1
+
+    def test_benign_table_applies_while_the_run_is_live(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        p = tr.build_progress(
+            _record(), _sections(), benign={"test_218": "needs two interfaces"}
+        )
+        assert p["counts"]["fail"] == 0
+        assert p["benign"][0]["why"] == "needs two interfaces"
+
+    def test_a_half_written_results_file_reports_zero_not_an_error(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        p = tr.build_progress(_record(), _sections(results="Tests:\n  - {oops"))
+        assert p["recorded"] == 0
+        assert p["state"] == "running"
+
+    def test_gone_without_a_completion_is_ended_not_finished(self) -> None:
+        """A dead starting session must never read as a clean finish."""
+        from ltvm_pkg import test_runner as tr
+
+        p = tr.build_progress(_record(), _sections(alive="no"))
+        assert p["state"] == "ended"
+
+    def test_completion_recorded_reads_as_finished(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        p = tr.build_progress(_record(finished=2000), _sections(alive="no"))
+        assert p["state"] == "finished"
+
+    def test_current_falls_back_to_the_newest_test_log(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        done = PARTIAL_YML.rsplit("        -\n", 1)[0]
+        p = tr.build_progress(
+            _record(),
+            _sections(
+                results=done,
+                current="/tmp/x/sanity-lnet.test_240.test_log.co2-cli.log",
+            ),
+        )
+        assert p["current"] == "test_240"
+
+    def test_a_finished_subtest_is_not_reported_as_current(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        done = PARTIAL_YML.rsplit("        -\n", 1)[0]
+        p = tr.build_progress(
+            _record(),
+            _sections(
+                results=done,
+                current="/tmp/x/sanity-lnet.test_218.test_log.co2-cli.log",
+            ),
+        )
+        assert p["current"] == ""
+
+
+class TestCoverageNote:
+    """A suite halted early must not read as a clean pass."""
+
+    def test_shortfall_is_stated_with_the_numbers(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        note = tr.coverage_note(83, 172, "test_218", ended=True)
+        assert "83 of 172" in note
+        assert "89 never started" in note
+        assert "test_218" in note
+
+    def test_a_complete_run_says_nothing(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        assert tr.coverage_note(172, 172, "test_999", ended=True) == ""
+
+    def test_a_live_run_is_not_called_short(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        assert tr.coverage_note(83, 172, "test_218", ended=False) == ""
+
+    def test_no_total_means_no_claim(self) -> None:
+        from ltvm_pkg import test_runner as tr
+
+        assert tr.coverage_note(83, 0, "test_218", ended=True) == ""

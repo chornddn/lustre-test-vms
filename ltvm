@@ -2276,7 +2276,28 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _test_cluster = sp.add_argument("cluster", help="Cluster name")
     _test_cluster.completer = complete_clusters  # type: ignore[attr-defined]
-    sp.add_argument("suite", help="Test suite (e.g. sanity-lnet)")
+    sp.add_argument(
+        "suite",
+        nargs="?",
+        help="Test suite (e.g. sanity-lnet); omit with --status",
+    )
+    sp.add_argument(
+        "--status",
+        action="store_true",
+        help="Report progress of the cluster's current or last run "
+        "instead of starting one",
+    )
+    sp.add_argument(
+        "--follow",
+        action="store_true",
+        help="Like --status, but keep reporting until the run ends",
+    )
+    sp.add_argument(
+        "--interval",
+        type=int,
+        default=60,
+        help="Seconds between --follow polls (default: 60)",
+    )
     sp.add_argument(
         "--only",
         default=None,

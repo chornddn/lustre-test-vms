@@ -22,13 +22,19 @@ Two facts about the Lustre test framework shape this module:
 
 from __future__ import annotations
 
+import json
+import logging
 import re
 import shlex
+import time
 from concurrent.futures import ThreadPoolExecutor
-from dataclasses import dataclass, field
+from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any
 
 import yaml
+
+log = logging.getLogger(__name__)
 
 # Statuses yaml.sh writes.  Anything else is treated as a failure rather
 # than dropped -- an unrecognized status means the framework told us
@@ -313,7 +319,30 @@ def build_report(
             f"results.yml records no subtests for {suite!r}: "
             f"the suite never ran"
         )
+    buckets = classify(subtests, benign)
+    return {
+        "suite": suite,
+        "cluster": cluster,
+        "cfg": cfg,
+        "duration": _suite_duration(text),
+        # The subtest the run reached last, so a caller can say where a
+        # halted suite stopped without re-reading results.yml.
+        "last": str(subtests[-1].get("name") or ""),
+        **buckets,
+        "counts": {k: len(buckets[k]) for k in ("pass", "fail", "skip", "benign")},
+    }
 
+
+def classify(
+    subtests: list[dict], benign: dict[str, str] | None = None
+) -> dict[str, Any]:
+    """Sort subtest records into pass / fail / skip / benign buckets.
+
+    Shared by the final report and the progress reader so a run in
+    flight is bucketed by exactly the rules that will judge it at the
+    end -- including the benign table.
+    """
+    benign = benign or {}
     passed: list[str] = []
     failed: list[dict[str, str]] = []
     skipped: list[dict[str, str]] = []
@@ -343,20 +372,238 @@ def build_report(
             )
 
     return {
-        "suite": suite,
-        "cluster": cluster,
-        "cfg": cfg,
-        "duration": _suite_duration(text),
         "pass": passed,
         "fail": failed,
         "skip": skipped,
         "benign": benign_hits,
-        "counts": {
-            "pass": len(passed),
-            "fail": len(failed),
-            "skip": len(skipped),
-            "benign": len(benign_hits),
-        },
+    }
+
+
+# ------------------------------------------------------------------
+# Run records and progress
+# ------------------------------------------------------------------
+
+# A suite runs for tens of minutes inside one blocking ssh call, so the
+# session that started it cannot report on it, and a second session
+# knows nothing about it at all.  Every agent then invents its own way
+# to look: `pgrep -f auster` (matches the shell running the pgrep),
+# tailing the console (rotated and buffered), or timing guesses.  The
+# record below is written beside the cluster state, like a claim, so
+# "how far in is it?" has one answer readable from any session --
+# including after the session that started the run has died.
+
+_PROGRESS_SECTIONS = ("alive", "total", "current", "results")
+
+
+def _sockets() -> Path:
+    """Resolve the state dir at call time (see cluster_claim._sockets)."""
+    from ltvm_pkg import vm_state
+
+    return vm_state.SOCKETS
+
+
+def run_record_path(cluster: str) -> Path:
+    return _sockets() / f"{cluster}.testrun"
+
+
+@dataclass
+class RunRecord:
+    """Where one suite run is happening, and whether it has ended."""
+
+    cluster: str
+    suite: str
+    node: str
+    ip: str
+    log_dir: str
+    tests_dir: str
+    cfg: str = DEFAULT_CFG
+    only: str = ""
+    excepted: str = ""
+    started: int = 0
+    #: 0 while the run is in flight; set when `ltvm test` returns.  This
+    #: separates "still going" from "over" without asking the node.
+    finished: int = 0
+
+    def save(self) -> None:
+        """Persist this record; a failure costs visibility, not the run."""
+        from ltvm_pkg import vm_state
+        from ltvm_pkg.priv import chown_to_real_user
+
+        path = run_record_path(self.cluster)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            vm_state._atomic_write(path, json.dumps(asdict(self), indent=2) + "\n")
+            chown_to_real_user(path)
+        except OSError as e:
+            log.warning("cannot record the run at %s: %s", path, e)
+
+    @staticmethod
+    def load(cluster: str) -> RunRecord | None:
+        """Return the last recorded run for *cluster*, or None."""
+        try:
+            data = json.loads(run_record_path(cluster).read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        known = set(RunRecord.__dataclass_fields__)
+        try:
+            return RunRecord(**{k: v for k, v in data.items() if k in known})
+        except TypeError:
+            return None
+
+
+def suite_total_script(tests_dir: str, suite: str) -> str:
+    """Shell that counts the subtests a suite defines.
+
+    The suite script's own ``run_test`` lines are the only honest total:
+    it is what the run would have covered had nothing stopped it.
+    """
+    return f"grep -c '^run_test ' {shlex.quote(f'{tests_dir}/{suite}.sh')}"
+
+
+def parse_total(text: str) -> int:
+    """Parse :func:`suite_total_script` output; 0 when it is unusable."""
+    try:
+        return int(text.strip().splitlines()[0])
+    except (ValueError, IndexError):
+        return 0
+
+
+def progress_script(record: RunRecord) -> str:
+    """Shell that reports one run's progress in a single round trip."""
+    log_dir = shlex.quote(record.log_dir)
+    # Bracketed so pgrep cannot match the shell that runs it -- the
+    # mistake every hand-rolled check makes -- and carrying the log dir
+    # so it identifies this run, not another suite on the same node.
+    pattern = shlex.quote(f"[a]uster.*{re.escape(record.log_dir)}")
+    return "\n".join(
+        [
+            f"echo '{_MARKER}alive'",
+            f"pgrep -f {pattern} >/dev/null && echo yes || echo no",
+            f"echo '{_MARKER}total'",
+            suite_total_script(record.tests_dir, record.suite) + " 2>/dev/null",
+            f"echo '{_MARKER}current'",
+            f"ls -t {log_dir}/*.test_log.*.log 2>/dev/null | head -1",
+            # Last: results.yml is the only multi-line section, so a
+            # stray newline in it cannot be read as another section.
+            f"echo '{_MARKER}results'",
+            f"cat {log_dir}/results.yml 2>/dev/null",
+            # Nothing above is required to succeed; only a transport
+            # failure may make this script non-zero.
+            "exit 0",
+        ]
+    )
+
+
+def parse_progress_output(text: str) -> dict[str, str]:
+    """Split :func:`progress_script` output into its sections."""
+    sections: dict[str, list[str]] = {s: [] for s in _PROGRESS_SECTIONS}
+    current = None
+    for line in text.splitlines():
+        if line.startswith(_MARKER):
+            current = line[len(_MARKER) :].strip()
+            continue
+        if current in sections:
+            sections[current].append(line)
+    return {k: "\n".join(v).strip() for k, v in sections.items()}
+
+
+_TEST_LOG_RE = re.compile(r"\.(test_[^.]+)\.test_log\.")
+
+
+def _current_test(listing: str, recorded: set[str]) -> str:
+    """Name the subtest that has a log but no result yet."""
+    m = _TEST_LOG_RE.search(listing.strip().splitlines()[0] if listing else "")
+    if not m:
+        return ""
+    name = m.group(1)
+    return "" if name in recorded else name
+
+
+def coverage_note(recorded: int, total: int, last: str, ended: bool) -> str:
+    """Explain a run that recorded fewer subtests than the suite has.
+
+    ``FAIL_ON_ERROR`` defaults to true (``cfg/local.sh``), so
+    ``test-framework.sh`` exits the whole suite at the first real
+    failure.  That is intended, but it makes "0 FAIL" over a third of a
+    suite look like a clean pass unless the shortfall is stated.
+    """
+    if not total or recorded >= total or not ended:
+        return ""
+    missing = total - recorded
+    where = f" after {last}" if last else ""
+    return (
+        f"stopped early{where}: {recorded} of {total} subtests ran, "
+        f"{missing} never started (FAIL_ON_ERROR halts the suite on the "
+        f"first real failure; auster -k would continue)"
+    )
+
+
+def build_progress(
+    record: RunRecord,
+    sections: dict[str, str],
+    *,
+    benign: dict[str, str] | None = None,
+    now: float | None = None,
+) -> dict[str, Any]:
+    """Turn one progress round trip into the dict agents consume.
+
+    A partially written results.yml is normal here -- the file grows a
+    record per subtest -- so a parse failure reports zero progress
+    rather than raising.
+    """
+    now = time.time() if now is None else now
+    try:
+        subtests = parse_results(sections.get("results", ""), record.suite)
+    except TestRunnerError:
+        subtests = []
+
+    # yaml.sh writes a subtest's name when it starts and its status when
+    # it ends, so a record with no status is the test running right now.
+    # Counting it would report the live subtest as an unknown-status
+    # failure.
+    running = [s for s in subtests if not str(s.get("status") or "").strip()]
+    subtests = [s for s in subtests if str(s.get("status") or "").strip()]
+
+    buckets = classify(subtests, benign)
+    counts = {k: len(buckets[k]) for k in ("pass", "fail", "skip", "benign")}
+
+    alive = sections.get("alive", "").strip() == "yes"
+    total = parse_total(sections.get("total", ""))
+    recorded = len(subtests)
+    names = [str(s.get("name")) for s in subtests]
+    last = names[-1] if names else ""
+
+    if alive:
+        state = "running"
+    elif record.finished:
+        state = "finished"
+    else:
+        # No auster on the node and no completion recorded: the starting
+        # session died, or the run was killed.  Never call this finished.
+        state = "ended"
+
+    return {
+        "cluster": record.cluster,
+        "suite": record.suite,
+        "node": record.node,
+        "log_dir": record.log_dir,
+        "state": state,
+        "elapsed": max(0, int(now - record.started)) if record.started else 0,
+        "counts": counts,
+        "recorded": recorded,
+        "total": total,
+        # The unfinished results.yml record names the live subtest
+        # exactly; the newest test_log is the fallback for the window
+        # before that record is flushed.
+        "current": (
+            str(running[-1].get("name"))
+            if running
+            else _current_test(sections.get("current", ""), set(names))
+        ),
+        "last": last,
+        "fail": buckets["fail"],
+        "benign": buckets["benign"],
+        "coverage_note": coverage_note(recorded, total, last, state != "running"),
     }
 
 
