@@ -260,6 +260,21 @@ This does not arise from a build tree, where `insmod` is used and
 
 ## Gotchas
 
+- **Never raise the extra-NIC MTU above 1500.** The host backend
+  (`socket_vmnet` under the QEMU stream netdev) cannot carry a larger
+  frame. One oversized frame desynchronizes that port's
+  length-prefixed stream, and the port then drops every frame in both
+  directions until the VM is restarted -- `ip link set ... down/up`
+  does not clear it, and the guest still reports the link
+  `UP,LOWER_UP` with TX counters climbing. The failure is
+  self-inflicted and one-sided: the port that *sends* the big frame is
+  the one that dies. Because ICMP, ssh, and ARP all fit, the node
+  looks healthy and only RDMA breaks -- RoCE takes its path MTU from
+  this netdev, so it is usually the first thing to send a jumbo frame.
+  It surfaces as `lnetctl ping` returning `-113` and
+  `ADDR ERROR -110` from `kiblnd_cm_callback`, which reads like an
+  LNet or rdma_cm fault rather than a dead virtual wire.
+  `setup-nic-softroce.sh` pins the MTU to 1500 for this reason.
 - **`ssh` propagates the last command's exit code.** A trailing
   `pkill -f foo` that finds no match returns 1 and the whole ssh
   fails. Prefix with `true;` or append `|| true`.

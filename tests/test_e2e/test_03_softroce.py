@@ -13,13 +13,13 @@ from .conftest import run_ltvm, ssh_run, wait_ssh
 
 
 def test_softroce_rxe0_active(vm_name) -> None:  # type: ignore[no-untyped-def]
-    """Single `--nic softroce` boots with an ACTIVE rxe0 on eth1 at MTU 4200.
+    """Single `--nic softroce` boots with an ACTIVE rxe0 on eth1 at MTU 1500.
 
     Assertions:
       * `rdma link show` lists a link named `rxe0` in state ACTIVE
         with `netdev eth1`
       * `modinfo rdma_rxe` exits 0 (module preinstalled)
-      * `ip -d link show eth1` reports mtu >= 4200 (set by the hook)
+      * `ip -d link show eth1` reports mtu == 1500 (set by the hook)
     """
     name = vm_name()
     proc = run_ltvm(
@@ -69,11 +69,17 @@ def test_softroce_rxe0_active(vm_name) -> None:  # type: ignore[no-untyped-def]
         f"modinfo rdma_rxe failed rc={rc}; stderr: {err}\nstdout: {out}"
     )
 
-    # 3. MTU tuned on eth1.  `ip -d link show eth1` output has the
-    # token `mtu <N>` on the first line.
+    # 3. MTU held at 1500 on eth1.  `ip -d link show eth1` output has
+    # the token `mtu <N>` on the first line.  A jumbo MTU here is not
+    # a tuning choice but a fault: the host backend drops the port for
+    # good on the first oversized frame, which reads as an RDMA
+    # failure long after the frame that caused it.
     rc, out, err = ssh_run(name, "ip -d link show eth1")
     assert rc == 0, f"ssh ip -d link show eth1 failed rc={rc}: {err}"
     m = re.search(r"\bmtu\s+(\d+)\b", out)
     assert m is not None, f"mtu not found in ip -d link:\n{out}"
     mtu = int(m.group(1))
-    assert mtu >= 4200, f"eth1 mtu is {mtu}, expected >= 4200 (softroce hook)"
+    assert mtu == 1500, (
+        f"eth1 mtu is {mtu}, expected 1500; a larger MTU wedges the "
+        f"socket_vmnet port on the first oversized frame"
+    )
