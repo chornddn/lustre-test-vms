@@ -752,6 +752,19 @@ sudo ltvm cluster destroy co2
 `cluster exec <role>` fans out across every node holding the role and
 exits non-zero if any node did; `cluster ssh <role>` opens a session on
 the first, since it execs a single interactive ssh.
+`cluster status` reports what a build and a deploy have to
+match -- target, arch, kernel and net -- so those facts come
+from the cluster rather than from a note that goes stale:
+
+```bash
+ltvm cluster status co2
+```
+
+When the nodes disagree on any of the three build fields the
+line reads `-` and a warning on stderr names the value per
+node.  That is worth surfacing: one staging tree serves at
+most one kernel, and the other nodes fail at insmod, far
+from the build that chose it.
 
 #### Distributing extra test-config profiles
 

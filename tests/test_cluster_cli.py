@@ -848,6 +848,162 @@ class TestCmdClusterListBehavior:
         assert "missing required field" in out
 
 
+class TestClusterIdentitySummary:
+    """target / arch / kernel / net belong in `cluster status`.
+
+    They were reachable only through `cluster exec <c> <role> 'uname -r'`
+    on every node, so the numbers got carried in prose instead -- and a
+    stale kernel in a note is worse than none, because it gets pasted
+    into a build command.
+    """
+
+    def _ids(self, **per_node: dict[str, str]) -> dict[str, dict[str, str]]:
+        return dict(per_node)
+
+    def test_uniform_nodes_agree_on_everything(self) -> None:
+        ids = self._ids(
+            a={"target": "rocky9", "arch": "aarch64", "kernel": "5.14.0-x"},
+            b={"target": "rocky9", "arch": "aarch64", "kernel": "5.14.0-x"},
+        )
+        agreed, divergent = vm_cluster.identity_summary(ids)
+        assert agreed == {
+            "target": "rocky9",
+            "arch": "aarch64",
+            "kernel": "5.14.0-x",
+        }
+        assert divergent == {}
+
+    def test_a_mismatched_kernel_is_reported_per_node(self) -> None:
+        """The case that wastes a build: one node on another kernel."""
+        ids = self._ids(
+            a={"target": "rocky9", "arch": "aarch64", "kernel": "5.14.0-x"},
+            b={"target": "rocky9", "arch": "aarch64", "kernel": "5.14.0-y"},
+        )
+        agreed, divergent = vm_cluster.identity_summary(ids)
+        assert "kernel" not in agreed
+        assert agreed["target"] == "rocky9"
+        assert divergent == {"kernel": {"a": "5.14.0-x", "b": "5.14.0-y"}}
+
+    def test_a_destroyed_node_is_absent_not_contradictory(self) -> None:
+        """An empty identity must not read as a disagreement."""
+        ids = self._ids(
+            a={"target": "rocky9", "arch": "aarch64", "kernel": "5.14.0-x"},
+            gone={},
+        )
+        agreed, divergent = vm_cluster.identity_summary(ids)
+        assert agreed["kernel"] == "5.14.0-x"
+        assert divergent == {}
+
+    def test_no_nodes_report_anything(self) -> None:
+        agreed, divergent = vm_cluster.identity_summary({"a": {}, "b": {}})
+        assert agreed == {} and divergent == {}
+
+    def test_node_identities_tolerates_a_missing_vm(
+        self, tmp_sockets: Path
+    ) -> None:
+        with patch.object(vm_cluster, "VMInfo") as mock_vm:
+            mock_vm.load.side_effect = VMNotFound("co1-mds")
+            out = vm_cluster.node_identities(["co1-mds"])
+        assert out == {"co1-mds": {}}
+
+
+class TestClusterStatusReportsBuildIdentity:
+    def _run(
+        self, capsys: pytest.CaptureFixture[str], **vm_attrs: str
+    ) -> tuple[str, str]:
+        _save_cluster(name="co1")
+        vm = MagicMock()
+        vm.os_id = vm_attrs.get("os_id", "rocky9")
+        vm.arch = vm_attrs.get("arch", "aarch64")
+        vm.kver = vm_attrs.get("kver", "5.14.0-503.40.1.el9_5")
+        with (
+            patch.object(vm_cluster, "is_running", return_value=True),
+            patch.object(vm_cluster, "VMInfo") as mock_vm,
+        ):
+            mock_vm.load.return_value = vm
+            vm_cluster.cmd_cluster_status(argparse.Namespace(name="co1"))
+        cap = capsys.readouterr()
+        return cap.out, cap.err
+
+    def test_all_four_fields_are_printed(
+        self, tmp_sockets: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        out, _ = self._run(capsys)
+        assert "target:  rocky9" in out
+        assert "arch:    aarch64" in out
+        assert "kernel:  5.14.0-503.40.1.el9_5" in out
+
+    def test_an_undeployed_cluster_says_so_rather_than_guessing(
+        self, tmp_sockets: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """No recorded net means tcp by default, which is not the same
+        claim as 'this cluster runs tcp'."""
+        out, _ = self._run(capsys)
+        assert "net:     tcp (default; never deployed)" in out
+
+    def test_a_deployed_net_is_shown_plainly(
+        self, tmp_sockets: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        c = _save_cluster(name="co2")
+        c.net = "o2ib"
+        c.save()
+        vm = MagicMock(os_id="rocky9", arch="aarch64", kver="5.14.0-x")
+        with (
+            patch.object(vm_cluster, "is_running", return_value=True),
+            patch.object(vm_cluster, "VMInfo") as mock_vm,
+        ):
+            mock_vm.load.return_value = vm
+            vm_cluster.cmd_cluster_status(argparse.Namespace(name="co2"))
+        out = capsys.readouterr().out
+        assert "net:     o2ib" in out
+        assert "never deployed" not in out
+
+    def test_a_divergent_kernel_warns_on_stderr(
+        self, tmp_sockets: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The warning must not land on stdout, where it would be read as
+        part of the node table."""
+        _save_cluster(name="co1")
+
+        def _load(name: str) -> Any:
+            kver = "5.14.0-x" if name == "co1-mds" else "5.14.0-y"
+            return MagicMock(os_id="rocky9", arch="aarch64", kver=kver)
+
+        with (
+            patch.object(vm_cluster, "is_running", return_value=True),
+            patch.object(vm_cluster, "VMInfo") as mock_vm,
+        ):
+            mock_vm.load.side_effect = _load
+            vm_cluster.cmd_cluster_status(argparse.Namespace(name="co1"))
+        cap = capsys.readouterr()
+        assert "kernel:  -" in cap.out
+        assert "disagree on kernel" in cap.err
+        assert "co1-mds=5.14.0-x" in cap.err
+        assert "co1-oss=5.14.0-y" in cap.err
+        assert "disagree" not in cap.out
+
+    def test_a_stopped_node_does_not_blank_the_identity(
+        self, tmp_sockets: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """One destroyed node must not erase the fields the rest report."""
+        _save_cluster(name="co1")
+
+        def _load(name: str) -> Any:
+            if name == "co1-oss":
+                raise VMNotFound(name)
+            return MagicMock(os_id="rocky9", arch="aarch64", kver="5.14.0-x")
+
+        with (
+            patch.object(vm_cluster, "is_running", return_value=True),
+            patch.object(vm_cluster, "VMInfo") as mock_vm,
+        ):
+            mock_vm.load.side_effect = _load
+            vm_cluster.cmd_cluster_status(argparse.Namespace(name="co1"))
+        cap = capsys.readouterr()
+        assert "kernel:  5.14.0-x" in cap.out
+        assert "disagree" not in cap.err
+
+
 class TestCmdClusterStatusBehavior:
     """cmd_cluster_status prints per-node table + raises when missing."""
 

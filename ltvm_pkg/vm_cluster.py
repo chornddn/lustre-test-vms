@@ -1435,6 +1435,58 @@ def cmd_cluster_list(args: argparse.Namespace) -> None:
         print(f"{c['cluster']}: {summary} owner={c['owner_id'] or '-'}")
 
 
+# What a Lustre build has to match.  One staging tree serves a cluster
+# only if every node agrees on all three, so they are reported together.
+IDENTITY_FIELDS = ("target", "arch", "kernel")
+
+
+def node_identities(names: list[str]) -> dict[str, dict[str, str]]:
+    """Map node name to the target/arch/kernel its VM state records.
+
+    A node with no VM state contributes an empty mapping rather than
+    raising: status must stay usable when one node has been destroyed.
+    """
+    out: dict[str, dict[str, str]] = {}
+    for name in names:
+        try:
+            vm = VMInfo.load(name)
+        except VMNotFound:
+            out[name] = {}
+            continue
+        out[name] = {
+            "target": vm.os_id,
+            "arch": vm.arch,
+            "kernel": vm.kver,
+        }
+    return out
+
+
+def identity_summary(
+    identities: dict[str, dict[str, str]],
+) -> tuple[dict[str, str], dict[str, dict[str, str]]]:
+    """Split node identities into what they agree on and what they do not.
+
+    Returns ``(agreed, divergent)``.  ``agreed`` carries one value per
+    field where every node that reports one reports the same.
+    ``divergent`` maps a field to ``{node: value}`` where they differ --
+    a build then matches at most one node, and the rest fail at insmod,
+    far from the build that chose the kernel.
+
+    Nodes missing a value are ignored rather than counted as a
+    disagreement; a destroyed node is absent, not contradictory.
+    """
+    agreed: dict[str, str] = {}
+    divergent: dict[str, dict[str, str]] = {}
+    for f in IDENTITY_FIELDS:
+        seen = {n: i[f] for n, i in identities.items() if i.get(f)}
+        values = set(seen.values())
+        if len(values) == 1:
+            agreed[f] = values.pop()
+        elif len(values) > 1:
+            divergent[f] = seen
+    return agreed, divergent
+
+
 def cmd_cluster_status(args: argparse.Namespace) -> None:
     use_json = bool(getattr(args, "json", False))
     cluster = ClusterInfo.load(args.name)
@@ -1468,6 +1520,29 @@ def cmd_cluster_status(args: argparse.Namespace) -> None:
     print(f"cluster: {cluster.name}")
     print(f"owner:   {cluster.owner_id or '-'}")
     print(f"nodes:   {len(nodes)}")
+
+    agreed, divergent = identity_summary(
+        node_identities([n.name for n in nodes])
+    )
+    # These four are what a build and a deploy have to match, so they
+    # belong next to the node list rather than behind `cluster exec
+    # uname -r` on every node.
+    print(f"target:  {agreed.get('target') or '-'}")
+    print(f"arch:    {agreed.get('arch') or '-'}")
+    print(f"kernel:  {agreed.get('kernel') or '-'}")
+    if cluster.net:
+        print(f"net:     {cluster.net}")
+    else:
+        print("net:     tcp (default; never deployed)")
+
+    for f, per_node in divergent.items():
+        detail = " ".join(f"{n}={v}" for n, v in sorted(per_node.items()))
+        print(
+            f"warning: nodes disagree on {f}: {detail}\n"
+            f"         one Lustre build can serve at most one of these",
+            file=sys.stderr,
+        )
+
     print()
 
     # The human path walks the nodes, not `rows`: a dict of mixed value
