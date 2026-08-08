@@ -597,6 +597,18 @@ than the `.ltvm-staging-stamp` written at the end of the build.
 **`llmount` is the mount command.**  Neither `build` nor
 `deploy` mounts anything.
 
+**`llmount --cleanup` leaves the node with no Lustre
+resident, or fails.**  `llmountcleanup.sh` on its own does
+not get there: it stops the nodes named in the test config
+but not a client the node mounted on itself, and that one
+mount keeps `mdd` busy so `lustre_rmmod` fails.  It also
+leaves the dm-flakey targets behind.  Cleanup therefore
+escalates -- force-unmount, drop the dm targets, unload
+again -- and exits non-zero naming what is still held.
+Stale state does not announce itself when it is created;
+it reappears later as `mkfs.lustre: Unable to build fs
+(256)`, or as a whole suite that never runs.
+
 **`deploy --net {tcp,o2ib}` picks the cluster's LNet net.**
 A cluster runs **one** net at a time -- the Lustre test
 suites all assume one, and multi-network is uncommon

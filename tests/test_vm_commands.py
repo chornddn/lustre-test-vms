@@ -4,13 +4,15 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-from ltvm_pkg import vm_cluster, vm_commands
+from ltvm_pkg import vm_cluster, vm_commands, vm_state
 from ltvm_pkg.vm_state import (
     DISK_SIZE_BYTES,
     ROOT_SIZE_BYTES,
@@ -1079,7 +1081,7 @@ LIBDIR = "/usr/lib64/lustre"
 _MOUNT_CMD = (
     f"dmsetup remove_all; cd {LIBDIR}/tests && LUSTRE={LIBDIR} bash llmount.sh"
 )
-_CLEANUP_CMD = f"cd {LIBDIR}/tests && LUSTRE={LIBDIR} bash llmountcleanup.sh && lustre_rmmod"
+_CLEANUP_CMD = vm_state.lustre_teardown_cmd(LIBDIR)
 
 
 class TestCmdLlmount:
@@ -2208,3 +2210,91 @@ class TestRssMb:
 
         mb = _rss_mb(_os.getpid())
         assert mb is not None and mb >= 0
+
+
+# ── lustre_teardown_cmd ──────────────────────────────────
+
+
+class TestLustreTeardownCmd:
+    """Run the generated teardown shell against stubbed system commands.
+
+    The value of this command is entirely in what it does when the
+    first unload fails, so assert that by executing it rather than by
+    matching its text.
+    """
+
+    @staticmethod
+    def _harness(tmp_path: Path, *, needs_escalation: bool, stuck: bool):
+        libdir = tmp_path / "lustre"
+        (libdir / "tests").mkdir(parents=True)
+        (libdir / "tests" / "llmountcleanup.sh").write_text("exit 0\n")
+
+        state = tmp_path / "state"
+        state.mkdir()
+        if needs_escalation:
+            (state / "needs_escalation").touch()
+        if stuck:
+            (state / "stuck").touch()
+
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir()
+
+        def stub(name: str, body: str) -> None:
+            p = bin_dir / name
+            p.write_text(f"#!/bin/sh\nS={state}\n{body}\n")
+            p.chmod(0o755)
+
+        # Resident until something touches $S/clean.
+        stub(
+            "lsmod", 'if [ -e "$S/clean" ]; then exit 0; fi; echo "lustre 1 0"'
+        )
+        # Succeeds only once the escalation has run (or immediately, when
+        # no escalation is needed).  Never succeeds in the stuck case.
+        stub(
+            "lustre_rmmod",
+            'if [ -e "$S/stuck" ]; then exit 1; fi\n'
+            'if [ -e "$S/needs_escalation" ] && [ ! -e "$S/escalated" ]; '
+            "then exit 1; fi\n"
+            'touch "$S/clean"',
+        )
+        stub("umount", 'echo "$@" >> "$S/umount.log"; touch "$S/escalated"')
+        stub("dmsetup", 'echo "$@" >> "$S/dmsetup.log"')
+        stub("mount", "exit 0")
+
+        cmd = vm_state.lustre_teardown_cmd(str(libdir))
+        env = dict(os.environ, PATH=f"{bin_dir}:{os.environ['PATH']}")
+        proc = subprocess.run(
+            ["sh", "-c", cmd], capture_output=True, text=True, env=env
+        )
+        return proc, state
+
+    def test_clean_node_needs_no_escalation(self, tmp_path: Path) -> None:
+        proc, state = self._harness(
+            tmp_path, needs_escalation=False, stuck=False
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert not (state / "umount.log").exists(), (
+            "unmounted on a node that was already clean"
+        )
+
+    def test_a_held_mount_is_forced_off_and_dm_targets_dropped(
+        self, tmp_path: Path
+    ) -> None:
+        """The case that keeps recurring.
+
+        llmountcleanup.sh leaves the node's own client mount behind, so
+        the first lustre_rmmod fails.  Unless the mount is forced off and
+        the dm targets are dropped, the node stays dirty and the next
+        command fails somewhere unrelated.
+        """
+        proc, state = self._harness(
+            tmp_path, needs_escalation=True, stuck=False
+        )
+        assert proc.returncode == 0, proc.stderr
+        assert "-t lustre" in (state / "umount.log").read_text()
+        assert "remove_all" in (state / "dmsetup.log").read_text()
+
+    def test_a_node_that_stays_dirty_fails_loudly(self, tmp_path: Path) -> None:
+        proc, _ = self._harness(tmp_path, needs_escalation=True, stuck=True)
+        assert proc.returncode == 1
+        assert "still resident" in proc.stderr

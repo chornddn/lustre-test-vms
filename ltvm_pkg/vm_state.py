@@ -510,6 +510,52 @@ def lustre_libdir(os_family: str = "rhel") -> str:
     return "/usr/lib/lustre" if os_family == "debian" else "/usr/lib64/lustre"
 
 
+# Modules whose presence means Lustre is still resident on the node.
+_LUSTRE_MODS = "^(lustre|mdd|ofd|obdclass|ptlrpc|lnet|libcfs) "
+
+
+def lustre_teardown_cmd(libdir: str) -> str:
+    """Return a shell command that leaves a node with no Lustre resident.
+
+    llmountcleanup.sh alone is not enough.  It stops the nodes named in
+    the test config, but not a client the local node mounted on itself,
+    and that one mount keeps mdd busy, so lustre_rmmod fails.  It also
+    leaves the dm-flakey targets behind, which makes the next mkfs.lustre
+    fail with a bare "Unable to build fs (256)".
+
+    So escalate: unmount every remaining Lustre mount, drop the dm
+    targets, and unload again.  The command exits non-zero and names
+    what is still held if the node is not clean, because a teardown that
+    fails quietly is found later, by an unrelated command.
+
+    Any imported zpool is exported first, whichever backend is in use:
+    an imported pool holds its vdev open, so the next format fails with
+    "apparently in use by the system" -- and switching a VM back to
+    ldiskfs is exactly when the pools are still imported.  zfs.ko comes
+    off after lustre_rmmod has taken osd_zfs off the top of it, so that
+    llmount.sh reloads a newly deployed ZFS of a different version.
+    """
+    return (
+        f"cd {libdir}/tests && LUSTRE={libdir} bash llmountcleanup.sh; "
+        "if command -v zpool >/dev/null 2>&1; then "
+        "for p in $(zpool list -H -o name 2>/dev/null); do "
+        'zpool export -f "$p" 2>/dev/null; done; fi; '
+        "lustre_rmmod 2>/dev/null; "
+        f"if lsmod | grep -qE '{_LUSTRE_MODS}'; then "
+        "  umount -a -f -t lustre 2>/dev/null; "
+        "  dmsetup remove_all 2>/dev/null; "
+        "  lustre_rmmod 2>/dev/null; "
+        "fi; "
+        "modprobe -r zfs 2>/dev/null; "
+        f"if lsmod | grep -qE '{_LUSTRE_MODS}'; then "
+        "  echo 'error: Lustre still resident after teardown' >&2; "
+        f"  lsmod | grep -E '{_LUSTRE_MODS}' >&2; "
+        "  mount -t lustre >&2; "
+        "  exit 1; "
+        "fi"
+    )
+
+
 # Exit codes
 EXIT_OK = 0
 EXIT_ERROR = 1

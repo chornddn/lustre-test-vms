@@ -58,6 +58,7 @@ from .vm_state import (
     VMNotFound,
     drop_orphan_clusters,
     lustre_libdir,
+    lustre_teardown_cmd,
     nic_ip6,
     resolve_os_artifacts,
 )
@@ -1571,10 +1572,7 @@ def cmd_llmount(args: argparse.Namespace) -> None:
     libdir = lustre_libdir(os_family)
 
     if cleanup:
-        command = (
-            f"cd {libdir}/tests && LUSTRE={libdir} bash llmountcleanup.sh"
-            " && lustre_rmmod"
-        )
+        command = lustre_teardown_cmd(libdir)
     else:
         # Image-baked Lustre doesn't know the VM's virtio-disk topology,
         # so point MDSDEV*/OSTDEV* at the real block devices before the

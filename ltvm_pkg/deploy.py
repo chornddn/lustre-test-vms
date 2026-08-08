@@ -20,6 +20,7 @@ from .vm_state import (
     VMInfo,
     VMNotFound,
     lustre_libdir,
+    lustre_teardown_cmd,
 )
 
 
@@ -531,36 +532,20 @@ def lustre_mount_vm(name: str, os_family: str, *, quiet: bool = False) -> int:
         print(f"error: {e}", file=sys.stderr)
         return EXIT_NOT_FOUND
     libdir = lustre_libdir(os_family)
-    # Export any imported zpool, as unconditionally as the dmsetup
-    # sweep below and for the same reason: an imported pool holds its
-    # vdev open, so the next format fails with "apparently in use by
-    # the system" whichever backend is being formatted.  Doing this
-    # only for ZFS would skip the case that needs it most -- switching
-    # a VM back to ldiskfs, when the pools are still imported.
-    #
-    # Export, not destroy: formatall reformats with --reformat anyway.
-    zfs_cleanup = (
-        "if command -v zpool >/dev/null 2>&1; then "
-        "for p in $(zpool list -H -o name 2>/dev/null); do "
-        'zpool export -f "$p" 2>/dev/null; done; fi; '
-    )
     try:
         # Clean up any existing Lustre state before formatting.  llmount.sh
-        # runs its own stopall internally, but does not call dmsetup remove_all
-        # afterward, so mke2fs refuses to reformat backing devices that are
-        # still "in use" by leftover dm targets on re-deploy.
-        run_ssh(
-            vm.ip,
-            f"cd {libdir}/tests && LUSTRE={libdir} bash llmountcleanup.sh 2>/dev/null; "
-            f"{zfs_cleanup}"
-            "lustre_rmmod 2>/dev/null; "
-            # Must follow lustre_rmmod, which takes osd_zfs off the top
-            # of zfs.ko.  llmount.sh reloads it, which is what makes a
-            # newly-deployed ZFS of a different version take effect.
-            "modprobe -r zfs 2>/dev/null; "
-            "dmsetup remove_all 2>/dev/null; true",
-            timeout=60,
-        )
+        # runs its own stopall internally, but leaves dm targets behind, so
+        # mke2fs refuses to reformat backing devices that are still "in use".
+        # Report a failure here rather than letting it reappear as
+        # mkfs.lustre's bare "Unable to build fs (256)".
+        r = run_ssh(vm.ip, lustre_teardown_cmd(libdir), timeout=120)
+        if r.returncode != 0:
+            print(
+                f"error: could not clear Lustre state on {vm.name} before "
+                f"mounting; formatting would fail\n{r.stderr}",
+                file=sys.stderr,
+            )
+            return EXIT_ERROR
         r = run_ssh(
             vm.ip,
             f"cd {libdir}/tests && LUSTRE={libdir} bash llmount.sh",
