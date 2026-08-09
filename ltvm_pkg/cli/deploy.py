@@ -52,10 +52,10 @@ def cmd_deploy(args: argparse.Namespace) -> int:
     use_json = args.json
     name = args.name
 
-    # --arch rides on every subcommand from the shared parent parser.
-    # Deploy derives the arch from the target, so accepting one here
+    # Deploy derives the arch from the target, so honouring one here
     # would let a caller state something the nodes contradict -- exactly
-    # the mismatch this command was reshaped to make unexpressible.
+    # the mismatch this command was reshaped to make unexpressible.  The
+    # flag is hidden from --help and exists only to be refused by name.
     if getattr(args, "arch", None):
         return _error(
             "deploy takes no --arch; it uses the arch the target runs",

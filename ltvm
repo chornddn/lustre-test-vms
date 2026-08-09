@@ -503,7 +503,14 @@ def build_parser() -> argparse.ArgumentParser:
     common.add_argument(
         "-v", "--verbose", action="store_true", help="Enable verbose logging"
     )
-    common.add_argument(
+
+    # Shared --arch flag.  Its own parent rather than a global on
+    # `common`, because a subcommand that takes the arch from the nodes
+    # it acts on (deploy, test, llmount) must not advertise a flag it
+    # would ignore: an accepted-and-discarded --arch reads as an
+    # override that worked.
+    arch_arg = argparse.ArgumentParser(add_help=False)
+    arch_arg.add_argument(
         "--arch",
         default=None,
         help="Target CPU architecture override (e.g. aarch64). "
@@ -695,7 +702,7 @@ def build_parser() -> argparse.ArgumentParser:
     # -- build (all | container | kernel | image | lustre | shell | status) --
     build_parser = sub.add_parser(
         "build",
-        parents=[common],
+        parents=[common, arch_arg],
         help="Build artifacts (all/container/kernel/image/lustre/shell/status)",
     )
     build_sub = build_parser.add_subparsers(
@@ -733,6 +740,7 @@ def build_parser() -> argparse.ArgumentParser:
         "all",
         parents=[
             common,
+            arch_arg,
             kernel_arg,
             force_arg,
             force_compat_arg,
@@ -745,7 +753,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     bcp = build_sub.add_parser(
         "container",
-        parents=[common, variant_arg],
+        parents=[common, arch_arg, variant_arg],
         help="Build the build container for a target",
     )
     _add_target_arg(bcp, required=True)
@@ -753,7 +761,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     bkp = build_sub.add_parser(
         "kernel",
-        parents=[common, kernel_arg, force_arg, force_compat_arg],
+        parents=[common, arch_arg, kernel_arg, force_arg, force_compat_arg],
         help="Build the kernel for a target",
     )
     _add_target_arg(bkp, required=True)
@@ -764,7 +772,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     bip = build_sub.add_parser(
         "image",
-        parents=[common, kernel_arg, force_arg, force_compat_arg, variant_arg],
+        parents=[
+            common,
+            arch_arg,
+            kernel_arg,
+            force_arg,
+            force_compat_arg,
+            variant_arg,
+        ],
         help="Build the VM base image for a target",
     )
     _add_target_arg(bip, required=True)
@@ -790,6 +805,7 @@ def build_parser() -> argparse.ArgumentParser:
         "lustre",
         parents=[
             common,
+            arch_arg,
             kernel_arg,
             force_arg,
             force_compat_arg,
@@ -834,7 +850,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     bshp = build_sub.add_parser(
         "shell",
-        parents=[common],
+        parents=[common, arch_arg],
         help="Enter build container with source mounted",
     )
     _add_target_arg(bshp, required=True)
@@ -848,7 +864,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     bzp = build_sub.add_parser(
         "zfs",
-        parents=[common, kernel_arg, force_arg],
+        parents=[common, arch_arg, kernel_arg, force_arg],
         help="Build OpenZFS against the target's kernel build-tree",
     )
     _add_target_arg(bzp, required=True)
@@ -866,7 +882,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     bmkp = build_sub.add_parser(
         "mofed-kmods",
-        parents=[common, kernel_arg, force_arg, variant_arg],
+        parents=[common, arch_arg, kernel_arg, force_arg, variant_arg],
         help="Build MOFED kernel modules against the target's Lustre-patched kernel",
     )
     _add_target_arg(bmkp, required=True)
@@ -874,7 +890,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     bstp = build_sub.add_parser(
         "status",
-        parents=[common],
+        parents=[common, arch_arg],
         help="Show build status of all targets",
     )
     bstp.add_argument(
@@ -894,7 +910,7 @@ def build_parser() -> argparse.ArgumentParser:
     # -- target (list | show | clean | validate | fetch | publish) --
     target_parser = sub.add_parser(
         "target",
-        parents=[common],
+        parents=[common, arch_arg],
         help="Target OS management (list/show/clean/validate/fetch/publish)",
     )
     target_sub = target_parser.add_subparsers(
@@ -903,7 +919,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     tlp = target_sub.add_parser(
         "list",
-        parents=[common],
+        parents=[common, arch_arg],
         help="List configured target OSes",
     )
     tlp.add_argument(
@@ -933,7 +949,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     tshp = target_sub.add_parser(
         "show",
-        parents=[common],
+        parents=[common, arch_arg],
         help="Show details for one target",
     )
     _add_target_arg(tshp, required=True)
@@ -947,6 +963,7 @@ def build_parser() -> argparse.ArgumentParser:
         "build",
         parents=[
             common,
+            arch_arg,
             kernel_arg,
             force_arg,
             force_compat_arg,
@@ -960,7 +977,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     tcp = target_sub.add_parser(
         "clean",
-        parents=[common],
+        parents=[common, arch_arg],
         help="Remove built artifacts for a target",
     )
     _add_target_arg(tcp, required=True)
@@ -974,7 +991,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     tdp = target_sub.add_parser(
         "delete",
-        parents=[common],
+        parents=[common, arch_arg],
         help="Delete a target's artifacts (local by default; "
         "--remote for the published GitHub release)",
     )
@@ -1034,7 +1051,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     tvp = target_sub.add_parser(
         "validate",
-        parents=[common, force_compat_arg],
+        parents=[common, arch_arg, force_compat_arg],
         help="Check Lustre-tree compatibility for a target (read-only)",
     )
     _add_target_arg(tvp, required=True)
@@ -1051,7 +1068,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     tfp = target_sub.add_parser(
         "fetch",
-        parents=[common],
+        parents=[common, arch_arg],
         help="Download pre-built target artifacts from GitHub",
     )
     _tfp_target = tfp.add_argument(
@@ -1121,7 +1138,7 @@ def build_parser() -> argparse.ArgumentParser:
     # bootable image for any non-base variant.
     tep = target_sub.add_parser(
         "export",
-        parents=[common, kernel_arg, variant_arg],
+        parents=[common, arch_arg, kernel_arg, variant_arg],
         help="Export base.ext4 + kernel as a bootable qcow2/raw disk, "
         "or a Google Compute Engine image (--format gce)",
     )
@@ -1176,7 +1193,7 @@ def build_parser() -> argparse.ArgumentParser:
     # that never runs.
     tpbp = target_sub.add_parser(
         "publish",
-        parents=[common, kernel_arg],
+        parents=[common, arch_arg, kernel_arg],
         help="Bundle artifacts and upload to a GitHub release "
         "(--no-upload keeps the tarballs local)",
     )
@@ -1354,7 +1371,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     sp = sub.add_parser(
         "create",
-        parents=[common, _vm_create_args],
+        parents=[common, arch_arg, _vm_create_args],
         help="Create a VM (idempotent: starts it if stopped, no-ops if running)",
     )
     _create_name = sp.add_argument("name", help="VM name (e.g. co1-single)")
@@ -1639,7 +1656,7 @@ def build_parser() -> argparse.ArgumentParser:
     # off-list groups, and orphan images.  Default is dry-run.
     sp = sub.add_parser(
         "clean",
-        parents=[common],
+        parents=[common, arch_arg],
         help="Prune stale per-target artifacts (default: dry-run preview)",
     )
     _clean_target = sp.add_argument(
@@ -1692,6 +1709,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _dep_name = sp.add_argument("name", help="VM or cluster name")
     _dep_name.completer = complete_vms  # type: ignore[attr-defined]
+    # Accepted but hidden, purely so cmd_deploy can answer a stale habit
+    # with the reason and the right command.  Dropping it entirely would
+    # give "unrecognized arguments" instead.
+    sp.add_argument("--arch", default=None, help=argparse.SUPPRESS)
     sp.add_argument(
         "--lustre-tree",
         default=None,
@@ -1953,7 +1974,7 @@ def build_parser() -> argparse.ArgumentParser:
     # argparse knew nothing about what followed.
     cluster_parser = sub.add_parser(
         "cluster",
-        parents=[common],
+        parents=[common, arch_arg],
         help="Cluster management (create/destroy/...)",
     )
     cluster_sub = cluster_parser.add_subparsers(
@@ -1962,7 +1983,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     ccp = cluster_sub.add_parser(
         "create",
-        parents=[common],
+        parents=[common, arch_arg],
         help="Create a cluster from node specs (needs root)",
     )
     ccp.add_argument("name", help="Cluster name (e.g. co2)")
