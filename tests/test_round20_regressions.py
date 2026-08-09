@@ -286,6 +286,25 @@ class TestHostsWriteIsSkippedWhenUnchanged:
         # No second SIGHUP either -- that is the other root-only step.
         assert reloads == [1]
 
+    def test_an_existing_entry_is_rewritten_where_it_stands(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Moving it to the end makes every restart a change, which
+        costs a root-only write and SIGHUP for nothing."""
+        vm_net, fake_hosts, reloads = self._setup(tmp_path, monkeypatch)
+        fake_hosts.write_text(
+            "127.0.0.1\tlocalhost\n"
+            "192.168.100.40\tco1-mds # qemu-vm:co1-mds\n"
+            "10.0.0.9\tunrelated\n"
+        )
+
+        vm_net._register_ssh_name_locked("co1-mds", "192.168.100.40")
+        assert reloads == []
+
+        lines = fake_hosts.read_text().splitlines()
+        assert lines[1].endswith("qemu-vm:co1-mds")
+        assert lines[2] == "10.0.0.9\tunrelated"
+
     def test_a_changed_ip_still_rewrites(
         self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     ) -> None:

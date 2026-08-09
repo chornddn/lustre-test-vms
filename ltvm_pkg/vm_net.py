@@ -547,22 +547,25 @@ def _register_etc_hosts(name: str, ip: str) -> None:
     # sibling-named VMs: "# qemu-vm:co1" is a substring of
     # "# qemu-vm:co1-single", so registering/unregistering co1 would
     # silently corrupt the co1-single entry.
-    filtered = [
-        ln
-        for ln in hosts_text.splitlines(keepends=True)
-        if not ln.rstrip("\n").endswith(marker_line)
-    ]
-    # A hand-edited /etc/hosts often has no trailing newline on its
-    # last line; keepends preserves that, so appending would splice
-    # our entry onto it ("10.0.0.1 foo192.168.100.42\tco1 # ...") and
-    # break both names at once -- and leave a marker that is no longer
-    # at end-of-line, so unregister could never remove it again.
-    if filtered and not filtered[-1].endswith("\n"):
-        filtered[-1] += "\n"
-    # Rewriting /etc/hosts and signalling dnsmasq are the only steps in
-    # a restart that need root, and a restart almost never changes the
-    # mapping, so skip both when the file would not change.
-    desired = "".join(filtered) + new_entry
+    # An existing entry is rewritten where it stands, rather than
+    # stripped and appended.  Moving it would make every restart a
+    # change to the file even when the mapping is identical, and the
+    # write plus the dnsmasq SIGHUP below are the only steps in a
+    # restart that need root, so skipping them when nothing changed
+    # keeps a restart from prompting for them.
+    kept: list[str] = []
+    placed = False
+    for ln in hosts_text.splitlines(keepends=True):
+        if not ln.rstrip("\n").endswith(marker_line):
+            kept.append(ln)
+        elif not placed:
+            kept.append(new_entry)
+            placed = True
+    if not placed:
+        if kept and not kept[-1].endswith("\n"):
+            kept.append("\n")
+        kept.append(new_entry)
+    desired = "".join(kept)
     if desired != hosts_text:
         _atomic_write(hosts, desired)
         # Registration must not stop here either, for the same reason
