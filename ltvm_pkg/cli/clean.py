@@ -28,7 +28,11 @@ from ltvm_pkg.cli.util import (
     EXIT_OK,
     _error,
 )
-from ltvm_pkg.paths import kernel_build_complete, load_meta_safe
+from ltvm_pkg.paths import (
+    kernel_build_complete,
+    load_meta_safe,
+    version_sort_key,
+)
 
 
 @dataclass
@@ -203,19 +207,20 @@ def _scan_target(
     pruned_kernel_names: set[str] = set()
 
     for prefix, dirs in groups.items():
-        # Lex sort (matches TargetConfig.resolve_kernel's "latest"
-        # picker so we keep what an unmodified `ltvm build` would pick).
-        # Only finished builds take part in that accounting, for the
-        # same reason resolve_kernel skips the rest: an unfinished
-        # directory that sorts high is not a newer build superseding
-        # the one below it, and counting it as one prunes a working
-        # kernel in favour of an empty directory.
+        # Version order, the same key TargetConfig.resolve_kernel uses
+        # to pick "latest", so we keep what an unmodified `ltvm build`
+        # would pick.  Only finished builds take part in that
+        # accounting, for the same reason resolve_kernel skips the
+        # rest: an unfinished directory that sorts high is not a newer
+        # build superseding the one below it, and counting it as one
+        # prunes a working kernel in favour of an empty directory.
         dirs_sorted = sorted(
-            (d for d in dirs if kernel_build_complete(d)), key=lambda p: p.name
+            (d for d in dirs if kernel_build_complete(d)),
+            key=lambda p: version_sort_key(p.name),
         )
         incomplete = sorted(
             (d for d in dirs if not kernel_build_complete(d)),
-            key=lambda p: p.name,
+            key=lambda p: version_sort_key(p.name),
         )
         on_list = prefix in declared_shorts
         is_protected_group = prefix in protected_shorts

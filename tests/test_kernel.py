@@ -1003,3 +1003,53 @@ class TestKernelOutputDir:
         assert out.exists()
         assert not (out / "meta.json").exists()
         assert not kernel_build_complete(out)
+
+
+class TestVersionSortKey:
+    def test_numbers_compare_as_numbers(self) -> None:
+        from ltvm_pkg.paths import version_sort_key
+
+        names = [
+            "5.14-rhel9.7-5.14.0-611.137.1.el9_7",
+            "5.14-rhel9.7-5.14.0-611.9.1.el9_7",
+            "5.14-rhel9.7-5.14.0-611.99.1.el9_7",
+        ]
+        assert sorted(names, key=version_sort_key) == [
+            "5.14-rhel9.7-5.14.0-611.9.1.el9_7",
+            "5.14-rhel9.7-5.14.0-611.99.1.el9_7",
+            "5.14-rhel9.7-5.14.0-611.137.1.el9_7",
+        ]
+
+    def test_orders_across_every_numeric_field(self) -> None:
+        from ltvm_pkg.paths import version_sort_key
+
+        names = [
+            "4.18-rhel8.10-4.18.0-553.5.1.el8_10",
+            "4.18-rhel8.9-4.18.0-513.24.1.el8_9",
+            "4.18-rhel8.10-4.18.0-553.137.1.el8_10",
+        ]
+        assert sorted(names, key=version_sort_key) == [
+            "4.18-rhel8.9-4.18.0-513.24.1.el8_9",
+            "4.18-rhel8.10-4.18.0-553.5.1.el8_10",
+            "4.18-rhel8.10-4.18.0-553.137.1.el8_10",
+        ]
+
+    def test_a_suffix_sorts_above_the_bare_name(self) -> None:
+        from ltvm_pkg.paths import version_sort_key
+
+        names = [
+            "5.14-rhel9.7-5.14.0-611.13.1.el9_7_lustre",
+            "5.14-rhel9.7-5.14.0-611.13.1.el9_7",
+        ]
+        assert sorted(names, key=version_sort_key) == [
+            "5.14-rhel9.7-5.14.0-611.13.1.el9_7",
+            "5.14-rhel9.7-5.14.0-611.13.1.el9_7_lustre",
+        ]
+
+    def test_names_with_no_digits_stay_ordered(self) -> None:
+        from ltvm_pkg.paths import version_sort_key
+
+        assert sorted(["beta", "alpha"], key=version_sort_key) == [
+            "alpha",
+            "beta",
+        ]

@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import Any
 
@@ -69,6 +70,33 @@ def kernel_build_complete(kernel_dir: Path) -> bool:
     if (kernel_dir / INCOMPLETE_MARKER).exists():
         return False
     return (kernel_dir / "meta.json").is_file()
+
+
+_VERSION_CHUNK_RE = re.compile(r"\d+|\D+")
+
+
+def version_sort_key(name: str) -> tuple[tuple[int, int, str], ...]:
+    """Sort key that orders version-bearing names by number, not by text.
+
+    Kernel directories carry an RPM or dpkg version in their name, and
+    those count in decimal: 4.18.0-553.137.1 is newer than
+    4.18.0-553.99.1, but sorts below it as characters, because '1'
+    precedes '9'.  Every "pick the newest" and "keep the newest" rule
+    over such names must use this key, or the two disagree and the
+    newest build is the one deleted.
+
+    The name is split into runs of digits and runs of everything else.
+    Digit runs compare as integers, the rest as text.  Nothing about
+    RPM release syntax is assumed, so deb and RPM names both order
+    correctly, and a name with no digits still gets a stable order.
+    """
+    key: list[tuple[int, int, str]] = []
+    for chunk in _VERSION_CHUNK_RE.findall(name):
+        if chunk.isdigit():
+            key.append((0, int(chunk), ""))
+        else:
+            key.append((1, 0, chunk))
+    return tuple(key)
 
 
 def read_modinfo_field(ko_path: Path, field: str) -> str | None:

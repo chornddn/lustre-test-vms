@@ -195,6 +195,24 @@ class TestCmdPrune:
         assert rc == EXIT_OK
         assert not img.exists()
 
+    def test_newest_kept_is_the_highest_version_not_the_highest_text(
+        self,
+        tmp_targets: Path,
+    ) -> None:
+        """611.137 is newer than 611.99 but sorts below it as text.
+        Ordering by text keeps the older build and deletes the one
+        `ltvm build` would use."""
+        arch_dir = tmp_targets / "artifacts" / "rocky9" / "x86_64"
+        older = _make_kernel_dir(arch_dir, "5.14-rhel9.7-5.14.0-611.99.1.el9_7")
+        newer = _make_kernel_dir(
+            arch_dir, "5.14-rhel9.7-5.14.0-611.137.1.el9_7"
+        )
+
+        rc = _run_prune(tmp_targets, target="rocky9", keep=1, apply=True)
+        assert rc == EXIT_OK
+        assert newer.exists()
+        assert not older.exists()
+
     def test_default_kernel_group_protected_with_one_entry(
         self,
         tmp_targets: Path,

@@ -199,6 +199,17 @@ class TestResolveKernel:
         (newer / INCOMPLETE_MARKER).touch()
         assert tc.resolve_kernel("5.14-rhel9.7") == good
 
+    def test_prefix_scan_orders_by_version_not_by_text(
+        self, tmp_targets: Path
+    ) -> None:
+        # 611.137 is newer than 611.99, but sorts below it as text.
+        tc = _make_config(tmp_targets)
+        kernels = tmp_targets / "artifacts" / "rocky9" / "x86_64" / "kernels"
+        newest = "5.14-rhel9.7-5.14.0-611.137.1.el9_7"
+        _make_built_kernel(kernels, "5.14-rhel9.7-5.14.0-611.99.1.el9_7")
+        _make_built_kernel(kernels, newest)
+        assert tc.resolve_kernel("5.14-rhel9.7") == newest
+
     def test_exact_name_of_failed_build_is_not_redirected(
         self, tmp_targets: Path
     ) -> None:

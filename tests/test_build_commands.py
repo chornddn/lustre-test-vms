@@ -1111,6 +1111,54 @@ class TestCmdStatusFormat:
         # The single configured target shows up as a row.
         assert "rocky9" in out
 
+    def test_arch_flag_selects_the_artifacts_read(
+        self,
+        capsys: pytest.CaptureFixture[str],
+        tmp_targets: Path,
+    ) -> None:
+        """--arch must reach TargetConfig.  Reading the default arch
+        instead reports every cross-arch build as 'not built'."""
+        import ltvm_pkg.target_config as cfg
+        from ltvm_pkg import cli as cli_mod
+
+        with (
+            patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
+            patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
+            patch.object(
+                cfg, "TARGETS_YAML",
+                tmp_targets / "targets" / "targets.yaml",
+            ),
+        ):
+            tc = cfg.TargetConfig("rocky9", arch="aarch64")
+
+        with (
+            patch("ltvm_pkg.cli.list_targets", return_value=["rocky9"]),
+            patch(
+                "ltvm_pkg.cli.TargetConfig", return_value=tc
+            ) as mock_tc,
+            patch(
+                "ltvm_pkg.cli.kernel_status",
+                return_value={"built": False, "stale": True},
+            ),
+            patch(
+                "ltvm_pkg.cli.image_status",
+                return_value={
+                    "built": False, "stale": True,
+                    "kernel": "5.14-rhel9.7", "variant": "base",
+                },
+            ),
+        ):
+            rc = cli_mod.cmd_status(
+                argparse.Namespace(json=False, arch="aarch64")
+            )
+        assert rc == EXIT_OK
+        assert mock_tc.call_args.kwargs["arch"] == "aarch64"
+        # The arch is on the row, so a "not built" line says which
+        # arch it is talking about.
+        out = capsys.readouterr().out
+        assert "Arch" in out
+        assert "aarch64" in out
+
     def test_status_emits_variant_image_rows(
         self,
         capsys: pytest.CaptureFixture[str],
