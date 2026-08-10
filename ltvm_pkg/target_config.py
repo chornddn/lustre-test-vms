@@ -18,7 +18,11 @@ from typing import Any
 
 import yaml
 
-from .paths import find_ltvm_root, load_meta_safe
+from .paths import (
+    find_ltvm_root,
+    kernel_build_complete,
+    load_meta_safe,
+)
 
 
 class LustreMode(str, Enum):
@@ -241,7 +245,7 @@ def matching_kernel_dirs(kernels_dir: Path, name: str) -> list[str]:
         (
             d.name
             for d in kernels_dir.iterdir()
-            if d.is_dir() and d.name.startswith(prefix)
+            if d.name.startswith(prefix) and kernel_build_complete(d)
         ),
         key=kernel_dir_version_key,
         reverse=True,
@@ -298,7 +302,12 @@ def resolve_kernel_dir(
     """
     if not kernels_dir.is_dir():
         return name
-    if (kernels_dir / name).is_dir():
+    # A directory alone proves nothing -- the build creates it up front
+    # as the container's /output bind mount.  An incomplete dir under
+    # the exact name asked for falls through, so the caller reports
+    # that kernel as missing rather than building against an empty
+    # tree.
+    if kernel_build_complete(kernels_dir / name):
         return name
     candidates = matching_kernel_dirs(kernels_dir, name)
     if candidates:

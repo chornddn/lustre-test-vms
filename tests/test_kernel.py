@@ -12,6 +12,7 @@ from ltvm_pkg.kernel_build import (
     SrpmNotFoundError,
     _build_config_fragment,
     _ensure_container_image,
+    _kernel_output_dir,
     _kernel_outputs_complete,
     _list_lustre_kernel_targets,
     _lustre_target_family,
@@ -941,3 +942,64 @@ class TestArchiveOutgoingVmlinux:
             kernel_build.archive_outgoing_vmlinux(tmp_path)
         assert (tmp_path / "vmlinux-dddd").read_bytes() == b"already-kept"
         assert not (tmp_path / "vmlinux").exists()
+
+
+class TestKernelOutputDir:
+    """The output dir is created before the build, so its existence
+    cannot mean a build is in it.  See _kernel_output_dir."""
+
+    def test_success_clears_the_marker(self, tmp_path: Path) -> None:
+        from ltvm_pkg.paths import INCOMPLETE_MARKER, kernel_build_complete
+
+        out = tmp_path / "kernels" / "5.14-rhel9.7-5.14.0-611.49.1.el9_7"
+        with _kernel_output_dir(out) as d:
+            assert (d / INCOMPLETE_MARKER).exists()
+            (d / "vmlinuz").write_bytes(b"x")
+            (d / "meta.json").write_text("{}")
+        assert not (out / INCOMPLETE_MARKER).exists()
+        assert kernel_build_complete(out)
+
+    def test_marks_incomplete_while_building(self, tmp_path: Path) -> None:
+        from ltvm_pkg.paths import kernel_build_complete
+
+        out = tmp_path / "kernels" / "5.14-rhel9.7-5.14.0-611.49.1.el9_7"
+        with _kernel_output_dir(out) as d:
+            (d / "meta.json").write_text("{}")
+            assert not kernel_build_complete(d)
+
+    def test_failure_removes_an_empty_dir(self, tmp_path: Path) -> None:
+        out = tmp_path / "kernels" / "5.14-rhel9.7-5.14.0-611.49.1.el9_7"
+        with pytest.raises(RuntimeError):
+            with _kernel_output_dir(out):
+                raise RuntimeError("build died before writing anything")
+        assert not out.exists()
+
+    def test_failure_keeps_a_partial_dir_marked(self, tmp_path: Path) -> None:
+        from ltvm_pkg.paths import INCOMPLETE_MARKER, kernel_build_complete
+
+        out = tmp_path / "kernels" / "5.14-rhel9.7-5.14.0-611.49.1.el9_7"
+        with pytest.raises(RuntimeError):
+            with _kernel_output_dir(out) as d:
+                (d / "vmlinux").write_bytes(b"partial")
+                raise RuntimeError("build died mid-way")
+        assert out.exists()
+        assert (out / INCOMPLETE_MARKER).exists()
+        assert not kernel_build_complete(out)
+
+    def test_failed_rebuild_drops_the_stale_meta(self, tmp_path: Path) -> None:
+        """A rebuild overwrites the tree in place, so the previous
+        meta.json describes a build that is no longer on disk."""
+        from ltvm_pkg.paths import kernel_build_complete
+
+        out = tmp_path / "kernels" / "5.14-rhel9.7-5.14.0-611.49.1.el9_7"
+        out.mkdir(parents=True)
+        (out / "meta.json").write_text('{"kernel_version": "old"}')
+        (out / "vmlinuz").write_bytes(b"old")
+        assert kernel_build_complete(out)
+
+        with pytest.raises(RuntimeError):
+            with _kernel_output_dir(out):
+                raise RuntimeError("rebuild died")
+        assert out.exists()
+        assert not (out / "meta.json").exists()
+        assert not kernel_build_complete(out)

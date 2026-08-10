@@ -7,6 +7,7 @@ a full build tree (for Lustre module builds), and meta.json.
 
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import logging
 import os
@@ -14,13 +15,14 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TypedDict
 
 from .cross_compile import host_podman_platform
 from .lustre_tree import kp_configs, kp_patches, kp_series, kp_targets
-from .paths import load_meta_safe
+from .paths import INCOMPLETE_MARKER, load_meta_safe
 from .podman_run import run_podman_with_cleanup
 from .target_config import TARGETS_DIR
 
@@ -148,6 +150,48 @@ def _kernel_outputs_complete(kernel_out: Path) -> bool:
         modules_dir.is_dir()
         and next(modules_dir.rglob("*.ko"), None) is not None
     )
+
+
+@contextlib.contextmanager
+def _kernel_output_dir(kernel_out: Path) -> Iterator[Path]:
+    """Own a kernel output directory for the length of a build.
+
+    The directory has to exist before the build starts -- it is the
+    container's /output bind mount -- so its existence cannot mean a
+    build is in it.  Mark it instead: while the marker is there,
+    resolve_kernel skips the directory and `ltvm clean` offers it for
+    removal, so a build that dies cannot be picked up as a kernel or
+    counted as one that supersedes a working build.
+
+    Any earlier meta.json goes at the start.  A rebuild writes over the
+    tree in place, so from the first container write the old meta
+    describes a build that is no longer on disk.
+
+    On failure the directory survives for inspection, unless the build
+    never put anything in it -- an empty one is pure debris.
+    """
+    kernel_out.mkdir(parents=True, exist_ok=True)
+    (kernel_out / INCOMPLETE_MARKER).touch()
+    (kernel_out / "meta.json").unlink(missing_ok=True)
+    try:
+        yield kernel_out
+    except BaseException:
+        marker = kernel_out / INCOMPLETE_MARKER
+        try:
+            if [p for p in kernel_out.iterdir() if p != marker]:
+                log.warning(
+                    "Kernel build failed; %s holds a partial build and is "
+                    "marked incomplete.  `ltvm clean` will offer it for "
+                    "removal.",
+                    kernel_out,
+                )
+            else:
+                marker.unlink(missing_ok=True)
+                kernel_out.rmdir()
+        except OSError:
+            pass
+        raise
+    (kernel_out / INCOMPLETE_MARKER).unlink(missing_ok=True)
 
 
 def _run_kernel_podman(container_cmd: list[str], kernel_out: Path) -> None:
@@ -1210,10 +1254,12 @@ def _build_kernel_deb(
 
     # Prepare output directory
     kernel_out = target_config.output_dir / "kernels" / full_name
-    kernel_out.mkdir(parents=True, exist_ok=True)
 
     # Prepare staging area with config fragment (no patches/SRPM)
-    with tempfile.TemporaryDirectory(prefix="ltvm-kbuild-") as staging_str:
+    with (
+        _kernel_output_dir(kernel_out),
+        tempfile.TemporaryDirectory(prefix="ltvm-kbuild-") as staging_str,
+    ):
         staging = Path(staging_str)
 
         # Empty patches dir and series (no patches for stock kernel)
@@ -1262,14 +1308,14 @@ def _build_kernel_deb(
         )
         _run_kernel_podman(container_cmd, kernel_out)
 
-    return _finalize_kernel_build(
-        target_config,
-        kernel_out,
-        full_name,
-        lustre_target,
-        patches_applied=0,
-        extra_meta={"deb_source": deb_source},
-    )
+        return _finalize_kernel_build(
+            target_config,
+            kernel_out,
+            full_name,
+            lustre_target,
+            patches_applied=0,
+            extra_meta={"deb_source": deb_source},
+        )
 
 
 def _build_kernel_srpm(
@@ -1382,14 +1428,17 @@ def _build_kernel_srpm(
 
     # Prepare output directory (use full name)
     kernel_out = target_config.output_dir / "kernels" / full_name
-    kernel_out.mkdir(parents=True, exist_ok=True)
-    # The build below replaces vmlinux in place; keep the outgoing one
-    # so vmcores from VMs still running it remain analysable.
-    archived_build_id = archive_outgoing_vmlinux(kernel_out)
 
     # Prepare staging area with patches and config
-    with tempfile.TemporaryDirectory(prefix="ltvm-kbuild-") as staging_str:
+    with (
+        _kernel_output_dir(kernel_out),
+        tempfile.TemporaryDirectory(prefix="ltvm-kbuild-") as staging_str,
+    ):
         staging = Path(staging_str)
+
+        # The build below replaces vmlinux in place; keep the outgoing
+        # one so vmcores from VMs still running it remain analysable.
+        archived_build_id = archive_outgoing_vmlinux(kernel_out)
 
         # Copy patches
         patches_dir = staging / "patches"
@@ -1449,31 +1498,33 @@ def _build_kernel_srpm(
         log.info("Starting kernel build in container (j%d)...", jobs)
         _run_kernel_podman(container_cmd, kernel_out)
 
-    # A rebuild that reproduced the same binary makes the archive a
-    # duplicate of the new vmlinux; drop it rather than keep a few
-    # hundred MB of the same bytes twice.
-    if (
-        archived_build_id
-        and elf_build_id(kernel_out / "vmlinux") == archived_build_id
-    ):
-        (kernel_out / f"vmlinux-{archived_build_id}").unlink(missing_ok=True)
+        # A rebuild that reproduced the same binary makes the archive
+        # a duplicate of the new vmlinux; drop it rather than keep a
+        # few hundred MB of the same bytes twice.
+        if (
+            archived_build_id
+            and elf_build_id(kernel_out / "vmlinux") == archived_build_id
+        ):
+            (kernel_out / f"vmlinux-{archived_build_id}").unlink(
+                missing_ok=True
+            )
 
-    # extra_hash MUST match what was used in the is_stale check above,
-    # otherwise the persisted hash and the next-run input_hash diverge
-    # and rebuild loops forever.
-    return _finalize_kernel_build(
-        target_config,
-        kernel_out,
-        full_name,
-        lustre_target,
-        patches_applied=len(lustre_patches),
-        extra_meta={
-            "srpm": target_info["srpm"],
-            "lnxmaj": target_info["lnxmaj"],
-            "lnxrel": target_info["lnxrel"],
-        },
-        extra_hash=extra_hash,
-    )
+        # extra_hash MUST match what was used in the is_stale check
+        # above, otherwise the persisted hash and the next-run
+        # input_hash diverge and rebuild loops forever.
+        return _finalize_kernel_build(
+            target_config,
+            kernel_out,
+            full_name,
+            lustre_target,
+            patches_applied=len(lustre_patches),
+            extra_meta={
+                "srpm": target_info["srpm"],
+                "lnxmaj": target_info["lnxmaj"],
+                "lnxrel": target_info["lnxrel"],
+            },
+            extra_hash=extra_hash,
+        )
 
 
 # ------------------------------------------------------------------

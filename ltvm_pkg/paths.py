@@ -43,6 +43,34 @@ def load_meta_safe(meta_file: Path) -> dict[str, Any] | None:
         return None
 
 
+# Written into a kernel output directory for the duration of a build
+# and removed when it finishes.  A directory carrying this file holds a
+# half-written tree, whatever else is in it.
+INCOMPLETE_MARKER = ".ltvm-incomplete"
+
+
+def kernel_build_complete(kernel_dir: Path) -> bool:
+    """Return True when a kernel directory holds a finished build.
+
+    A directory alone proves nothing: the build creates it up front to
+    bind-mount as the container's /output, so a build that dies leaves
+    one behind holding nothing usable.  meta.json is written last, and
+    `ltvm target fetch` ships it too, so its presence marks a build that
+    reached the end.  The in-progress marker is checked as well, to
+    catch a rebuild that is running or died over an earlier build.
+
+    Callers that pick a kernel directory, or delete one, must agree on
+    this predicate -- disagreement is how an empty directory gets
+    chosen over a real build, and how the real build gets pruned as
+    'superseded' by that empty one.
+    """
+    if not kernel_dir.is_dir():
+        return False
+    if (kernel_dir / INCOMPLETE_MARKER).exists():
+        return False
+    return (kernel_dir / "meta.json").is_file()
+
+
 def read_modinfo_field(ko_path: Path, field: str) -> str | None:
     """Read a single .modinfo field from a Linux .ko ELF in pure Python.
 

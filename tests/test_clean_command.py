@@ -147,6 +147,54 @@ class TestCmdPrune:
         assert new.exists()
         assert "Removed 1 entries" in capsys.readouterr().out
 
+    def test_failed_build_does_not_supersede_a_working_one(
+        self,
+        tmp_targets: Path,
+        capsys: pytest.CaptureFixture[str],
+    ) -> None:
+        """A failed build of a newer point release leaves a directory
+        that sorts above the working kernel.  Counting it as the latest
+        would delete the only real build and keep the empty one."""
+        arch_dir = tmp_targets / "artifacts" / "rocky9" / "x86_64"
+        good = _make_kernel_dir(arch_dir, "5.14-rhel9.7-5.14.0-611.49.1.el9_7")
+        failed = arch_dir / "kernels" / "5.14-rhel9.7-5.14.0-611.99.1.el9_7"
+        failed.mkdir(parents=True)
+
+        rc = _run_prune(tmp_targets, target="rocky9", apply=True)
+        assert rc == EXIT_OK
+        assert good.exists()
+        assert not failed.exists()
+        assert "incomplete build" in capsys.readouterr().out
+
+    def test_incomplete_build_pruned_from_protected_group(
+        self,
+        tmp_targets: Path,
+    ) -> None:
+        """Protection keeps a working build, not a directory with no
+        build in it -- there is nothing there to lose."""
+        arch_dir = tmp_targets / "artifacts" / "rocky9" / "x86_64"
+        failed = arch_dir / "kernels" / "5.14-rhel9.7-5.14.0-611.99.1.el9_7"
+        failed.mkdir(parents=True)
+        (failed / "vmlinux.partial").write_bytes(b"x" * 16)
+
+        rc = _run_prune(tmp_targets, target="rocky9", keep=0, apply=True)
+        assert rc == EXIT_OK
+        assert not failed.exists()
+
+    def test_image_of_incomplete_kernel_cascades(
+        self,
+        tmp_targets: Path,
+    ) -> None:
+        arch_dir = tmp_targets / "artifacts" / "rocky9" / "x86_64"
+        _make_kernel_dir(arch_dir, "5.14-rhel9.7-5.14.0-611.49.1.el9_7")
+        failed_name = "5.14-rhel9.7-5.14.0-611.99.1.el9_7"
+        (arch_dir / "kernels" / failed_name).mkdir(parents=True)
+        img = _make_image_dir(arch_dir, failed_name)
+
+        rc = _run_prune(tmp_targets, target="rocky9", apply=True)
+        assert rc == EXIT_OK
+        assert not img.exists()
+
     def test_default_kernel_group_protected_with_one_entry(
         self,
         tmp_targets: Path,

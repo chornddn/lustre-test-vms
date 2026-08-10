@@ -28,7 +28,7 @@ from ltvm_pkg.cli.util import (
     EXIT_OK,
     _error,
 )
-from ltvm_pkg.paths import load_meta_safe
+from ltvm_pkg.paths import kernel_build_complete, load_meta_safe
 
 
 @dataclass
@@ -205,7 +205,18 @@ def _scan_target(
     for prefix, dirs in groups.items():
         # Lex sort (matches TargetConfig.resolve_kernel's "latest"
         # picker so we keep what an unmodified `ltvm build` would pick).
-        dirs_sorted = sorted(dirs, key=lambda p: p.name)
+        # Only finished builds take part in that accounting, for the
+        # same reason resolve_kernel skips the rest: an unfinished
+        # directory that sorts high is not a newer build superseding
+        # the one below it, and counting it as one prunes a working
+        # kernel in favour of an empty directory.
+        dirs_sorted = sorted(
+            (d for d in dirs if kernel_build_complete(d)), key=lambda p: p.name
+        )
+        incomplete = sorted(
+            (d for d in dirs if not kernel_build_complete(d)),
+            key=lambda p: p.name,
+        )
         on_list = prefix in declared_shorts
         is_protected_group = prefix in protected_shorts
 
@@ -239,7 +250,16 @@ def _scan_target(
             latest = dirs_sorted[-1]
             doomed = [d for d in doomed if d != latest]
 
-        for d in doomed:
+        # Unfinished builds go regardless of --keep and of protection:
+        # nothing can be kept back by holding one, because there is no
+        # build in it to lose.  Their own reason travels with them, so
+        # the preview says why rather than calling them superseded.
+        doomed_reasons: list[tuple[Path, str]] = [(d, reason) for d in doomed]
+        doomed_reasons += [
+            (d, "incomplete build (no meta.json)") for d in incomplete
+        ]
+
+        for d, reason in doomed_reasons:
             age = _entry_age_days(d)
             if older_than_days is not None and (
                 age is None or age < older_than_days

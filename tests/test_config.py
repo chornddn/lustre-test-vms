@@ -145,6 +145,14 @@ class TestLustreMode:
             _make_config(tmp_targets)
 
 
+def _make_built_kernel(kernels: Path, full: str) -> Path:
+    """Create a kernel dir that counts as a finished build."""
+    d = kernels / full
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "meta.json").write_text(json.dumps({"kernel_version": full}))
+    return d
+
+
 class TestResolveKernel:
     def test_explicit_kernel(self, tmp_targets: Path) -> None:
         tc = _make_config(tmp_targets)
@@ -160,26 +168,48 @@ class TestResolveKernel:
         tc = _make_config(tmp_targets)
         kernels = tmp_targets / "artifacts" / "rocky9" / "x86_64" / "kernels"
         full = "5.14-rhel9.7-5.14.0-611.13.1.el9_7_lustre"
-        (kernels / full).mkdir(parents=True)
+        _make_built_kernel(kernels, full)
         assert tc.resolve_kernel("5.14-rhel9.7") == full
 
-    def test_prefix_scan_picks_highest_version_not_lexical(
-        self, tmp_targets: Path
-    ) -> None:
-        """Two built minors -> the numerically newest must win.
-
-        553.155.1 is newer than 553.89.1 but sorts *before* it as a
-        string, so a lexical max returns the older kernel and the
-        Lustre build silently targets a stale build-tree.
-        """
+    def test_prefix_scan_skips_failed_build(self, tmp_targets: Path) -> None:
+        # A failed build of a newer point release leaves a directory
+        # that sorts above the working one.  Picking it sends every
+        # downstream command at an empty tree.
         tc = _make_config(tmp_targets)
         kernels = tmp_targets / "artifacts" / "rocky9" / "x86_64" / "kernels"
-        older = "5.14-rhel9.7-5.14.0-611.89.1.el9_7"
-        newer = "5.14-rhel9.7-5.14.0-611.155.1.el9_7"
-        for d in (older, newer):
-            (kernels / d).mkdir(parents=True)
-        assert sorted([older, newer])[-1] == older  # the trap
-        assert tc.resolve_kernel("5.14-rhel9.7") == newer
+        good = "5.14-rhel9.7-5.14.0-611.13.1.el9_7"
+        _make_built_kernel(kernels, good)
+        (kernels / "5.14-rhel9.7-5.14.0-611.99.1.el9_7").mkdir(parents=True)
+        assert tc.resolve_kernel("5.14-rhel9.7") == good
+
+    def test_prefix_scan_skips_in_progress_build(
+        self, tmp_targets: Path
+    ) -> None:
+        from ltvm_pkg.paths import INCOMPLETE_MARKER
+
+        tc = _make_config(tmp_targets)
+        kernels = tmp_targets / "artifacts" / "rocky9" / "x86_64" / "kernels"
+        good = "5.14-rhel9.7-5.14.0-611.13.1.el9_7"
+        _make_built_kernel(kernels, good)
+        # A rebuild over an older build: meta.json is still there from
+        # the previous run, but the tree is being overwritten.
+        newer = _make_built_kernel(
+            kernels, "5.14-rhel9.7-5.14.0-611.99.1.el9_7"
+        )
+        (newer / INCOMPLETE_MARKER).touch()
+        assert tc.resolve_kernel("5.14-rhel9.7") == good
+
+    def test_exact_name_of_failed_build_is_not_redirected(
+        self, tmp_targets: Path
+    ) -> None:
+        # Asked for by full name: report it missing rather than
+        # quietly substituting a different version.
+        tc = _make_config(tmp_targets)
+        kernels = tmp_targets / "artifacts" / "rocky9" / "x86_64" / "kernels"
+        _make_built_kernel(kernels, "5.14-rhel9.7-5.14.0-611.13.1.el9_7")
+        failed = "5.14-rhel9.7-5.14.0-611.99.1.el9_7"
+        (kernels / failed).mkdir(parents=True)
+        assert tc.resolve_kernel(failed) == failed
 
 
 class TestKernelOutputDir:
