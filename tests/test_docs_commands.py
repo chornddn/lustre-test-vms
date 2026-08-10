@@ -38,6 +38,7 @@ DOCS = [
     "docs/GETTING_STARTED.md",
     "docs/SOFTROCE_SETUP.md",
     "docs/SYSTEM_TEST_PLAN.md",
+    "docs/IPV6.md",
 ]
 
 # Notation that means "fill this in", not a literal argument.  A line

@@ -152,7 +152,16 @@ routing table of its own selected by source address:
 32764:  from 172.16.100.34 lookup 102
 ```
 
-so a socket bound to a NIC's address egresses on that NIC. It also sets
+so a socket bound to a NIC's address egresses on that NIC.
+
+The same network is dual-stack. Each extra NIC also holds a static ULA
+out of `fd17:2016:1000:f100::/64` (`$LTVM_EXTRA_SUBNET6` to change it),
+derived from its IPv4 address, with an `ip -6 rule` per rail mirroring
+the IPv4 rules above. o2iblnd over IPv6 is not supported by the test
+suites, so this matters here only as another address on the same
+interface; see [IPV6.md](IPV6.md).
+
+`rc.local` also sets
 `arp_ignore=1` / `arp_announce=2`, because every NIC of every VM shares
 one L2 broadcast domain (the `fcbr0` bridge on Linux, one `socket_vmnet`
 hub on macOS) and the default `arp_ignore=0` would let the wrong

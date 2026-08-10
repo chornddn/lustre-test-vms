@@ -671,7 +671,12 @@ never had one.  `--net o2ib` on a cluster whose NICs cannot
 carry it fails before any node is touched.  Both nets run
 on the extra NICs and their `172.16.100.x` addresses; only
 a cluster created with no `--nic` at all falls back to the
-mgmt NIC (`eth0`).  For a real-HCA
+mgmt NIC (`eth0`).  `--ip-family {ipv4,ipv6}` picks which
+of the extra NIC's two addresses the NIDs use, defaults to
+`ipv4`, and is recorded like `--net`; see
+[docs/IPV6.md](docs/IPV6.md), which also covers why a
+filesystem does not yet mount over an IPv6 NID.
+For a real-HCA
 (`passthrough`) cluster the boot-time emitter owns the
 config, so deploy refuses `--net o2ib` and refuses a bare
 deploy that would overwrite its `lnet.conf`.
@@ -799,7 +804,11 @@ refuses.
 
 Extra NICs share a network of their own (`172.16.100.0/24`
 by default, `$LTVM_EXTRA_SUBNET` to change it), separate
-from mgmt.  Repeating `--nic` gives several rails on one
+from mgmt.  That network is dual-stack: every extra NIC
+also gets a static ULA derived from its IPv4 address
+(`fd17:2016:1000:f100::/64`, `$LTVM_EXTRA_SUBNET6`), while
+mgmt stays IPv4 only -- see
+[docs/IPV6.md](docs/IPV6.md).  Repeating `--nic` gives several rails on one
 LNet net -- `--nic tcp --nic tcp` yields
 `tcp0(eth1,eth2)` -- and `rc.local` routes each rail by
 source address so a NI bound to one rail egresses on it.
@@ -1100,6 +1109,9 @@ gh issue list / view <n> / create --title ... --body ...
   -- running ltvm under a nested hypervisor.
 - [docs/SOFTROCE_SETUP.md](docs/SOFTROCE_SETUP.md) -- LNet
   o2iblnd over SoftRoCE.
+- [docs/IPV6.md](docs/IPV6.md) -- the extra NICs' IPv6
+  addressing, `deploy --ip-family`, and how to verify a
+  node is really on IPv6.
 - [docs/SYSTEM_TEST_PLAN.md](docs/SYSTEM_TEST_PLAN.md) --
   end-to-end test matrix.
 - [docs/VM_OWNERSHIP.md](docs/VM_OWNERSHIP.md) -- the

@@ -83,6 +83,13 @@ Tests marked `(C)` are client-only targets only.
 | 12.3 | Custom Build | Edited string reaches VM kernel log after deploy | A | PASS | | | |
 | 12.4 | Custom Build | Second deploy with no changes skips rebuild | A | PASS | | | |
 | 12.5 | Custom Build | `--force` triggers rebuild even when staging is fresh | A | PASS | | | |
+| 13.1 | IPv6 | Extra NIC holds a full-width ULA; mgmt holds no global IPv6 | S | FAIL† | | | |
+| 13.2 | IPv6 | `deploy --ip-family ipv6` writes `FORCE_LARGE_NID=true` + IPv6 `MGSNID` | S | PASS | | | |
+| 13.3 | IPv6 | `lnet.conf` byte-identical for both families | S | PASS | | | |
+| 13.4 | IPv6 | `lctl list_nids` matches `MGSNID` character for character | S | PASS | | | |
+| 13.5 | IPv6 | `lctl ping` reaches a peer over the IPv6 NID | S | PASS | | | |
+| 13.6 | IPv6 | `sanity-lnet` in IPv6 mode | S | FAIL‡ | | | |
+| 13.7 | IPv6 | `llmount` on an IPv6 deploy | S | FAIL‡ | | | |
 
 ---
 
@@ -94,6 +101,17 @@ Work one target at a time, completing all applicable tests before moving to the 
 2. **rocky8** — client-only, all applicable phases ✓ complete
 3. **rocky10** — client-only, all applicable phases ✓ complete
 4. **ubuntu2404** — client-only, all applicable phases ✓ complete
+
+`†` = the cluster booted with the IPv6 kernel command line but with no
+IPv6 address: `rc.local` lives inside the base image and the image
+predates the addressing change. Rebuild with `ltvm build image`, then
+recreate the cluster. Rows 13.4 and 13.5 were measured after applying
+the addresses by hand.
+
+`‡` = LU-18041. A full-width IPv6 NID is 43 characters against a
+`UUID_MAX` of 40, so the MGC UUID is refused and the MDT does not mount.
+`sanity-lnet` is caught by the same wall because auster mounts the
+filesystem in its own setup. See [IPV6.md](IPV6.md).
 
 `*` = kexec does not work on QEMU microvm with Ubuntu 6.8 kernel.
 NMI triggers panic + reboot but the crash kernel is not invoked,
@@ -277,6 +295,27 @@ ssh co1-4ost \
 ```bash
 ltvm vm nmi co1-stopped                   # expect non-zero + clear error
 ltvm destroy co1-nonexistent           # expect exit 0
+```
+
+### Phase 13: IPv6
+
+Needs a cluster created after the IPv6 addressing landed, and a claim.
+
+```bash
+ltvm cluster claim co1 --as ipv6 --note "IPv6 checks"
+ltvm build lustre --for-cluster co1 --lustre-tree ~/lustre-dev/lustre-release
+ltvm deploy co1 --lustre-tree ~/lustre-dev/lustre-release --net tcp --ip-family ipv4 --as ipv6
+ltvm test co1 sanity-lnet --except 50,109,199,241 --as ipv6 --json
+ltvm deploy co1 --lustre-tree ~/lustre-dev/lustre-release --net tcp --ip-family ipv6 --as ipv6
+ltvm cluster status co1
+ltvm cluster release co1 --as ipv6
+```
+
+Then verify on a node, per [IPV6.md](IPV6.md):
+
+```
+ssh co1-mds 'modprobe lnet; lnetctl lnet configure --all --large; lctl list_nids'
+ssh co1-mds 'lctl ping <peer-ipv6-nid>'
 ```
 
 ---
