@@ -33,6 +33,11 @@ NET_TYPES = ("tcp", "o2ib")
 # rather than emitted wrong.
 O2IB_NIC_TYPES = ("softroce",)
 
+# NIC types that can carry tcp.  socklnd binds an ordinary netdev, and
+# a softroce NIC is an ordinary virtio-net device with an rxe link on
+# top, so both extras qualify.
+TCP_NIC_TYPES = ("tcp", "softroce")
+
 
 class NetUnavailable(Exception):
     """The cluster's NICs cannot carry the requested net."""
@@ -102,23 +107,23 @@ def has_passthrough(
     return False
 
 
-def _resolve_o2ib_node(node_name: str, vm: VMInfo) -> NodeNet:
-    """Pick the o2ib-capable NICs of one node.
+def _pick_extras(vm: VMInfo, nic_types: tuple[str, ...]) -> list[int]:
+    """Indices of the extra NICs of one node that carry a given net.
 
     NICs of the same type are rails of one net, matching the boot
     emitter; a node with several softroce NICs yields one net with
     several interfaces.
     """
-    picked = [
+    return [
         i for i, spec in enumerate(vm.nics)
-        if _nic_type(spec) in O2IB_NIC_TYPES
+        if _nic_type(spec) in nic_types
     ]
-    if not picked:
-        have = ", ".join(_nic_type(s) for s in vm.nics) or "none"
-        raise NetUnavailable(
-            f"{node_name} has no o2ib-capable NIC (has: {have}); "
-            f"o2ib needs a node created with --nic softroce"
-        )
+
+
+def _resolve_extra_node(
+    node_name: str, vm: VMInfo, picked: list[int]
+) -> NodeNet:
+    """One node's share of a net that runs on its extra NICs."""
     # nics[i] is eth{i+1}: eth0 is the mgmt NIC and is never an extra.
     interfaces = tuple(f"eth{i + 1}" for i in picked)
     try:
@@ -141,10 +146,9 @@ def resolve_net(
     Raises ``NetUnavailable`` -- naming what the cluster has and what
     the net needs -- before any node is touched.
 
-    ``tcp`` runs on the mgmt NIC (eth0), which every node has; that is
-    the address every generated config has always used.  ``o2ib`` runs
-    on the extra NICs, whose addresses live only in each node's
-    ``VMInfo``.
+    Both nets run on the extra NICs, whose addresses live only in each
+    node's ``VMInfo``.  Only a node with no extra NIC at all falls back
+    to the mgmt NIC.
     """
     if net_type not in NET_TYPES:
         raise NetUnavailable(
@@ -160,6 +164,25 @@ def resolve_net(
     resolved: list[NodeNet] = []
     for node in nodes:
         if net_type == "tcp":
+            # A node with no readable .info keeps the mgmt NIC: tcp has
+            # always worked without per-VM state, and the deploy that
+            # follows fails on that node anyway.
+            maybe_vm: VMInfo | None
+            try:
+                maybe_vm = load(node.name)
+            except VMNotFound:
+                maybe_vm = None
+            picked = _pick_extras(maybe_vm, TCP_NIC_TYPES) if maybe_vm else []
+            if maybe_vm is not None and picked:
+                resolved.append(
+                    _resolve_extra_node(node.name, maybe_vm, picked)
+                )
+                continue
+            # The extras are the Lustre network and mgmt is for SSH,
+            # which is already what the boot emitter assumes:
+            # setup-lnet-config.sh drops eth0 out of LNet as soon as the
+            # node has an extra NIC.  eth0 is therefore only for a
+            # cluster created with no --nic at all.
             resolved.append(
                 NodeNet(name=node.name, interfaces=("eth0",), ip=node.ip)
             )
@@ -172,7 +195,14 @@ def resolve_net(
                 f"resolved at boot by setup-lnet-config.sh. Configure "
                 f"that cluster by hand."
             )
-        resolved.append(_resolve_o2ib_node(node.name, vm))
+        picked = _pick_extras(vm, O2IB_NIC_TYPES)
+        if not picked:
+            have = ", ".join(_nic_type(s) for s in vm.nics) or "none"
+            raise NetUnavailable(
+                f"{node.name} has no o2ib-capable NIC (has: {have}); "
+                f"o2ib needs a node created with --nic softroce"
+            )
+        resolved.append(_resolve_extra_node(node.name, vm, picked))
 
     # One net index per cluster: the resolver picks the first
     # o2ib-capable NIC type it finds, so the net is always index 0 --

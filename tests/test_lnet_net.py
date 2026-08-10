@@ -65,30 +65,56 @@ def _softroce_vms(rails: int = 1):
 
 
 class TestResolveTcp:
-    """tcp runs on the mgmt NIC, which every node has."""
+    """tcp runs on the extra NICs, and on mgmt only without them."""
 
-    def test_uses_mgmt_address_and_eth0(self) -> None:
-        net = resolve_net(_softroce_cluster(), "tcp")
+    def test_uses_the_extra_nic(self) -> None:
+        net = resolve_net(
+            _softroce_cluster(), "tcp", load_vm=_softroce_vms()
+        )
         assert net.net_type == "tcp"
         assert net.net_name == "tcp0"
-        assert net.nid("co1-mds") == "192.168.105.10@tcp"
+        assert net.nid("co1-mds") == "172.16.100.203@tcp"
         assert net.lnet_conf("co1-mds") == (
-            'options lnet networks="tcp0(eth0)"\n'
+            'options lnet networks="tcp0(eth1)"\n'
         )
 
-    def test_reads_no_vm_state(self) -> None:
-        """A tcp resolution must not need the per-VM .info files."""
+    def test_a_plain_tcp_nic_carries_it_too(self) -> None:
+        net = resolve_net(
+            _softroce_cluster(),
+            "tcp",
+            load_vm=lambda n: _FakeVM(n, ["tcp"], ["172.16.100.7"]),
+        )
+        assert net.nid("co1-oss") == "172.16.100.7@tcp"
+        assert net.lnet_conf("co1-oss") == (
+            'options lnet networks="tcp0(eth1)"\n'
+        )
 
-        def explode(name: str) -> _FakeVM:
-            raise AssertionError("tcp resolution loaded VMInfo")
-
-        resolve_net(_softroce_cluster(), "tcp", load_vm=explode)
-
-    def test_works_on_a_tcp_only_cluster(self) -> None:
+    def test_no_extra_nics_falls_back_to_mgmt(self) -> None:
         net = resolve_net(
             _softroce_cluster(), "tcp", load_vm=lambda n: _FakeVM(n)
         )
         assert net.nid("co1-oss") == "192.168.105.11@tcp"
+        assert net.lnet_conf("co1-oss") == (
+            'options lnet networks="tcp0(eth0)"\n'
+        )
+
+    def test_unreadable_node_falls_back_to_mgmt(self) -> None:
+        def load(name: str) -> _FakeVM:
+            raise VMNotFound(name)
+
+        net = resolve_net(_softroce_cluster(), "tcp", load_vm=load)
+        assert net.nid("co1-mds") == "192.168.105.10@tcp"
+
+    def test_passthrough_node_falls_back_to_mgmt(self) -> None:
+        """tcp over a real HCA's netdev is not deploy's to compose."""
+        net = resolve_net(
+            _softroce_cluster(),
+            "tcp",
+            load_vm=lambda n: _FakeVM(
+                n, ["passthrough:0000:85:00.1"], ["172.16.100.9"]
+            ),
+        )
+        assert net.nid("co1-mds") == "192.168.105.10@tcp"
 
 
 class TestResolveO2ib:
@@ -169,7 +195,9 @@ class TestResolveArguments:
             resolve_net(_cluster(), "tcp")
 
     def test_unknown_node_is_not_silently_answered(self) -> None:
-        net = resolve_net(_softroce_cluster(), "tcp")
+        net = resolve_net(
+            _softroce_cluster(), "tcp", load_vm=_softroce_vms()
+        )
         with pytest.raises(KeyError):
             net.nid("co1-cli")
 

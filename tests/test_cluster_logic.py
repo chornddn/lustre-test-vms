@@ -12,7 +12,18 @@ import pytest
 
 from ltvm_pkg import vm_cluster
 from ltvm_pkg.lnet_net import resolve_net
-from ltvm_pkg.vm_state import ClusterInfo
+from ltvm_pkg.vm_state import ClusterInfo, VMNotFound
+
+
+def _no_extras(name: str):
+    """A node with no readable extra NICs, so tcp lands on mgmt.
+
+    These tests are about the body of the generated config, not about
+    which NIC carries the net; without this they would read whatever
+    VMs the host running the tests happens to have.
+    """
+    raise VMNotFound(name)
+
 
 # ── parse_node_spec ──────────────────────────────────────
 
@@ -121,7 +132,9 @@ class TestGenerateLocalSh:
             ("co2-mds", ["mgs", "mds"], 1, 0, "10.0.0.10"),
             ("co2-oss", ["oss"], 0, 3, "10.0.0.11"),
         )
-        text = vm_cluster.generate_local_sh(c, resolve_net(c, "tcp"))
+        text = vm_cluster.generate_local_sh(
+            c, resolve_net(c, "tcp", load_vm=_no_extras)
+        )
         assert "mgs_HOST=co2-mds" in text
         assert "MGSNID=10.0.0.10@tcp" in text
         # combined=True -> no separate MGSDEV
@@ -143,7 +156,9 @@ class TestGenerateLocalSh:
             ("co3-mds", ["mds"], 1, 0, "10.0.0.2"),
             ("co3-oss", ["oss"], 0, 2, "10.0.0.3"),
         )
-        text = vm_cluster.generate_local_sh(c, resolve_net(c, "tcp"))
+        text = vm_cluster.generate_local_sh(
+            c, resolve_net(c, "tcp", load_vm=_no_extras)
+        )
         assert "mgs_HOST=co3-mgs" in text
         # standalone MGS -> MGSDEV is set
         assert "MGSDEV=/dev/vdb" in text
@@ -161,7 +176,9 @@ class TestGenerateLocalSh:
             ("co-mds2", ["mds"], 1, 0, "10.0.0.3"),
             ("co-oss", ["oss"], 0, 1, "10.0.0.4"),
         )
-        text = vm_cluster.generate_local_sh(c, resolve_net(c, "tcp"))
+        text = vm_cluster.generate_local_sh(
+            c, resolve_net(c, "tcp", load_vm=_no_extras)
+        )
         assert "MDSCOUNT=2" in text
         assert "MDSDEV1=/dev/vdb" in text
         assert "MDSDEV2=/dev/vdb" in text  # each on its own node
@@ -175,7 +192,9 @@ class TestGenerateLocalSh:
             ("co-oss1", ["oss"], 0, 2, "10.0.0.2"),
             ("co-oss2", ["oss"], 0, 1, "10.0.0.3"),
         )
-        text = vm_cluster.generate_local_sh(c, resolve_net(c, "tcp"))
+        text = vm_cluster.generate_local_sh(
+            c, resolve_net(c, "tcp", load_vm=_no_extras)
+        )
         assert "OSTCOUNT=3" in text
         # oss1: OST 1+2, vdb+vdc on co-oss1; oss2: OST 3, vdb on co-oss2
         assert "OSTDEV1=/dev/vdb" in text
@@ -190,7 +209,9 @@ class TestGenerateLocalSh:
         c = _cluster(
             ("co-all", ["mgs", "mds", "oss"], 2, 2, "10.0.0.1"),
         )
-        text = vm_cluster.generate_local_sh(c, resolve_net(c, "tcp"))
+        text = vm_cluster.generate_local_sh(
+            c, resolve_net(c, "tcp", load_vm=_no_extras)
+        )
         # MDT: vdb, vdc; OST: vdd, vde
         assert "MDSDEV1=/dev/vdb" in text
         assert "MDSDEV2=/dev/vdc" in text
@@ -205,7 +226,9 @@ class TestGenerateLocalSh:
             ("co-c1", ["client"], 0, 0, "10.0.0.3"),
             ("co-c2", ["client"], 0, 0, "10.0.0.4"),
         )
-        text = vm_cluster.generate_local_sh(c, resolve_net(c, "tcp"))
+        text = vm_cluster.generate_local_sh(
+            c, resolve_net(c, "tcp", load_vm=_no_extras)
+        )
         assert "CLIENTS=co-c1,co-c2" in text
         assert 'RCLIENTS="co-c2"' in text
 
@@ -221,7 +244,9 @@ class TestGenerateLocalSh:
             ("co-c2", ["client"], 0, 0, "10.0.0.4"),
             ("co-c3", ["client"], 0, 0, "10.0.0.5"),
         )
-        text = vm_cluster.generate_local_sh(c, resolve_net(c, "tcp"))
+        text = vm_cluster.generate_local_sh(
+            c, resolve_net(c, "tcp", load_vm=_no_extras)
+        )
         assert 'RCLIENTS="co-c2 co-c3"' in text
 
     def test_rclients_omitted_for_single_client(self) -> None:
@@ -230,14 +255,16 @@ class TestGenerateLocalSh:
             ("co-mds", ["mgs", "mds"], 1, 0, "10.0.0.1"),
             ("co-c1", ["client"], 0, 0, "10.0.0.3"),
         )
-        text = vm_cluster.generate_local_sh(c, resolve_net(c, "tcp"))
+        text = vm_cluster.generate_local_sh(
+            c, resolve_net(c, "tcp", load_vm=_no_extras)
+        )
         assert "CLIENTS=co-c1" in text
         assert "RCLIENTS" not in text
 
     def test_rhel_libdir_default(self) -> None:
         c = _cluster(("n", ["mgs", "mds"], 1, 0, "10.0.0.1"))
         text = vm_cluster.generate_local_sh(
-            c, resolve_net(c, "tcp"), os_family="rhel")
+            c, resolve_net(c, "tcp", load_vm=_no_extras), os_family="rhel")
         assert "LUSTRE=/usr/lib64/lustre" in text
         assert "RLUSTRE=/usr/lib64/lustre" in text
         assert "RPWD=/usr/lib64/lustre/tests" in text
@@ -245,14 +272,16 @@ class TestGenerateLocalSh:
     def test_debian_libdir(self) -> None:
         c = _cluster(("n", ["mgs", "mds"], 1, 0, "10.0.0.1"))
         text = vm_cluster.generate_local_sh(
-            c, resolve_net(c, "tcp"), os_family="debian")
+            c, resolve_net(c, "tcp", load_vm=_no_extras), os_family="debian")
         assert "LUSTRE=/usr/lib/lustre" in text
         assert "RPWD=/usr/lib/lustre/tests" in text
 
     def test_common_invariants(self) -> None:
         """Every cluster config gets the standard fsname/net/ldiskfs block."""
         c = _cluster(("n", ["mgs", "mds"], 1, 0, "10.0.0.1"))
-        text = vm_cluster.generate_local_sh(c, resolve_net(c, "tcp"))
+        text = vm_cluster.generate_local_sh(
+            c, resolve_net(c, "tcp", load_vm=_no_extras)
+        )
         assert "FSNAME=lustre" in text
         assert "NETTYPE=tcp" in text
         assert "FSTYPE=ldiskfs" in text
@@ -920,9 +949,10 @@ class TestDeployNet:
         lnet = self._written(writes, "lnet.conf")
         assert all('o2ib0(eth1,eth2)' in t for t in lnet.values())
 
-    def test_tcp_writes_the_mgmt_pair(
+    def test_tcp_writes_the_extra_nic_pair(
         self, monkeypatch, tmp_path: Path
     ) -> None:
+        """tcp is a Lustre net, so it runs on the Lustre NICs."""
         src, writes = _deploy_harness(
             monkeypatch, tmp_path, lambda c: 0, nics=("softroce",)
         )
@@ -935,6 +965,24 @@ class TestDeployNet:
         lnet = self._written(writes, "lnet.conf")
         for node, text in local.items():
             assert "NETTYPE=tcp" in text
+            assert "MGSNID=172.16.100.10@tcp" in text
+            assert 'networks="tcp0(eth1)"' in lnet[node]
+
+    def test_tcp_without_extra_nics_uses_mgmt(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """The mgmt NIC is left for a cluster created with no --nic."""
+        src, writes = _deploy_harness(
+            monkeypatch, tmp_path, lambda c: 0, nics=()
+        )
+        vm_cluster.cmd_cluster_deploy(
+            argparse.Namespace(
+                name="co2", lustre_tree=str(src), cfg_dir=None, net="tcp",
+            )
+        )
+        local = self._written(writes, "local.sh")
+        lnet = self._written(writes, "lnet.conf")
+        for node, text in local.items():
             assert "MGSNID=10.0.0.10@tcp" in text
             assert 'networks="tcp0(eth0)"' in lnet[node]
 
