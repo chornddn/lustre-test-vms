@@ -10,19 +10,29 @@ from __future__ import annotations
 import pytest
 
 from ltvm_pkg.lnet_net import (
+    IP_FAMILIES,
     NET_TYPES,
+    ClusterNet,
     NetUnavailable,
+    NodeNet,
     has_passthrough,
     resolve_net,
 )
-from ltvm_pkg.vm_state import ClusterInfo, VMNotFound
+from ltvm_pkg.vm_state import ClusterInfo, VMNotFound, nic_ip6
 
 
 class _FakeVM:
-    def __init__(self, name: str, nics=None, nic_ips=None) -> None:
+    def __init__(
+        self, name: str, nics=None, nic_ips=None, nic_ip6s=None
+    ) -> None:
         self.name = name
         self.nics = list(nics or [])
         self.nic_ips = list(nic_ips or [])
+        # Index-parallel to nic_ips unless a test says otherwise, which
+        # is how a real .info records them.
+        if nic_ip6s is None:
+            nic_ip6s = [nic_ip6(a) for a in self.nic_ips]
+        self.nic_ip6s = list(nic_ip6s)
 
 
 def _cluster(*nodes) -> ClusterInfo:
@@ -200,6 +210,118 @@ class TestResolveArguments:
         )
         with pytest.raises(KeyError):
             net.nid("co1-cli")
+
+
+class TestAddressFamily:
+    """The family picks which of an interface's two addresses is the
+    NID.  Both are on the node either way."""
+
+    def test_ipv4_is_the_default(self) -> None:
+        net = resolve_net(
+            _softroce_cluster(), "tcp", load_vm=_softroce_vms()
+        )
+        assert net.ip_family == "ipv4"
+        assert not net.force_large_nid
+        assert net.nid("co1-mds") == "172.16.100.203@tcp"
+
+    def test_ipv6_nid_is_full_width_and_unbracketed(self) -> None:
+        net = resolve_net(
+            _softroce_cluster(),
+            "tcp",
+            load_vm=_softroce_vms(),
+            ip_family="ipv6",
+        )
+        assert net.force_large_nid
+        nid = net.nid("co1-mds")
+        assert nid == "fd17:2016:1000:f100:f172:f016:f100:f203@tcp"
+        # 39 characters of address is the coverage this buys; a
+        # compressed or bracketed form silently shortens it.
+        assert "::" not in nid
+        assert "[" not in nid
+        assert len(nid.rsplit("@", 1)[0]) == 39
+
+    def test_the_lnet_conf_is_the_same_for_both_families(self) -> None:
+        """The modprobe config names interfaces, not addresses: LNet
+        picks the family at configure time."""
+        v4 = resolve_net(
+            _softroce_cluster(), "tcp", load_vm=_softroce_vms()
+        )
+        v6 = resolve_net(
+            _softroce_cluster(),
+            "tcp",
+            load_vm=_softroce_vms(),
+            ip_family="ipv6",
+        )
+        assert v4.lnet_conf("co1-mds") == v6.lnet_conf("co1-mds")
+
+    def test_a_node_with_no_ipv6_is_named_not_guessed(self) -> None:
+        with pytest.raises(NetUnavailable) as e:
+            resolve_net(
+                _softroce_cluster(),
+                "tcp",
+                load_vm=lambda n: _FakeVM(
+                    n, ["softroce"], ["172.16.100.203"], nic_ip6s=[]
+                ),
+                ip_family="ipv6",
+            )
+        assert "co1-mds" in str(e.value)
+        assert "NIC_IP6S" in str(e.value)
+
+    def test_the_mgmt_fallback_has_no_ipv6(self) -> None:
+        """mgmt is IPv4-only by design, so ipv6 on a cluster with no
+        extra NIC is refused rather than half-answered."""
+        with pytest.raises(NetUnavailable):
+            resolve_net(
+                _softroce_cluster(),
+                "tcp",
+                load_vm=lambda n: _FakeVM(n),
+                ip_family="ipv6",
+            )
+
+    def test_o2ib_refuses_ipv6_and_says_why(self) -> None:
+        with pytest.raises(NetUnavailable) as e:
+            resolve_net(
+                _softroce_cluster(),
+                "o2ib",
+                load_vm=_softroce_vms(),
+                ip_family="ipv6",
+            )
+        assert "tcp" in str(e.value)
+        assert "FORCE_LARGE_NID" in str(e.value)
+
+    def test_unknown_family_names_the_valid_ones(self) -> None:
+        with pytest.raises(NetUnavailable) as e:
+            resolve_net(_softroce_cluster(), "tcp", ip_family="inet6")
+        for name in IP_FAMILIES:
+            assert name in str(e.value)
+
+
+class TestClusterNetNid:
+    """nid() answers from the ClusterNet alone, so a hand-built one
+    behaves the same as a resolved one."""
+
+    def _net(self, family: str) -> ClusterNet:
+        return ClusterNet(
+            net_type="tcp",
+            net_name="tcp0",
+            nodes=(
+                NodeNet(
+                    name="co1-mds",
+                    interfaces=("eth1",),
+                    ip="172.16.100.203",
+                    ip6="fd17:2016:1000:f100:f172:f016:f100:f203",
+                ),
+            ),
+            ip_family=family,
+        )
+
+    def test_ipv4(self) -> None:
+        assert self._net("ipv4").nid("co1-mds") == "172.16.100.203@tcp"
+
+    def test_ipv6(self) -> None:
+        assert self._net("ipv6").nid("co1-mds") == (
+            "fd17:2016:1000:f100:f172:f016:f100:f203@tcp"
+        )
 
 
 class TestHasPassthrough:

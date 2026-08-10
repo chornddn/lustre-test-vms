@@ -967,6 +967,10 @@ class ClusterInfo:
     # `ltvm deploy` reuses it, so a redeploy does not silently move a
     # cluster back to the default net.
     net: str = ""
+    # The address family the last `ltvm deploy --ip-family` gave that
+    # net its NIDs on ("ipv4" / "ipv6"), or "" for a cluster never
+    # deployed with one.  Read back the same way as net.
+    ip_family: str = ""
 
     @property
     def path(self) -> Path:
@@ -987,6 +991,8 @@ class ClusterInfo:
         }
         if self.net:
             data["net"] = self.net
+        if self.ip_family:
+            data["ip_family"] = self.ip_family
         text = json.dumps(data, indent=2) + "\n"
         _atomic_write(self.path, text)
 
@@ -1019,6 +1025,7 @@ class ClusterInfo:
             nodes=data["nodes"],
             owner_id=data.get("owner_id"),
             net=data.get("net", ""),
+            ip_family=data.get("ip_family", ""),
         )
 
     @staticmethod

@@ -12,7 +12,7 @@ import pytest
 
 from ltvm_pkg import vm_cluster
 from ltvm_pkg.lnet_net import resolve_net
-from ltvm_pkg.vm_state import ClusterInfo, VMNotFound
+from ltvm_pkg.vm_state import ClusterInfo, VMNotFound, nic_ip6
 
 
 def _no_extras(name: str):
@@ -707,6 +707,8 @@ class _FakeVM:
         self.variant = "base"
         self.nics = list(nics or [])
         self.nic_ips = list(nic_ips or [])
+        # Index-parallel to nic_ips, exactly as a real .info records it.
+        self.nic_ip6s = [nic_ip6(a) for a in self.nic_ips]
 
     def update_deploy(self, *a, **kw) -> None:
         pass
@@ -985,6 +987,104 @@ class TestDeployNet:
         for node, text in local.items():
             assert "MGSNID=10.0.0.10@tcp" in text
             assert 'networks="tcp0(eth0)"' in lnet[node]
+
+    def test_ipv4_writes_an_explicit_force_large_nid(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """An explicit false is what keeps a stale true from surviving
+        a redeploy."""
+        src, writes = _deploy_harness(
+            monkeypatch, tmp_path, lambda c: 0, nics=("softroce",)
+        )
+        vm_cluster.cmd_cluster_deploy(
+            argparse.Namespace(
+                name="co2", lustre_tree=str(src), cfg_dir=None, net="tcp",
+                ip_family="ipv4",
+            )
+        )
+        for text in self._written(writes, "local.sh").values():
+            assert "FORCE_LARGE_NID=false" in text
+            assert "MGSNID=172.16.100.10@tcp" in text
+
+    def test_ipv6_writes_the_large_nid_pair(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        src, writes = _deploy_harness(
+            monkeypatch, tmp_path, lambda c: 0, nics=("softroce",)
+        )
+        vm_cluster.cmd_cluster_deploy(
+            argparse.Namespace(
+                name="co2", lustre_tree=str(src), cfg_dir=None, net="tcp",
+                ip_family="ipv6",
+            )
+        )
+        local = self._written(writes, "local.sh")
+        lnet = self._written(writes, "lnet.conf")
+        for node, text in local.items():
+            assert "NETTYPE=tcp" in text
+            assert "FORCE_LARGE_NID=true" in text
+            mgsnid_line = next(
+                ln for ln in text.splitlines()
+                if ln.startswith("MGSNID=")
+            )
+            assert mgsnid_line == (
+                "MGSNID=fd17:2016:1000:f100:f172:f016:f100:f010@tcp"
+            )
+            # The width is the coverage: nothing in the pipeline may
+            # compress or truncate the address.
+            assert "::" not in mgsnid_line
+            # The modprobe config names interfaces, so it is identical
+            # to the IPv4 one.
+            assert 'networks="tcp0(eth1)"' in lnet[node]
+
+    def test_the_family_is_recorded_on_the_cluster(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        src, _ = _deploy_harness(
+            monkeypatch, tmp_path, lambda c: 0, nics=("softroce",)
+        )
+        cluster = vm_cluster.ClusterInfo.load("co2")
+        vm_cluster.cmd_cluster_deploy(
+            argparse.Namespace(
+                name="co2", lustre_tree=str(src), cfg_dir=None, net="tcp",
+                ip_family="ipv6",
+            )
+        )
+        assert cluster.ip_family == "ipv6"
+
+    def test_bare_deploy_keeps_the_recorded_family(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        src, writes = _deploy_harness(
+            monkeypatch, tmp_path, lambda c: 0, nics=("softroce",)
+        )
+        vm_cluster.ClusterInfo.load("co2").ip_family = "ipv6"
+        vm_cluster.cmd_cluster_deploy(
+            argparse.Namespace(
+                name="co2", lustre_tree=str(src), cfg_dir=None, net=None,
+                ip_family=None,
+            )
+        )
+        assert all(
+            "FORCE_LARGE_NID=true" in t
+            for t in self._written(writes, "local.sh").values()
+        )
+
+    def test_ipv6_over_o2ib_touches_no_node(
+        self, monkeypatch, tmp_path: Path
+    ) -> None:
+        """The suites refuse it, so deploy refuses it first."""
+        src, writes = _deploy_harness(
+            monkeypatch, tmp_path, lambda c: 0, nics=("softroce",)
+        )
+        with pytest.raises(SystemExit):
+            vm_cluster.cmd_cluster_deploy(
+                argparse.Namespace(
+                    name="co2", lustre_tree=str(src), cfg_dir=None,
+                    net="o2ib", ip_family="ipv6",
+                )
+            )
+        assert writes == []
 
     def test_net_the_nics_cannot_carry_touches_no_node(
         self, monkeypatch, tmp_path: Path

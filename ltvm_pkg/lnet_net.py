@@ -27,6 +27,10 @@ from .vm_state import ClusterInfo, VMInfo, VMNotFound
 # The nets a cluster can be asked to run.
 NET_TYPES = ("tcp", "o2ib")
 
+# The address families a cluster can be asked to run its net on.  The
+# nodes hold both, so this only picks which one the NIDs use.
+IP_FAMILIES = ("ipv4", "ipv6")
+
 # NIC types that can carry o2ib.  `passthrough` is a real HCA and is
 # configured by the boot-time emitter, which resolves its ib device at
 # runtime; deploy cannot compose that mapping, so it is refused here
@@ -50,6 +54,9 @@ class NodeNet:
     name: str
     interfaces: tuple[str, ...]
     ip: str
+    # The same interface's IPv6 address; "" for a VM created before the
+    # extras carried one.
+    ip6: str = ""
 
 
 @dataclass(frozen=True)
@@ -59,6 +66,7 @@ class ClusterNet:
     net_type: str
     net_name: str
     nodes: tuple[NodeNet, ...]
+    ip_family: str = "ipv4"
 
     def node(self, name: str) -> NodeNet:
         for n in self.nodes:
@@ -66,14 +74,34 @@ class ClusterNet:
                 return n
         raise KeyError(f"node {name!r} is not in this cluster net")
 
+    @property
+    def force_large_nid(self) -> bool:
+        """Whether the test framework must configure large NIDs.
+
+        LNet takes an interface's IPv6 address only when it is loaded
+        with ``lnetctl lnet configure --large``, which is what
+        ``FORCE_LARGE_NID=true`` makes the framework do.
+        """
+        return self.ip_family == "ipv6"
+
     def nid(self, name: str) -> str:
         """The node's LNet NID on this net.
 
         Emitted without the net index: ``o2ib`` and ``o2ib0`` name the
         same net to Lustre, and the unindexed form is what every
-        existing generated config uses.
+        existing generated config uses.  An IPv6 NID is unbracketed
+        too, so the two families differ only in the address.
         """
-        return f"{self.node(name).ip}@{self.net_type}"
+        node = self.node(name)
+        if self.ip_family != "ipv6":
+            return f"{node.ip}@{self.net_type}"
+        if not node.ip6:
+            raise NetUnavailable(
+                f"{name} records no IPv6 address on "
+                f"{node.interfaces[0]}; recreate the VM so its .info "
+                f"carries NIC_IP6S, or deploy --ip-family ipv4"
+            )
+        return f"{node.ip6}@{self.net_type}"
 
     def lnet_conf(self, name: str) -> str:
         """The node's ``/etc/modprobe.d/lnet.conf`` body."""
@@ -133,13 +161,22 @@ def _resolve_extra_node(
             f"{node_name} records no address for {interfaces[0]}; "
             f"recreate the VM so its .info carries NIC_IPS"
         )
-    return NodeNet(name=node_name, interfaces=interfaces, ip=ip)
+    # nic_ip6s is index-parallel to nic_ips, and empty on a VM created
+    # before the extras carried IPv6.  An absent address is reported by
+    # nid(), which is the only caller that needs one.
+    ip6 = ""
+    if picked[0] < len(vm.nic_ip6s):
+        ip6 = vm.nic_ip6s[picked[0]]
+    return NodeNet(
+        name=node_name, interfaces=interfaces, ip=ip, ip6=ip6
+    )
 
 
 def resolve_net(
     cluster: ClusterInfo,
     net_type: str,
     load_vm: Callable[[str], VMInfo] | None = None,
+    ip_family: str = "ipv4",
 ) -> ClusterNet:
     """Resolve *net_type* against what *cluster*'s nodes actually have.
 
@@ -149,11 +186,26 @@ def resolve_net(
     Both nets run on the extra NICs, whose addresses live only in each
     node's ``VMInfo``.  Only a node with no extra NIC at all falls back
     to the mgmt NIC.
+
+    *ip_family* picks which of each interface's two addresses the NIDs
+    use.  Both are assigned either way, so it is a per-deploy choice
+    rather than a property of the cluster's hardware.
     """
     if net_type not in NET_TYPES:
         raise NetUnavailable(
             f"unknown net {net_type!r}: valid nets are "
             f"{', '.join(NET_TYPES)}"
+        )
+    if ip_family not in IP_FAMILIES:
+        raise NetUnavailable(
+            f"unknown address family {ip_family!r}: valid families "
+            f"are {', '.join(IP_FAMILIES)}"
+        )
+    if ip_family == "ipv6" and net_type != "tcp":
+        raise NetUnavailable(
+            f"{net_type} cannot run --ip-family ipv6: test-framework.sh "
+            f'errors with "FORCE_LARGE_NID only supported by tcp". The '
+            f"nodes still hold IPv6 addresses for manual lnetctl work."
         )
 
     nodes = cluster.get_nodes()
@@ -207,8 +259,15 @@ def resolve_net(
     # One net index per cluster: the resolver picks the first
     # o2ib-capable NIC type it finds, so the net is always index 0 --
     # the same index the boot emitter assigns it.
-    return ClusterNet(
+    net = ClusterNet(
         net_type=net_type,
         net_name=f"{net_type}0",
         nodes=tuple(resolved),
+        ip_family=ip_family,
     )
+    # Ask for every NID here, so a node that cannot supply one for this
+    # family is reported before any node is touched rather than halfway
+    # through writing the cluster's configs.
+    for n in resolved:
+        net.nid(n.name)
+    return net

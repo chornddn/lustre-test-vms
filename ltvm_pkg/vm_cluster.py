@@ -137,6 +137,10 @@ def generate_local_sh(
         "",
         "FSNAME=lustre",
         f"NETTYPE={net.net_type}",
+        # Written on both branches, like NETTYPE and MGSNID: an
+        # explicit false is what stops a stale true in a hand-edited
+        # profile from outliving the deploy that set it.
+        f"FORCE_LARGE_NID={'true' if net.force_large_nid else 'false'}",
         "",
         f"LUSTRE={lustre_dir}",
         f"RLUSTRE={lustre_dir}",
@@ -1022,19 +1026,23 @@ def cluster_build_params(cluster: ClusterInfo) -> ClusterBuildParams:
 
 
 def _resolve_deploy_net(
-    cluster: ClusterInfo, requested: str | None
+    cluster: ClusterInfo,
+    requested: str | None,
+    requested_family: str | None = None,
 ) -> ClusterNet:
     """Decide which LNet net this deploy configures, and resolve it.
 
     ``--net`` wins; without it the cluster keeps the net it was last
     deployed with, and a cluster that has never been deployed with one
     gets tcp -- the net every generated config used before ``--net``
-    existed.
+    existed.  ``--ip-family`` is decided the same way, and defaults to
+    ipv4 so a bare redeploy of an old cluster is unchanged.
 
     Dies before any node is touched: a cluster left half-configured for
     two different nets is worse than one left alone.
     """
     net_type = requested or cluster.net or "tcp"
+    ip_family = requested_family or cluster.ip_family or "ipv4"
     if requested is None and not cluster.net and has_passthrough(cluster):
         die(
             f"cluster {cluster.name!r} has a passthrough NIC and no "
@@ -1042,9 +1050,12 @@ def _resolve_deploy_net(
             f"overwrite the lnet.conf its HCA was configured with"
         )
     try:
-        return resolve_net(cluster, net_type)
+        return resolve_net(cluster, net_type, ip_family=ip_family)
     except NetUnavailable as e:
-        die(f"cluster {cluster.name!r} cannot run --net {net_type}: {e}")
+        die(
+            f"cluster {cluster.name!r} cannot run --net {net_type} "
+            f"--ip-family {ip_family}: {e}"
+        )
         raise AssertionError("unreachable")
 
 
@@ -1072,7 +1083,11 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
 
     # Resolve the net before anything is deployed: an unrunnable net is
     # an argument error, not a half-configured cluster.
-    net = _resolve_deploy_net(cluster, getattr(args, "net", None))
+    net = _resolve_deploy_net(
+        cluster,
+        getattr(args, "net", None),
+        getattr(args, "ip_family", None),
+    )
 
     params = cluster_build_params(cluster)
     os_family = params.os_family
@@ -1267,14 +1282,21 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
 
     # Persist the net only once both files are on every node, so the
     # recorded net always describes what the nodes actually hold.
-    if cluster.net != net.net_type:
+    if cluster.net != net.net_type or cluster.ip_family != net.ip_family:
         cluster.net = net.net_type
+        cluster.ip_family = net.ip_family
         try:
             cluster.save()
         except OSError as e:
-            print(f"    warning: cannot record net={net.net_type}: {e}")
+            print(
+                f"    warning: cannot record net={net.net_type} "
+                f"ip_family={net.ip_family}: {e}"
+            )
 
-    print(f"\n=== Cluster '{cluster.name}' deployed (net {net.net_type}) ===")
+    print(
+        f"\n=== Cluster '{cluster.name}' deployed "
+        f"(net {net.net_type}, {net.ip_family}) ==="
+    )
     print(f"    mount it with: ltvm cluster llmount {cluster.name}")
 
 
@@ -1534,6 +1556,10 @@ def cmd_cluster_status(args: argparse.Namespace) -> None:
         print(f"net:     {cluster.net}")
     else:
         print("net:     tcp (default; never deployed)")
+    if cluster.ip_family:
+        print(f"family:  {cluster.ip_family}")
+    else:
+        print("family:  ipv4 (default; never deployed)")
 
     for f, per_node in divergent.items():
         detail = " ".join(f"{n}={v}" for n, v in sorted(per_node.items()))

@@ -248,7 +248,7 @@ try:
         complete_vms,
         complete_zfs_versions,
     )
-    from ltvm_pkg.lnet_net import NET_TYPES  # noqa: E402
+    from ltvm_pkg.lnet_net import IP_FAMILIES, NET_TYPES  # noqa: E402
     from ltvm_pkg.shell_completion import (  # noqa: E402
         SHELLS as SHELL_COMPLETION_SHELLS,
     )
@@ -1779,6 +1779,16 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="LNet network to configure the cluster for "
         "(default: the net it was last deployed with, else tcp)",
+    )
+    # The nodes always hold both families; this picks the one the NIDs
+    # use.  ipv6 needs tcp, because that is the only net for which the
+    # test framework honours FORCE_LARGE_NID.
+    sp.add_argument(
+        "--ip-family",
+        choices=list(IP_FAMILIES),
+        default=None,
+        help="Address family for the cluster's NIDs "
+        "(default: the family it was last deployed with, else ipv4)",
     )
     sp.set_defaults(func=cmd_deploy)
 

@@ -116,6 +116,7 @@ def _deploy_cluster(name: str, args: argparse.Namespace, use_json: bool) -> int:
                 cfg_dir=getattr(args, "cfg_dir", None),
                 fstype=getattr(args, "fstype", None),
                 net=getattr(args, "net", None),
+                ip_family=getattr(args, "ip_family", None),
             )
         )
         return EXIT_OK
@@ -129,16 +130,21 @@ def _deploy_vm(vm: Any, args: argparse.Namespace, use_json: bool) -> int:
     from ltvm_pkg.lustre_build import staging_status
     from ltvm_pkg.vm_state import VMNotFound
 
-    # --net configures a whole cluster's LNet: local.sh names one MGS
-    # NID that every node has to agree on, so it cannot be set one node
-    # at a time.  Deploying the cluster is how you change it.
-    if getattr(args, "net", None):
-        return _error(
-            "deploy --net names a cluster's network; "
-            f"'{vm.name}' is a single VM",
-            use_json,
-            hint="deploy the cluster instead: ltvm deploy <cluster> --net ...",
-        )
+    # --net and --ip-family configure a whole cluster's LNet: local.sh
+    # names one MGS NID that every node has to agree on, so neither can
+    # be set one node at a time.  Deploying the cluster is how you
+    # change them.
+    for flag, dest in (("--net", "net"), ("--ip-family", "ip_family")):
+        if getattr(args, dest, None):
+            return _error(
+                f"deploy {flag} names a cluster's network; "
+                f"'{vm.name}' is a single VM",
+                use_json,
+                hint=(
+                    f"deploy the cluster instead: "
+                    f"ltvm deploy <cluster> {flag} ..."
+                ),
+            )
 
     try:
         vm_claim.check(vm.name, "deploy to")

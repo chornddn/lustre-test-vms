@@ -946,6 +946,7 @@ class TestClusterStatusReportsBuildIdentity:
     ) -> None:
         c = _save_cluster(name="co2")
         c.net = "o2ib"
+        c.ip_family = "ipv4"
         c.save()
         vm = MagicMock(os_id="rocky9", arch="aarch64", kver="5.14.0-x")
         with (
@@ -956,7 +957,27 @@ class TestClusterStatusReportsBuildIdentity:
             vm_cluster.cmd_cluster_status(argparse.Namespace(name="co2"))
         out = capsys.readouterr().out
         assert "net:     o2ib" in out
+        assert "family:  ipv4" in out
         assert "never deployed" not in out
+
+    def test_a_deployed_family_is_shown_next_to_the_net(
+        self, tmp_sockets: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """The family a suite will run in comes from the cluster, not
+        from a note that goes stale."""
+        c = _save_cluster(name="co2")
+        c.net = "tcp"
+        c.ip_family = "ipv6"
+        c.save()
+        vm = MagicMock(os_id="rocky9", arch="aarch64", kver="5.14.0-x")
+        with (
+            patch.object(vm_cluster, "is_running", return_value=True),
+            patch.object(vm_cluster, "VMInfo") as mock_vm,
+        ):
+            mock_vm.load.return_value = vm
+            vm_cluster.cmd_cluster_status(argparse.Namespace(name="co2"))
+        out = capsys.readouterr().out
+        assert "family:  ipv6" in out
 
     def test_a_divergent_kernel_warns_on_stderr(
         self, tmp_sockets: Path, capsys: pytest.CaptureFixture[str]
@@ -1802,3 +1823,21 @@ class TestClusterNetPersistence:
             (tmp_sockets / "co1.cluster").read_text()
         )
         assert ClusterInfo.load("co1").net == ""
+
+    def test_ip_family_round_trips(self, tmp_sockets: Path) -> None:
+        c = _save_cluster()
+        c.net = "tcp"
+        c.ip_family = "ipv6"
+        c.save()
+        assert ClusterInfo.load("co1").ip_family == "ipv6"
+
+    def test_a_cluster_without_a_family_loads_as_empty(
+        self, tmp_sockets: Path
+    ) -> None:
+        """Cluster files written before --ip-family existed carry no
+        key and must still load."""
+        _save_cluster()
+        assert "ip_family" not in json.loads(
+            (tmp_sockets / "co1.cluster").read_text()
+        )
+        assert ClusterInfo.load("co1").ip_family == ""
