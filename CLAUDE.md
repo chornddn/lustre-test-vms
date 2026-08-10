@@ -668,9 +668,10 @@ another deploy, which is cheap: `llmount.sh` reformats, so
 a changed `MGSNID` needs no `writeconf`.  Omitting `--net`
 keeps the net last deployed, or tcp for a cluster that
 never had one.  `--net o2ib` on a cluster whose NICs cannot
-carry it fails before any node is touched.  `tcp` runs on
-the mgmt NIC (`eth0`); `o2ib` runs on the extra NICs and
-their `172.16.100.x` addresses.  For a real-HCA
+carry it fails before any node is touched.  Both nets run
+on the extra NICs and their `172.16.100.x` addresses; only
+a cluster created with no `--nic` at all falls back to the
+mgmt NIC (`eth0`).  For a real-HCA
 (`passthrough`) cluster the boot-time emitter owns the
 config, so deploy refuses `--net o2ib` and refuses a bare
 deploy that would overwrite its `lnet.conf`.
