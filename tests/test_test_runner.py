@@ -480,6 +480,110 @@ class TestPreflight:
         ]
         assert tr.evaluate_preflight(probes, cluster="co2") == []
 
+    def test_large_nid_with_ipv6_mgsnid_is_accepted(self) -> None:
+        probes = [
+            self._probe(
+                "a",
+                lnet_conf='options lnet networks="tcp0(eth1)"',
+                cfg="FSNAME=lustre\nNETTYPE=tcp\n"
+                    "FORCE_LARGE_NID=true\n"
+                    "MGSNID=fd17:2016:1000:f100:f172:f016:f100:f203@tcp\n",
+            )
+        ]
+        assert tr.evaluate_preflight(probes, cluster="co2") == []
+
+    def test_small_nid_with_ipv4_mgsnid_is_accepted(self) -> None:
+        probes = [
+            self._probe(
+                "a",
+                lnet_conf='options lnet networks="tcp0(eth1)"',
+                cfg="FSNAME=lustre\nNETTYPE=tcp\n"
+                    "FORCE_LARGE_NID=false\n"
+                    "MGSNID=172.16.100.203@tcp\n",
+            )
+        ]
+        assert tr.evaluate_preflight(probes, cluster="co2") == []
+
+    def test_large_nid_with_ipv4_mgsnid_is_an_error(self) -> None:
+        """LNet gets an IPv6 NI and every mount targets an IPv4 MGS NID
+        no node advertises."""
+        probes = [
+            self._probe(
+                "a",
+                lnet_conf='options lnet networks="tcp0(eth1)"',
+                cfg="FSNAME=lustre\nNETTYPE=tcp\n"
+                    "FORCE_LARGE_NID=true\n"
+                    "MGSNID=172.16.100.203@tcp\n",
+            )
+        ]
+        errs = tr.evaluate_preflight(probes, cluster="co2")
+        assert len(errs) == 1
+        assert "FORCE_LARGE_NID=true" in errs[0]
+        assert "MGSNID=172.16.100.203@tcp" in errs[0]
+        assert "--ip-family ipv6" in errs[0]
+
+    def test_small_nid_with_ipv6_mgsnid_is_an_error(self) -> None:
+        probes = [
+            self._probe(
+                "a",
+                lnet_conf='options lnet networks="tcp0(eth1)"',
+                cfg="FSNAME=lustre\nNETTYPE=tcp\n"
+                    "FORCE_LARGE_NID=false\n"
+                    "MGSNID=fd17:2016:1000:f100:f172:f016:f100:f203@tcp\n",
+            )
+        ]
+        errs = tr.evaluate_preflight(probes, cluster="co2")
+        assert len(errs) == 1
+        assert "FORCE_LARGE_NID=false" in errs[0]
+        assert "--ip-family ipv4" in errs[0]
+
+    def test_cfg_without_force_large_nid_is_accepted(self) -> None:
+        """A cluster deployed before the family flag existed."""
+        probes = [
+            self._probe(
+                "a",
+                lnet_conf='options lnet networks="tcp0(eth1)"',
+                cfg="FSNAME=lustre\nNETTYPE=tcp\n"
+                    "MGSNID=172.16.100.203@tcp\n",
+            )
+        ]
+        assert tr.evaluate_preflight(probes, cluster="co2") == []
+
+    @pytest.mark.parametrize("large", ["true", "false"])
+    def test_hostname_mgsnid_is_accepted(self, large: str) -> None:
+        """A NID that names a host has no family to disagree with."""
+        probes = [
+            self._probe(
+                "a",
+                lnet_conf='options lnet networks="tcp0(eth1)"',
+                cfg="FSNAME=lustre\nNETTYPE=tcp\n"
+                    f"FORCE_LARGE_NID={large}\n"
+                    "MGSNID=co1-mds@tcp\n",
+            )
+        ]
+        assert tr.evaluate_preflight(probes, cluster="co2") == []
+
+    @pytest.mark.parametrize(
+        "mgsnid",
+        [
+            "172.16.100.203@tcp",
+            "fd17:2016:1000:f100:f172:f016:f100:f203@tcp",
+        ],
+    )
+    def test_net_check_reads_the_net_after_the_last_at(
+        self, mgsnid: str
+    ) -> None:
+        """An IPv6 address carries colons but no '@', so the net split
+        stays right."""
+        probes = [
+            self._probe(
+                "a",
+                lnet_conf='options lnet networks="tcp0(eth1)"',
+                cfg=f"FSNAME=lustre\nNETTYPE=tcp\nMGSNID={mgsnid}\n",
+            )
+        ]
+        assert tr.evaluate_preflight(probes, cluster="co2") == []
+
     def test_unreachable_node_is_an_error(self) -> None:
         probes = [tr.NodeProbe(node="a", reachable=False, error="timed out")]
         errs = tr.evaluate_preflight(probes, cluster="co2")

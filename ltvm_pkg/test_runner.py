@@ -719,6 +719,20 @@ def _lnet_net_types(lnet_conf: str) -> list[str]:
     return types
 
 
+def _nid_family(nid: str) -> str:
+    """Return "ipv6", "ipv4", or "" for a NID whose address is neither.
+
+    The address is everything left of the last '@'; an IPv6 address is
+    the one that can contain a ':', which no other NID form does.
+    """
+    addr = nid.rsplit("@", 1)[0].strip()
+    if ":" in addr:
+        return "ipv6"
+    if addr.count(".") == 3:
+        return "ipv4"
+    return ""
+
+
 def evaluate_preflight(
     probes: list[NodeProbe],
     *,
@@ -813,6 +827,23 @@ def evaluate_preflight(
                     f"{p.node}: cfg/{cfg}.sh has MGSNID={mgsnid} on "
                     f"{nid_net} but NETTYPE={nettype}; redeploy with "
                     f"ltvm deploy {cluster} --net {expected}"
+                )
+
+        # The address family is the third statement that can drift.
+        # test-framework.sh configures the NI from FORCE_LARGE_NID, so a
+        # MGSNID of the other family names an address no node has.
+        large = _cfg_value(p.cfg_text, "FORCE_LARGE_NID")
+        fam = _nid_family(mgsnid) if mgsnid else ""
+        if large and fam:
+            want = "ipv6" if large.strip().lower() == "true" else "ipv4"
+            if fam != want:
+                errors.append(
+                    f"{p.node}: cfg/{cfg}.sh has "
+                    f"FORCE_LARGE_NID={large.strip()} but MGSNID={mgsnid} "
+                    f"is {fam}; test-framework.sh will configure a {want} "
+                    f"NI and every mount will target a NID no node "
+                    f"advertises. Redeploy with ltvm deploy {cluster} "
+                    f"--ip-family {want}"
                 )
     return errors
 
