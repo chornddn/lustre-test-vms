@@ -161,6 +161,21 @@ def _neutralize_podman_preflight() -> object:
 
 
 @pytest.fixture(autouse=True)
+def _neutralize_podman_autostop() -> object:
+    """Stop build commands from stopping the developer's podman machine.
+
+    Every cmd_build_* wraps its work in ``_podman_machine_autostop``,
+    which shells out to ``podman machine stop`` on a successful macOS
+    run.  A test that drives one of those handlers to a happy exit
+    therefore reaches the real host: it has killed a podman machine out
+    from under a build running in another terminal.  The counterpart
+    fixture above covers the start side; this one covers the stop side.
+    """
+    with patch("ltvm_pkg.cli.build.stop_podman_machine_macos"):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_container_preflight() -> object:
     """Suppress the build-container-exists preflight for unit tests.
 
