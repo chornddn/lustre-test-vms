@@ -191,11 +191,41 @@ Two consequences for testing:
 
   - `test_50`, a benign page-allocation shortage on 2 GB VMs; exclude it
     together with `test_109`.
-  - `test_241`, at `test_241` in both families. `check_parameter()`
-    compares a line count against `${#INTERFACES[@]}` while the test
-    configures only `INTERFACES[0]`, so a cluster with two extra NICs
-    fails it. A cluster created with one `--nic` should not.
+  - `test_241`, which halts both families. `check_parameter()` compares
+    a line count against `${#INTERFACES[@]}` while the test configures
+    only `INTERFACES[0]`, so a cluster with two extra NICs fails it. A
+    cluster created with one `--nic` should not.
+
+  `test_199` halts the IPv4 run but not the IPv6 one: it is on the
+  suite's own `always_except` list in large-NID mode. See the note on
+  `--ip2net` below.
 
 Until 65491 lands, filesystem coverage on ltvm needs IPv4. IPv6 also
 supports LNet-level checks run by hand: `lctl list_nids`, `lctl ping`,
 and `lnetctl` work against the configured NIs.
+
+## Known limit: `lnetctl net add --ip2net` picks the wrong interface
+
+`--ip2net` configures `eth0` whatever address the pattern names. On a
+cluster whose Lustre net runs on the extra NICs this is always the wrong
+interface. Measured on a node with `172.16.100.33` on `eth1` and
+`172.16.100.34` on `eth2`:
+
+```
+lnetctl net add --ip2net "tcp 172.16.100.33"   # rc 0, configures eth0
+lnetctl net add --ip2net "tcp 172.16.100.34"   # rc 0, configures eth0
+lnetctl net add --ip2net "tcp 172.16.100.*"    # rc 0, configures eth0
+lnetctl net add --ip2net "tcp 10.0.0.1"        # rc 234, no match
+```
+
+The last line matters: a non-matching pattern is refused, so the address
+matching works and only the interface selection is wrong. `--ip2net`
+reaches the deprecated in-kernel parser, and `lnet_match_networks()`
+(`lnet/lnet/config.c:1531`) hands back only the network token, dropping
+which address matched, so the caller takes the first interface.
+
+This is a Lustre defect, not an ltvm one. It became visible here only
+because `tcp` moved off `eth0`: while the Lustre net ran on the
+management NIC, the wrong interface happened to be the right answer. It
+fails `sanity-lnet` `test_199`, which re-adds an interface through
+`--ip2net` and expects the duplicate to be refused.
