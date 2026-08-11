@@ -140,6 +140,7 @@ def build_auster_argv(
     cfg: str = DEFAULT_CFG,
     only: str | None = None,
     except_: str | None = None,
+    no_setup: bool = False,
 ) -> list[str]:
     """Build the auster argv for one suite run.
 
@@ -147,8 +148,17 @@ def build_auster_argv(
     where run_suites() parses them as suite options.  There is no code
     path here that can set ONLY or EXCEPT in the environment; see the
     module docstring for why that matters.
+
+    ``no_setup`` emits ``-N``, which clears do_setup so
+    setup_if_needed() and do_check_and_setup_lustre() format and mount
+    nothing.  It is a global auster option, so it goes before the suite
+    name.  An LNet suite configures its own LNet and needs no
+    filesystem.
     """
-    argv = ["./auster", "-r", "-v", "-D", log_dir, "-f", cfg, suite]
+    argv = ["./auster", "-r", "-v", "-D", log_dir, "-f", cfg]
+    if no_setup:
+        argv.append("-N")
+    argv.append(suite)
     if only:
         argv += ["--only", only]
     if except_:

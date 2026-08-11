@@ -138,6 +138,39 @@ class TestAusterArgv:
         argv = tr.build_auster_argv("sanity", log_dir="/tmp/x", cfg="cluster")
         assert argv[argv.index("-f") + 1] == "cluster"
 
+    def test_no_setup_precedes_the_suite_name(self) -> None:
+        """-N is a global auster option, not a suite option."""
+        argv = tr.build_auster_argv(
+            "sanity-lnet", log_dir="/tmp/x", no_setup=True
+        )
+        assert "-N" in argv
+        assert argv.index("-N") < argv.index("sanity-lnet")
+
+    def test_no_setup_defaults_off(self) -> None:
+        argv = tr.build_auster_argv("sanity-lnet", log_dir="/tmp/x")
+        assert argv == [
+            "./auster",
+            "-r",
+            "-v",
+            "-D",
+            "/tmp/x",
+            "-f",
+            "local",
+            "sanity-lnet",
+        ]
+
+    def test_no_setup_composes_with_except(self) -> None:
+        argv = tr.build_auster_argv(
+            "sanity-lnet",
+            log_dir="/tmp/x",
+            except_="50,109",
+            no_setup=True,
+        )
+        suite_at = argv.index("sanity-lnet")
+        assert argv.index("-N") < suite_at
+        assert argv.index("--except") > suite_at
+        assert argv[argv.index("--except") + 1] == "50,109"
+
     def test_remote_command_quotes_arguments(self) -> None:
         argv = tr.build_auster_argv("sanity-lnet", log_dir="/tmp/a b", only="1")
         cmd = tr.build_remote_command("/usr/lib64/lustre/tests", argv)
@@ -651,6 +684,7 @@ def _test_args(**kw: Any) -> argparse.Namespace:
         skip_preflight=True,
         benign=None,
         no_benign=False,
+        no_setup=False,
     )
     setattr(ns, "except", None)
     for k, v in kw.items():

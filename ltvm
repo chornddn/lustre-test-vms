@@ -2339,6 +2339,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=None,
         help="Comma-separated subtests to skip (auster suite option)",
     )
+    # Reach for this when the suite needs no filesystem: an LNet suite
+    # configures its own LNet, and auster would otherwise format and
+    # mount before the suite script runs.
+    sp.add_argument(
+        "--no-setup",
+        action="store_true",
+        help="Skip auster's format and mount (auster -N); LNet suites "
+        "do not need a filesystem",
+    )
     sp.add_argument(
         "--cfg",
         default="local",

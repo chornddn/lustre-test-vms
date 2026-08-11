@@ -210,6 +210,7 @@ def cmd_test(args: argparse.Namespace) -> int:
         cfg=args.cfg,
         only=args.only,
         except_=getattr(args, "except"),
+        no_setup=args.no_setup,
     )
     command = tr.build_remote_command(tests_dir, argv)
     if not use_json:
