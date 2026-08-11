@@ -175,11 +175,18 @@ that shortens the string; it has not landed.
 Two consequences for testing:
 
 - `ltvm llmount` and every filesystem suite fail on an IPv6 deploy.
-- `sanity-lnet` fails too, even though it is an LNet suite. auster
-  formats and mounts the filesystem in its own setup before the suite
-  script runs, so the run ends with no `results.yml` and no subtest
-  recorded.
+  Nothing works around this; the mount itself is what fails.
+- An LNet suite fails only because auster formats and mounts in its own
+  setup before the suite script runs. `--no-setup` (auster `-N`) skips
+  that setup, which makes the run possible:
 
-Until 65491 lands, IPv6 coverage on ltvm is limited to LNet-level checks
-run by hand: `lctl list_nids`, `lctl ping`, and `lnetctl` work against
-the configured NIs.
+  ```bash
+  ltvm test co1 sanity-lnet --no-setup --except 50,109 --as my-task
+  ```
+
+  This run has not been done yet, so the flag makes `sanity-lnet`
+  runnable in IPv6 mode; it is not yet proof that the suite passes.
+
+Until 65491 lands, filesystem coverage on ltvm needs IPv4. IPv6 also
+supports LNet-level checks run by hand: `lctl list_nids`, `lctl ping`,
+and `lnetctl` work against the configured NIs.

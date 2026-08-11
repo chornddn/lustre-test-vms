@@ -627,6 +627,10 @@ than the `.ltvm-staging-stamp` written at the end of the build.
 **`llmount` is the mount command.**  Neither `build` nor
 `deploy` mounts anything.
 
+**`ltvm test --no-setup` passes auster `-N`**, which skips
+auster's own format and mount; an LNet suite needs no
+filesystem.
+
 **Ask `ltvm test` how a run is going; do not guess.**  A suite
 runs for tens of minutes inside one blocking call, so the
 answer needs a second command:
