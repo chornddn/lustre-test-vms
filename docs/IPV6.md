@@ -178,14 +178,23 @@ Two consequences for testing:
   Nothing works around this; the mount itself is what fails.
 - An LNet suite fails only because auster formats and mounts in its own
   setup before the suite script runs. `--no-setup` (auster `-N`) skips
-  that setup, which makes the run possible:
+  that setup, and the suite then runs:
 
   ```bash
   ltvm test co1 sanity-lnet --no-setup --except 50,109 --as my-task
   ```
 
-  This run has not been done yet, so the flag makes `sanity-lnet`
-  runnable in IPv6 mode; it is not yet proof that the suite passes.
+  This has been run. `sanity-lnet` starts in IPv6 mode and its subtests
+  execute against IPv6 NIDs. The suite does not complete, but it halts
+  on two failures that also halt the IPv4 run on the same cluster, so
+  neither is caused by IPv6:
+
+  - `test_50`, a benign page-allocation shortage on 2 GB VMs; exclude it
+    together with `test_109`.
+  - `test_241`, at `test_241` in both families. `check_parameter()`
+    compares a line count against `${#INTERFACES[@]}` while the test
+    configures only `INTERFACES[0]`, so a cluster with two extra NICs
+    fails it. A cluster created with one `--nic` should not.
 
 Until 65491 lands, filesystem coverage on ltvm needs IPv4. IPv6 also
 supports LNet-level checks run by hand: `lctl list_nids`, `lctl ping`,
