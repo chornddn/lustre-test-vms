@@ -252,6 +252,7 @@ try:
     from ltvm_pkg.shell_completion import (  # noqa: E402
         SHELLS as SHELL_COMPLETION_SHELLS,
     )
+    from ltvm_pkg.vm_state import ACCEL_CHOICES, DEFAULT_ACCEL  # noqa: E402
 except ModuleNotFoundError as e:  # noqa: E402
     if e.name not in ("yaml", "argcomplete"):
         raise
@@ -1333,6 +1334,18 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _vm_create_variant.completer = complete_variants  # type: ignore[attr-defined]
     _vm_create_args.add_argument(
+        "--accel",
+        choices=list(ACCEL_CHOICES),
+        default=DEFAULT_ACCEL,
+        help=(
+            "QEMU accelerator (default: auto -- hardware when the guest "
+            "arch matches the host, else tcg).  'tcg' forces emulation, "
+            "which is slow but runs guest kernels the host CPU cannot: "
+            "on Apple silicon it is the only way to boot a 64 KB-page "
+            "kernel.  Recorded on the VM, so every later start uses it."
+        ),
+    )
+    _vm_create_args.add_argument(
         "--nic",
         action="append",
         default=None,
@@ -2043,6 +2056,13 @@ def build_parser() -> argparse.ArgumentParser:
         type=int,
         default=None,
         help="Memory per node in MB (default: the target's default_mem)",
+    )
+    ccp.add_argument(
+        "--accel",
+        choices=list(ACCEL_CHOICES),
+        default=None,
+        help="QEMU accelerator for every node (default: auto).  See "
+        "`ltvm create --accel`.",
     )
     ccp.add_argument(
         "--disk-size",

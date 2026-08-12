@@ -276,6 +276,7 @@ def _create_one_node(
     root_size: str | None = None,
     nics: list[str] | None = None,
     kernel_args: str = "",
+    accel: str | None = None,
     owner_id: str | None = None,
     wait_seconds: int = 0,
     kernel: str | None = None,
@@ -297,6 +298,9 @@ def _create_one_node(
     reserved-type rejection for softroce/passthrough) happens inside
     the child `ltvm create`, so bad specs surface per-node with the
     follow-up-issue hint the single-node path prints.
+
+    `accel` is the optional QEMU accelerator name, applied uniformly to
+    every node and validated by the child `ltvm create`.
     """
     mgs_disk = 1 if (node.is_mgs and not node.is_mds) else 0
     # No `sudo` prefix when already root: cluster create requires root, so
@@ -325,6 +329,8 @@ def _create_one_node(
         cmd += ["--disk-size", disk_size]
     if root_size:
         cmd += ["--root-size", root_size]
+    if accel:
+        cmd += ["--accel", accel]
     if owner_id:
         # Pass the cluster parent's resolved value explicitly so all members
         # share one owner even though each child has a different process PID.
@@ -530,6 +536,7 @@ def cmd_cluster_create(args: argparse.Namespace) -> None:
     nics: list[str] = list(getattr(args, "nic", None) or [])
     kernel_args = _validate_kernel_args(getattr(args, "kernel_args", None))
     wait_seconds: int = getattr(args, "wait", 0)
+    accel = getattr(args, "accel", None)
     try:
         owner_id = resolve_owner_id(getattr(args, "owner_id", None))
     except ValueError as e:
@@ -580,6 +587,7 @@ def cmd_cluster_create(args: argparse.Namespace) -> None:
                 root_size,
                 nics,
                 kernel_args,
+                accel,
                 owner_id,
                 wait_seconds=wait_seconds,
                 kernel=kernel,

@@ -147,6 +147,7 @@ def cmd_cluster_create(args: argparse.Namespace) -> int:
             variant=args.variant,
             disk_size=args.disk_size,
             root_size=args.root_size,
+            accel=args.accel,
             nic=nics,
             kernel_args=args.kernel_args,
             owner_id=args.owner_id,

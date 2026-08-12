@@ -412,6 +412,18 @@ class TestClusterCreateArgs:
             self._captured_ns().kernel_args == "slub_debug=FZPU page_owner=on"
         )
 
+    def test_accel_applies_to_every_node(self) -> None:
+        cmd_cluster(
+            _ns("create", "co1", "--accel", "tcg", "mgs+mds:co1-mds:1")
+        )
+        assert self._captured_ns().accel == "tcg"
+
+    def test_accel_defaults_to_unset(self) -> None:
+        cmd_cluster(_ns("create", "co1", "mgs+mds:co1-mds:1"))
+        # None, not "auto": the child `ltvm create` owns the default,
+        # so the cluster layer has one fewer place to keep in step.
+        assert self._captured_ns().accel is None
+
     def test_unknown_flag_errors(self) -> None:
         err = _expect_usage_error(
             "create", "co1", "mgs+mds:co1-mds:1", "--frobnicate"

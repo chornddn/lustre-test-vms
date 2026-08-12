@@ -70,36 +70,113 @@ def qemu_binary_for_arch(arch: str = "x86_64") -> str:
     return str(candidate)  # will fail with a clear FileNotFoundError
 
 
-def qemu_machine_for_arch(arch: str = "x86_64") -> str:
-    """Return the -machine argument for a given arch.
+# Accepted values for --accel / VMInfo.accel.  "auto" is the default
+# and means "native accelerator when the guest arch matches the host,
+# else TCG" -- the behaviour that predates the flag.
+ACCEL_CHOICES = ("auto", "hvf", "kvm", "tcg")
+DEFAULT_ACCEL = "auto"
 
-    Uses the host's native accelerator only when the host arch matches
-    the guest (accelerators can't run a different ISA): KVM on Linux,
-    HVF on macOS.  Cross-arch VMs fall back to TCG emulation.
 
-    LTVM_FORCE_TCG=1 forces software emulation regardless of arch.
-    Needed for guest kernels whose translation granule the host
-    hypervisor cannot provide (Apple Silicon HVF has no 64 KiB granule,
-    so a CONFIG_ARM64_64K_PAGES guest dies in early MMU setup with no
-    console output at all).  It is not arch-specific: launch_qemu reads
-    the same variable to pick a concrete -cpu, and "-cpu host" is
-    invalid under TCG on x86_64 just as it is on aarch64.
-    """
+def native_accel_name() -> str:
+    """Return the host's hardware accelerator: hvf on macOS, else kvm."""
+    import platform
+
+    return "hvf" if platform.system() == "Darwin" else "kvm"
+
+
+def host_matches_arch(arch: str) -> bool:
+    """True when the host CPU can run *arch* guest code natively."""
     import platform
 
     host_arch = platform.machine()
     # Normalise: aarch64 == arm64, x86_64 == amd64
-    host_is_x86 = host_arch in ("x86_64", "amd64")
-    host_is_arm64 = host_arch in ("aarch64", "arm64")
-    native_accel = "hvf" if platform.system() == "Darwin" else "kvm"
-    force_tcg = os.environ.get("LTVM_FORCE_TCG") == "1"
+    if arch == "x86_64":
+        return host_arch in ("x86_64", "amd64")
+    if arch == "aarch64":
+        return host_arch in ("aarch64", "arm64")
+    return False
+
+
+def resolve_accel(arch: str, accel: str = DEFAULT_ACCEL) -> str:
+    """Resolve an accelerator request to a concrete QEMU accel name.
+
+    ``auto`` picks the host accelerator when the guest arch matches the
+    host and TCG otherwise.  A named accelerator is honoured as asked,
+    which is the point of the flag: TCG on a matching host is slow but
+    emulates CPU features the host does not have.  On Apple silicon
+    that is the only way to run a 64 KB-page guest kernel, because the
+    hardware implements no 64 KB translation granule and such a guest
+    dies at MMU enable under HVF.
+
+    Return: one of "hvf", "kvm", "tcg".
+    Raises ValueError on an unknown name, or on a hardware accelerator
+    that this host cannot provide.
+    """
+    if accel not in ACCEL_CHOICES:
+        raise ValueError(
+            f"unknown accelerator {accel!r} "
+            f"(choose from: {', '.join(ACCEL_CHOICES)})"
+        )
+    # LTVM_FORCE_TCG=1 predates --accel and stays supported: it is the
+    # documented escape hatch for a guest whose translation granule the
+    # host hypervisor cannot provide.  An explicit --accel still wins,
+    # so the flag can override the environment.
+    if accel == DEFAULT_ACCEL and os.environ.get("LTVM_FORCE_TCG") == "1":
+        return "tcg"
+    if accel == DEFAULT_ACCEL:
+        return native_accel_name() if host_matches_arch(arch) else "tcg"
+    if accel == "tcg":
+        return "tcg"
+    native = native_accel_name()
+    if accel != native:
+        raise ValueError(
+            f"accelerator {accel!r} is not available on this host "
+            f"(it provides {native!r}); use --accel {native} or "
+            f"--accel tcg"
+        )
+    if not host_matches_arch(arch):
+        raise ValueError(
+            f"accelerator {accel!r} cannot run {arch} guest code on this "
+            f"host; use --accel tcg"
+        )
+    return accel
+
+
+def qemu_cpu_for_arch(arch: str, accel: str) -> str:
+    """Return the -cpu argument for a guest arch and resolved accel.
+
+    A hardware accelerator only ever runs the host CPU, so it takes
+    ``host``.  TCG needs a named model:
+
+    * aarch64 uses cortex-a57.  ARMv8.0 makes the 4 KB and 64 KB
+      translation granules mandatory, so this model covers every page
+      size a RHEL kernel is built with.  ``max`` is not usable: it
+      advertises ARMv8.x features that a 4.18 (RHEL 8) kernel hangs on
+      at boot, with no console output at all.
+    * x86_64 uses Nehalem rather than the default qemu64.  Rocky 9 (and
+      any EL9-derived userspace) ships glibc compiled for the x86-64-v2
+      microarchitecture level, which requires CMPXCHG16B, LAHF/SAHF,
+      POPCNT and SSE3/SSSE3/SSE4.1/SSE4.2.  qemu64 exposes none of
+      those, so /sbin/init aborts with "Fatal glibc error: CPU does not
+      support x86-64-v2" and the kernel panics.  Nehalem (Intel 2008)
+      is the baseline model that satisfies v2 in full.
+    """
+    if accel != "tcg":
+        return "host"
+    if arch == "aarch64":
+        return "cortex-a57"
+    return "Nehalem"
+
+
+def qemu_machine_for_arch(arch: str = "x86_64", accel: str = DEFAULT_ACCEL) -> str:
+    """Return the -machine argument for a given arch and accel request.
+
+    See :func:`resolve_accel` for how *accel* is interpreted.
+    """
+    resolved = resolve_accel(arch, accel)
+    accel = f"accel={resolved}"
 
     if arch == "x86_64":
-        accel = (
-            "accel=tcg"
-            if force_tcg or not host_is_x86
-            else f"accel={native_accel}"
-        )
         # q35 matches the aarch64 'virt' path: PCIe root complex, full
         # device set, virtio-*-pci drivers.  Benchmarked against microvm
         # at ~+300 ms create-to-ssh (within create-path noise) with no
@@ -112,13 +189,8 @@ def qemu_machine_for_arch(arch: str = "x86_64") -> str:
         # still presents as /dev/vda to the guest.
         return f"q35,{accel}"
     if arch == "aarch64":
-        accel = (
-            "accel=tcg"
-            if force_tcg or not host_is_arm64
-            else f"accel={native_accel}"
-        )
         return f"virt,{accel},gic-version=max"
-    return "virt,accel=tcg"
+    return f"virt,{accel}"
 
 
 DISK_SIZE_BYTES = 500 * 1024 * 1024  # 500 MiB default
@@ -598,6 +670,11 @@ class VMInfo:
     # compatibility with .info files written before ownership was introduced.
     owner_id: str | None = None
     variant: str = "base"  # target variant (e.g. mofed); "base" is the default
+    # Requested QEMU accelerator, one of ACCEL_CHOICES.  Recorded at
+    # create time so every later start uses the accelerator the VM was
+    # built around: a guest kernel that only boots under TCG must not
+    # silently come back under HVF.  Older .info files load as "auto".
+    accel: str = DEFAULT_ACCEL
     # Extra NICs beyond the mgmt NIC (eth0), in order.  Each element is
     # a type string from the CLI: 'tcp', 'softroce', or 'passthrough:<BDF>'.
     # The management NIC is *not* included here -- this list describes
@@ -711,6 +788,7 @@ class VMInfo:
             f"CREATOR={self.creator}\n"
             f"OWNER_ID={self.owner_id or ''}\n"
             f"VARIANT={self.variant}\n"
+            f"ACCEL={self.accel}\n"
             # NICs are joined with '|' -- a spec like
             # 'passthrough:0000:00:02.0' contains colons, so ',' or ':'
             # would ambiguate.  '|' is not a valid character in any
@@ -903,6 +981,7 @@ class VMInfo:
             creator=vals.get("CREATOR", ""),
             owner_id=vals.get("OWNER_ID") or None,
             variant=vals.get("VARIANT", "base"),
+            accel=vals.get("ACCEL", DEFAULT_ACCEL) or DEFAULT_ACCEL,
             nics=nics_list,
             nic_ips=nic_ips_list,
             nic_ip6s=nic_ip6s_list,

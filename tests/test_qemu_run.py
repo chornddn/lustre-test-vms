@@ -15,7 +15,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ltvm_pkg import qemu_run
-from ltvm_pkg.vm_state import VMInfo
+from ltvm_pkg.vm_state import (
+    VMInfo,
+    qemu_cpu_for_arch,
+    qemu_machine_for_arch,
+    resolve_accel,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -61,6 +66,7 @@ def _make_vm(
     mdt_disks: int = 0,
     ost_disks: int = 0,
     kernel: str = "",
+    accel: str = "auto",
 ) -> VMInfo:
     """Build a VMInfo and materialise overlay + data disk files."""
     if not kernel:
@@ -77,6 +83,7 @@ def _make_vm(
         ost_disks=ost_disks,
         kernel=kernel,
         arch=arch,
+        accel=accel,
     )
     vm.overlay_path.write_text("")
     for n in range(1, mdt_disks + ost_disks + 1):
@@ -1654,3 +1661,92 @@ class TestGuestScope:
         )
         assert first[0] == "systemd-run"
         assert second[0] != "systemd-run"
+
+
+class TestAccelSelection:
+    """--accel: resolution, validation, and what QEMU is told."""
+
+    @staticmethod
+    def _host(system: str, machine: str) -> Any:
+        """Pin the host OS + CPU that resolve_accel reads."""
+        return patch.multiple(
+            "platform",
+            system=MagicMock(return_value=system),
+            machine=MagicMock(return_value=machine),
+        )
+
+    def test_auto_picks_hardware_on_matching_host(self) -> None:
+        with self._host("Darwin", "arm64"):
+            assert resolve_accel("aarch64", "auto") == "hvf"
+        with self._host("Linux", "x86_64"):
+            assert resolve_accel("x86_64", "auto") == "kvm"
+
+    def test_auto_falls_back_to_tcg_cross_arch(self) -> None:
+        with self._host("Darwin", "arm64"):
+            assert resolve_accel("x86_64", "auto") == "tcg"
+
+    def test_tcg_is_honored_on_a_matching_host(self) -> None:
+        """The whole point of the flag: opt out of the fast path.
+
+        A 64 KB-page guest kernel cannot run under HVF on Apple
+        silicon, so forcing TCG must not be second-guessed.
+        """
+        with self._host("Darwin", "arm64"):
+            assert resolve_accel("aarch64", "tcg") == "tcg"
+
+    def test_hardware_accel_rejected_when_host_cannot_provide_it(self) -> None:
+        with self._host("Darwin", "arm64"):
+            with pytest.raises(ValueError, match="not available on this host"):
+                resolve_accel("aarch64", "kvm")
+            with pytest.raises(ValueError, match="cannot run x86_64"):
+                resolve_accel("x86_64", "hvf")
+
+    def test_unknown_accel_rejected(self) -> None:
+        with pytest.raises(ValueError, match="unknown accelerator"):
+            resolve_accel("aarch64", "whvp")
+
+    def test_machine_string_carries_the_resolved_accel(self) -> None:
+        with self._host("Darwin", "arm64"):
+            assert qemu_machine_for_arch("aarch64", "tcg") == (
+                "virt,accel=tcg,gic-version=max"
+            )
+            assert qemu_machine_for_arch("aarch64", "auto") == (
+                "virt,accel=hvf,gic-version=max"
+            )
+
+    def test_cpu_model_follows_the_accel(self) -> None:
+        """TCG needs a named model; a hardware accel runs the host CPU."""
+        assert qemu_cpu_for_arch("aarch64", "hvf") == "host"
+        assert qemu_cpu_for_arch("aarch64", "tcg") == "cortex-a57"
+        assert qemu_cpu_for_arch("x86_64", "tcg") == "Nehalem"
+
+    def test_forced_tcg_reaches_the_qemu_command(self, tmp_vmdir: Path) -> None:
+        vm = _make_vm(tmp_vmdir, arch="aarch64", mem=2048, accel="tcg")
+        h = _LaunchHarness()
+        with self._host("Darwin", "arm64"):
+            _run_launch(vm, h)
+        args = h.qemu_args
+        assert args is not None
+        assert args[args.index("-machine") + 1] == (
+            "virt,accel=tcg,gic-version=max"
+        )
+        assert args[args.index("-cpu") + 1] == "cortex-a57"
+
+    def test_accel_survives_the_info_file(self, tmp_vmdir: Path) -> None:
+        """Every later start must use the accelerator create chose."""
+        vm = _make_vm(tmp_vmdir, arch="aarch64", accel="tcg")
+        vm.save()
+        assert VMInfo.load(vm.name).accel == "tcg"
+
+    def test_info_file_without_accel_loads_as_auto(self, tmp_vmdir: Path) -> None:
+        """VMs created before the flag existed keep their behaviour."""
+        vm = _make_vm(tmp_vmdir, arch="aarch64")
+        vm.save()
+        text = vm.info_path.read_text()
+        vm.info_path.write_text(
+            "\n".join(
+                ln for ln in text.splitlines() if not ln.startswith("ACCEL=")
+            )
+            + "\n"
+        )
+        assert VMInfo.load(vm.name).accel == "auto"

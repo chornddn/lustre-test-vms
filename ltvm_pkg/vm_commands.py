@@ -38,6 +38,7 @@ from .vm_net import (
 )
 from .vm_owner import resolve_owner_id
 from .vm_state import (
+    DEFAULT_ACCEL,
     DEFAULT_TARGET,
     DISK_SIZE_BYTES,
     EXIT_ERROR,
@@ -60,6 +61,7 @@ from .vm_state import (
     lustre_libdir,
     lustre_teardown_cmd,
     nic_ip6,
+    resolve_accel,
     resolve_os_artifacts,
 )
 
@@ -748,6 +750,7 @@ def _allocate_and_persist_vm(
             creator=(os.environ.get("SUDO_USER", "") or getpass.getuser()),
             owner_id=args.owner_id,
             variant=variant,
+            accel=getattr(args, "accel", None) or DEFAULT_ACCEL,
             nics=list(extra_nic_types),
             nic_ips=list(nic_ips),
             # Derived from the IPv4 addresses, so uniqueness is
@@ -781,12 +784,19 @@ def _print_create_report(vm: VMInfo, args: argparse.Namespace) -> None:
             )
         )
     elif not getattr(args, "_quiet", False):
+        # accel is only worth a line when it was asked for: a forced
+        # accelerator changes how the VM performs, and every later
+        # start inherits it from the .info file.
+        accel_line = (
+            f"\n  accel: {vm.accel}" if vm.accel != DEFAULT_ACCEL else ""
+        )
         print(
             f"VM created: {vm.name}\n"
             f"  ip:    {vm.ip}\n"
             f"  pid:   {vm.pid}\n"
             f"  owner: {vm.owner_id}\n"
             f"  disks: {vm.mdt_disks} MDT + {vm.ost_disks} OST"
+            f"{accel_line}"
         )
 
 
@@ -1324,6 +1334,14 @@ def cmd_create(args: argparse.Namespace) -> None:
     )
     base_name = Path(image).name
     os_id = os_target
+
+    # Reject an impossible accelerator before anything is allocated:
+    # the failure would otherwise surface as a QEMU exit with no
+    # console output, which is the hardest kind of boot failure to read.
+    try:
+        resolve_accel(os_arts.arch, getattr(args, "accel", None) or DEFAULT_ACCEL)
+    except ValueError as e:
+        die(str(e))
 
     disk_size = _parse_disk_size(getattr(args, "disk_size", None))
     root_size = _parse_root_size(getattr(args, "root_size", None))

@@ -25,6 +25,7 @@ from .host_setup import is_macos, socket_vmnet_socket_path
 from .priv import ensure_dir, ensure_lock_file, invoking_user, sudo_run
 from .vm_state import (
     BRIDGE,
+    DEFAULT_ACCEL,
     EXIT_ERROR,
     GATEWAY,
     PREFIX_LEN,
@@ -32,7 +33,9 @@ from .vm_state import (
     VMInfo,
     VMNotFound,
     qemu_binary_for_arch,
+    qemu_cpu_for_arch,
     qemu_machine_for_arch,
+    resolve_accel,
 )
 
 
@@ -710,11 +713,15 @@ def _start_qemu(vm: VMInfo) -> None:
         die(f"VM '{vm.name}' has no kernel path set — recreate with --target")
     kernel = Path(vm.kernel)
 
-    import platform as _platform
-
     arch = vm.arch
     qemu_bin = qemu_binary_for_arch(arch)
-    machine = qemu_machine_for_arch(arch)
+    accel = getattr(vm, "accel", DEFAULT_ACCEL) or DEFAULT_ACCEL
+    try:
+        resolved_accel = resolve_accel(arch, accel)
+        machine = qemu_machine_for_arch(arch, accel)
+    except ValueError as e:
+        die(f"VM '{vm.name}': {e}")
+    cpu_model = qemu_cpu_for_arch(arch, resolved_accel)
 
     # q35 (x86) and virt (aarch64) both have a PCI bus, so virtio
     # devices attach as virtio-*-pci.  Previously x86 used microvm and
@@ -723,31 +730,6 @@ def _start_qemu(vm: VMInfo) -> None:
     blk_driver = "virtio-blk-pci"
     net_driver = "virtio-net-pci"
     rng_driver = "virtio-rng-pci"
-
-    # KVM allows -cpu host; TCG (cross-arch emulation) needs a real model.
-    #
-    # For x86_64 TCG we use Nehalem rather than the default qemu64.  Rocky
-    # 9 (and any EL9-derived userspace) ships glibc compiled for the
-    # x86-64-v2 microarchitecture level, which requires CMPXCHG16B, LAHF
-    # /SAHF, POPCNT, SSE3/SSSE3/SSE4.1/SSE4.2.  qemu64 exposes none of
-    # those, so /sbin/init aborts with "Fatal glibc error: CPU does not
-    # support x86-64-v2" and the kernel panics.  Nehalem (Intel 2008) is
-    # the baseline CPU model that satisfies v2 in full.
-    host_arch = _platform.machine()
-    import os as _os
-
-    _force_tcg = _os.environ.get("LTVM_FORCE_TCG") == "1"
-    if not _force_tcg and (
-        (arch == "x86_64" and host_arch in ("x86_64", "amd64"))
-        or (arch == "aarch64" and host_arch in ("aarch64", "arm64"))
-    ):
-        # "-cpu host" is only valid with a hardware accelerator; under
-        # TCG it must be a concrete model.
-        cpu_model = "host"
-    elif arch == "aarch64":
-        cpu_model = "cortex-a57"
-    else:
-        cpu_model = "Nehalem"
 
     qemu_args = [
         qemu_bin,

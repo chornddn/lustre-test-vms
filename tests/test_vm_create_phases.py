@@ -37,7 +37,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ltvm_pkg import vm_commands
-from ltvm_pkg.vm_state import DISK_SIZE_BYTES, ROOT_SIZE_BYTES, VMInfo
+from ltvm_pkg.vm_state import (
+    DISK_SIZE_BYTES,
+    ROOT_SIZE_BYTES,
+    VMInfo,
+    VMNotFound,
+)
 
 # ────────────────────────────────────────────────────────
 # Fixtures mirroring test_vm_commands.py's tmp_vmdir.
@@ -80,6 +85,7 @@ def _create_args(**overrides: Any) -> argparse.Namespace:
         "json": False,
         "_quiet": True,
         "nic": None,
+        "accel": "auto",
     }
     # Back-compat shim: callers still may pass os="..."; map to target.
     if "os" in overrides:
@@ -472,6 +478,36 @@ class TestCreateVMInfoPersistence:
             vm_commands.cmd_create(_create_args(name="co1-var", variant=None))
         vm = VMInfo.load("co1-var")
         assert vm.variant == "base"
+
+    def test_accel_recorded_on_the_vm(self, tmp_vmdir: Path) -> None:
+        with _create_env(tmp_vmdir) as env:
+            env["arts"].arch = "aarch64"
+            vm_commands.cmd_create(_create_args(name="co1-tcg", accel="tcg"))
+        assert VMInfo.load("co1-tcg").accel == "tcg"
+
+    def test_default_accel_is_auto(self, tmp_vmdir: Path) -> None:
+        with _create_env(tmp_vmdir):
+            vm_commands.cmd_create(_create_args(name="co1-acc", accel=None))
+        assert VMInfo.load("co1-acc").accel == "auto"
+
+    def test_impossible_accel_rejected_before_allocation(
+        self, tmp_vmdir: Path
+    ) -> None:
+        """Fail loudly here, not as a silent QEMU exit with no console."""
+        with _create_env(tmp_vmdir) as env:
+            env["arts"].arch = "aarch64"
+            with (
+                patch(
+                    "ltvm_pkg.vm_commands.resolve_accel",
+                    side_effect=ValueError("nope"),
+                ),
+                pytest.raises(SystemExit),
+            ):
+                vm_commands.cmd_create(
+                    _create_args(name="co1-bad", accel="kvm")
+                )
+        with pytest.raises(VMNotFound):
+            VMInfo.load("co1-bad")
 
     def test_arch_recorded_from_arts(self, tmp_vmdir: Path) -> None:
         """arch comes from resolve_os_artifacts, not args."""
