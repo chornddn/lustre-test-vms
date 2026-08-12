@@ -2,8 +2,8 @@
 # Configure networking for QEMU microvm guests.
 #
 # VMs receive their IP, gateway, and hostname via kernel cmdline
-# (parsed by rc.local). NetworkManager is disabled so it doesn't
-# fight with the cmdline-assigned addresses.
+# (parsed by rc.local). NetworkManager is kept off those interfaces so
+# it doesn't fight with the cmdline-assigned addresses.
 #
 # Expects common/rc.local to already be present at /etc/rc.d/rc.local
 # (COPY'd by the Dockerfile before this script runs).
@@ -23,11 +23,21 @@ EOF
 # kernel cmdline). No need to set it here -- during container builds
 # /etc/resolv.conf is a bind mount that can't be replaced anyway.
 
-# Disable NetworkManager auto-config (rc.local handles it)
+# Keep NetworkManager off every interface rc.local addresses.
+#
+# no-auto-default only stops NM from inventing a DHCP profile; NM still
+# manages the device, and taking it over runs a deconfigure that flushes
+# whatever addresses are already on it.  rc.local addresses eth0 first
+# and the extra NICs one at a time, so the interface NM happens to be
+# claiming at that instant loses its IPv4 address silently -- and stays
+# up with an IPv6 address, which reads as a live link.
 mkdir -p /etc/NetworkManager/conf.d
 cat > /etc/NetworkManager/conf.d/00-ltvm.conf <<'EOF'
 [main]
 no-auto-default=*
+
+[keyfile]
+unmanaged-devices=interface-name:eth*
 EOF
 
 # Disable wait-online services — rc.local handles networking, so NM/systemd
