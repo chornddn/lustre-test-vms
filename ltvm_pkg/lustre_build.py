@@ -444,6 +444,31 @@ def _kernel_release(build_tree: str | Path) -> str:
     return "unknown"
 
 
+def _kernel_config_id(build_tree: str | Path) -> str:
+    """Fingerprint of the kernel .config the modules will be built for.
+
+    The kernel release string does not identify a kernel ABI.  Two
+    targets can build the same source with different options and get the
+    same release -- rocky8 (4 KB pages) and rocky8-64k (64 KB) both
+    produce `4.18.0-...el8_10_lustre`.  PAGE_SIZE reaches no Lustre
+    config.h macro and no arm64 vermagic field, so nothing downstream
+    catches the swap: the module keeps the compile-time page shift
+    inlined into page_address(), computes a non-canonical linear
+    address, and the guest dies in libcfs_init.
+
+    Object files cannot be trusted to notice either.  Both build trees
+    mount at /kernel, and the incoming tree's headers are usually OLDER
+    than the .o files left by the previous target, so make rebuilds
+    nothing.  Only a distclean is safe.
+
+    Returns "unknown" when the build-tree has no .config.
+    """
+    config = Path(build_tree) / ".config"
+    if not config.exists():
+        return "unknown"
+    return hashlib.sha256(config.read_bytes()).hexdigest()[:16]
+
+
 def _container_exists(tag: str) -> bool:
     """Check if a podman image exists."""
     r = subprocess.run(["podman", "image", "exists", tag], capture_output=True)
@@ -541,6 +566,23 @@ def _needs_reconfigure(
             return True
     else:
         return True  # no stamp = never built for this target
+
+    # The kernel release string is not the kernel ABI -- see
+    # _kernel_config_id().  A tree stamped by a build against a
+    # differently-configured kernel of the same release must reconfigure.
+    stamp_kconfig = lustre_tree / f".ltvm-kconfig-{suffix}"
+    if stamp_kconfig.exists():
+        prev_cfg = stamp_kconfig.read_text().strip()
+        cur_cfg = _kernel_config_id(build_tree)
+        if prev_cfg != cur_cfg:
+            print(
+                f"  Kernel config changed ({prev_cfg} -> {cur_cfg}), "
+                f"reconfiguring"
+            )
+            return True
+    else:
+        return True  # no kconfig stamp = built before this check existed
+
     if stamp_server.exists():
         prev_server = stamp_server.read_text().strip()
         if prev_server != str(enable_server):
@@ -683,6 +725,13 @@ def _kernel_changed(
     tree that has ever served two targets answers True forever.  Kept
     only as the one-shot fallback for a tree carrying no claim stamp
     yet -- see _tree_claim_changed.
+
+    The kernel .config is swept the same way and for a stronger reason:
+    two targets can share a kernel release yet build a different module
+    ABI (see _kernel_config_id()), and the object files carry that ABI
+    with no way for make to see it.  A tree carrying kernel stamps but
+    no .config stamp predates this check, so its objects were built for
+    an unknown config -- distclean those too, once.
     """
     cur = _kernel_release(build_tree)
     stamps = list(lustre_tree.glob(".ltvm-kernel-*"))
@@ -691,6 +740,22 @@ def _kernel_changed(
     for stamp in stamps:
         try:
             if stamp.read_text().strip() != cur:
+                return True
+        except OSError:
+            continue
+
+    cur_cfg = _kernel_config_id(build_tree)
+    cfg_stamps = list(lustre_tree.glob(".ltvm-kconfig-*"))
+    if not cfg_stamps:
+        print("  Tree has no kernel-config stamp, cleaning before build")
+        return True
+    for stamp in cfg_stamps:
+        try:
+            if stamp.read_text().strip() != cur_cfg:
+                print(
+                    f"  Kernel config differs from {stamp.name}, "
+                    f"cleaning before build"
+                )
                 return True
         except OSError:
             continue
@@ -1351,6 +1416,9 @@ fi""")
     # forces a fresh autogen+configure pass.
     suffix = _stamp_suffix(target, arch)
     (lustre_tree / f".ltvm-kernel-{suffix}").write_text(kver + "\n")
+    (lustre_tree / f".ltvm-kconfig-{suffix}").write_text(
+        _kernel_config_id(build_tree) + "\n"
+    )
     (lustre_tree / f".ltvm-server-{suffix}").write_text(
         str(enable_server) + "\n"
     )

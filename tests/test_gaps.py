@@ -168,6 +168,26 @@ class TestKernelChanged:
         assert not _kernel_changed(lustre_tree, build_tree, target="rocky9")
 
     def test_same_kernel_returns_false(self, tmp_path: Path) -> None:
+        from ltvm_pkg.lustre_build import _kernel_changed, _kernel_config_id
+
+        lustre_tree = tmp_path / "lustre"
+        build_tree = tmp_path / "build"
+        lustre_tree.mkdir()
+        build_tree.mkdir()
+        kver = "5.14.0-611.el9.x86_64"
+        self._write_kernel_release(build_tree, kver)
+        (build_tree / ".config").write_text("CONFIG_X86=y\n")
+        (lustre_tree / ".ltvm-kernel-rocky9-x86_64").write_text(kver)
+        (lustre_tree / ".ltvm-kconfig-rocky9-x86_64").write_text(
+            _kernel_config_id(build_tree)
+        )
+        assert not _kernel_changed(lustre_tree, build_tree, target="rocky9")
+
+    def test_same_kernel_without_config_stamp_returns_true(
+        self, tmp_path: Path
+    ) -> None:
+        """A tree stamped before ltvm recorded the kernel .config holds
+        objects of an unknown ABI -- clean them once."""
         from ltvm_pkg.lustre_build import _kernel_changed
 
         lustre_tree = tmp_path / "lustre"
@@ -176,8 +196,9 @@ class TestKernelChanged:
         build_tree.mkdir()
         kver = "5.14.0-611.el9.x86_64"
         self._write_kernel_release(build_tree, kver)
+        (build_tree / ".config").write_text("CONFIG_X86=y\n")
         (lustre_tree / ".ltvm-kernel-rocky9-x86_64").write_text(kver)
-        assert not _kernel_changed(lustre_tree, build_tree, target="rocky9")
+        assert _kernel_changed(lustre_tree, build_tree, target="rocky9")
 
     def test_different_kernel_returns_true(self, tmp_path: Path) -> None:
         from ltvm_pkg.lustre_build import _kernel_changed

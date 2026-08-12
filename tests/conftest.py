@@ -333,3 +333,30 @@ def make_fake_ko(modinfo: dict[str, str]) -> bytes:
             shstrtab,
         ]
     )
+
+
+# Kernel .config text every fake build-tree in the suite carries, and
+# the stamp id the build would record for it.  Tests that pretend a
+# tree is already built must stamp the same id, or _needs_reconfigure
+# reports a kernel-config change they never made.
+FAKE_KCONFIG = "# fake kernel config\nCONFIG_ARM64_4K_PAGES=y\n"
+
+
+def write_kernel_config(build_tree: Path) -> None:
+    """Give a fake kernel build-tree the .config the stamp is taken from."""
+    build_tree.mkdir(parents=True, exist_ok=True)
+    (build_tree / ".config").write_text(FAKE_KCONFIG)
+
+
+def fake_kconfig_id(tmp_path: Path) -> str:
+    """The .ltvm-kconfig stamp a build against FAKE_KCONFIG would write.
+
+    Derived through the production function rather than re-implementing
+    the hash, so a change to how ltvm fingerprints a config cannot leave
+    these tests asserting the old recipe.
+    """
+    from ltvm_pkg.lustre_build import _kernel_config_id
+
+    probe = tmp_path / ".kconfig-probe"
+    write_kernel_config(probe)
+    return _kernel_config_id(probe)

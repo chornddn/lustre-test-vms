@@ -7,6 +7,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from ltvm_pkg import lustre_build
 from ltvm_pkg.lustre_build import (
     CLAIM_STAMP,
     GIT_EXCLUDE_MARKER,
@@ -21,6 +22,8 @@ from ltvm_pkg.lustre_build import (
     read_staging_meta,
     staging_path,
 )
+
+from .conftest import fake_kconfig_id, write_kernel_config
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -108,8 +111,12 @@ class TestNeedsReconfigure:
         release_dir = kernel / "include" / "config"
         release_dir.mkdir(parents=True)
         (release_dir / "kernel.release").write_text(kver + "\n")
+        write_kernel_config(kernel)
         t = self.TARGET
         (lustre / f".ltvm-kernel-{t}-x86_64").write_text(kver + "\n")
+        (lustre / f".ltvm-kconfig-{t}-x86_64").write_text(
+            fake_kconfig_id(tmp_path) + "\n"
+        )
         (lustre / f".ltvm-server-{t}-x86_64").write_text("True\n")
         return lustre, kernel
 
@@ -593,6 +600,101 @@ class TestTreeClaim:
         claim_at = script.index(f"> {CLAIM_STAMP}")
         assert claim_at < script.index("\nmake ")
         assert claim_at > script.index("distclean")
+
+
+class TestSameKverDifferentConfig:
+    """Two targets can share a kernel release and still build a
+    different module ABI.
+
+    rocky8 (4 KB pages) and rocky8-64k (64 KB) both produce
+    `4.18.0-...el8_10_lustre`.  Reusing the other target's objects put a
+    64 KB-page libcfs.ko on a 4 KB-page guest, which loaded (arm64
+    vermagic carries no page size) and then wrote through a bogus
+    page_address() into a non-canonical address.
+    """
+
+    TARGET = "rocky8"
+    KVER = "4.18.0-553.148.1.el8_10_lustre"
+
+    def _trees(self, tmp_path: Path, built_config: str, now_config: str):
+        lustre = tmp_path / "lustre"
+        kernel = tmp_path / "kernel"
+        lustre.mkdir()
+        kernel.mkdir()
+        (lustre / "configure").write_text("#!/bin/sh\n")
+        (lustre / "config.status").write_text("# status\n")
+        release_dir = kernel / "include" / "config"
+        release_dir.mkdir(parents=True)
+        (release_dir / "kernel.release").write_text(self.KVER + "\n")
+        # The build-tree we are about to build against.
+        (kernel / ".config").write_text(now_config)
+        # A stamp set left by a build against the other page size.
+        other = tmp_path / "other-kernel"
+        other.mkdir()
+        (other / ".config").write_text(built_config)
+        t = f"{self.TARGET}-x86_64"
+        (lustre / f".ltvm-kernel-{t}").write_text(self.KVER + "\n")
+        (lustre / f".ltvm-kconfig-{t}").write_text(
+            lustre_build._kernel_config_id(other) + "\n"
+        )
+        (lustre / f".ltvm-server-{t}").write_text("True\n")
+        return lustre, kernel
+
+    def test_page_size_change_needs_reconfigure(self, tmp_path: Path) -> None:
+        lustre, kernel = self._trees(
+            tmp_path,
+            "CONFIG_ARM64_64K_PAGES=y\n",
+            "CONFIG_ARM64_4K_PAGES=y\n",
+        )
+        assert (
+            _needs_reconfigure(
+                lustre, kernel, force=False, target=self.TARGET
+            )
+            is True
+        )
+
+    def test_page_size_change_forces_distclean(self, tmp_path: Path) -> None:
+        """Reconfigure alone is not enough -- the .o files carry the ABI
+        and the incoming headers are older than they are, so make would
+        rebuild nothing."""
+        lustre, kernel = self._trees(
+            tmp_path,
+            "CONFIG_ARM64_64K_PAGES=y\n",
+            "CONFIG_ARM64_4K_PAGES=y\n",
+        )
+        assert (
+            lustre_build._kernel_changed(lustre, kernel, target=self.TARGET)
+            is True
+        )
+
+    def test_same_config_is_still_incremental(self, tmp_path: Path) -> None:
+        """The guard must not distclean an ordinary rebuild."""
+        cfg = "CONFIG_ARM64_4K_PAGES=y\n"
+        lustre, kernel = self._trees(tmp_path, cfg, cfg)
+        assert (
+            lustre_build._kernel_changed(lustre, kernel, target=self.TARGET)
+            is False
+        )
+        assert (
+            _needs_reconfigure(
+                lustre, kernel, force=False, target=self.TARGET
+            )
+            is False
+        )
+
+    def test_tree_without_kconfig_stamp_is_cleaned(
+        self, tmp_path: Path
+    ) -> None:
+        """A tree built before this check holds objects of unknown ABI."""
+        cfg = "CONFIG_ARM64_4K_PAGES=y\n"
+        lustre, kernel = self._trees(tmp_path, cfg, cfg)
+        (lustre / f".ltvm-kconfig-{self.TARGET}-x86_64").unlink()
+        assert (
+            lustre_build._kernel_changed(lustre, kernel, target=self.TARGET)
+            is True
+        )
+
+
 
 
 class TestIncrementalRebuildGuard:

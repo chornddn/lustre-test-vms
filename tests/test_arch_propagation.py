@@ -24,6 +24,8 @@ import pytest
 from ltvm_pkg import lustre_build
 from ltvm_pkg.lustre_build import _stamp_suffix, staging_path
 
+from .conftest import fake_kconfig_id, write_kernel_config
+
 # ── staging_path is arch-aware ───────────────────────────
 
 
@@ -159,6 +161,7 @@ class TestNeedsReconfigureArch:
         bt = tmp_path / "build-tree"
         (bt / "include" / "config").mkdir(parents=True)
         (bt / "include" / "config" / "kernel.release").write_text(kver + "\n")
+        write_kernel_config(bt)
         return bt
 
     def test_x86_stamps_dont_satisfy_aarch64_check(
@@ -211,6 +214,11 @@ class TestNeedsReconfigureArch:
         (tree / f".ltvm-server-{_stamp_suffix('rocky9', 'x86_64')}").write_text(
             "True\n"
         )
+        # The kernel-config stamp counts too: a build against this
+        # build-tree would record this id.
+        (
+            tree / f".ltvm-kconfig-{_stamp_suffix('rocky9', 'x86_64')}"
+        ).write_text(fake_kconfig_id(tmp_path) + "\n")
 
         need = lustre_build._needs_reconfigure(
             tree,

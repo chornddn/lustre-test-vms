@@ -1049,6 +1049,15 @@ state (stamp: `.ltvm-configure-<target>-<arch>`), so changing
 them re-runs autogen+configure automatically.  `--force` is
 not needed for that.
 
+So is the kernel's own `.config` (stamp:
+`.ltvm-kconfig-<target>-<arch>`), which is what separates two
+targets that build the same kernel release -- `rocky8` and
+`rocky8-64k`.  A changed config distcleans the tree, because
+object files carry the page size and the incoming headers are
+older than they are, so `make` would rebuild nothing.  One
+tree alternating between those two targets therefore rebuilds
+in full every time; a worktree per page size does not.
+
 ## Release Manifest Schema
 
 Each release carries `"schema": "ltvm-release/<N>"` in its
