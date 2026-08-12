@@ -571,6 +571,29 @@ ROOT_PASSWORD = "initial0"
 SSH_TIMEOUT = int(os.environ.get("LTVM_SSH_TIMEOUT", "30"))
 DEFAULT_TARGET = "rocky9"
 
+# What to multiply a guest-side timeout by when the guest is emulated.
+# Every such timeout is written for an accelerated VM, so under TCG they
+# fire on a VM that is working, just slowly: a first-boot `systemctl
+# restart kdump` rebuilds the initramfs with dracut, which overran a 30 s
+# budget by a wide margin on an emulated aarch64 guest.  8 is chosen to
+# clear the observed cost with room to spare -- these are ceilings, not
+# waits, so an over-estimate costs nothing until something really hangs.
+TCG_SLOWDOWN = 8
+
+
+def accel_slowdown(arch: str, accel: str = DEFAULT_ACCEL) -> int:
+    """Return the guest-timeout multiplier for an accelerator request.
+
+    An unresolvable request scales by 1: the caller that acts on it will
+    report the real error, and inflating its timeouts first would only
+    delay that.
+    """
+    try:
+        resolved = resolve_accel(arch, accel)
+    except ValueError:
+        return 1
+    return TCG_SLOWDOWN if resolved == "tcg" else 1
+
 
 def lustre_libdir(os_family: str = "rhel") -> str:
     """Return the on-VM Lustre library directory for the given OS family.
@@ -730,6 +753,14 @@ class VMInfo:
 
     def disk_path(self, n: int) -> Path:
         return OVERLAYS / f"{self.name}-disk{n}.img"
+
+    def timeout(self, seconds: int) -> int:
+        """Scale a guest-side timeout to this VM's accelerator.
+
+        Callers write the timeout an accelerated VM needs; an emulated
+        one gets proportionally longer.  See TCG_SLOWDOWN.
+        """
+        return seconds * accel_slowdown(self.arch, self.accel)
 
     def extra_nics(self) -> list[tuple[int, str, str, str]]:
         """Return ``(index, nic_type, tap_name, mac)`` tuples for extra NICs.

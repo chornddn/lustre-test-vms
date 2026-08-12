@@ -353,12 +353,21 @@ def _create_one_node(
     if wait_seconds:
         cmd += ["--wait", str(wait_seconds)]
 
+    # Scaled for an emulated guest, whose own timeouts scale the same
+    # way -- a parent cap below the child's would kill a node that is
+    # still working.
+    from .cli.util import host_arch
+    from .vm_state import accel_slowdown
+
+    node_timeout = _node_create_timeout() * accel_slowdown(
+        arch or host_arch(), accel or "auto"
+    )
     try:
         r = subprocess.run(
             cmd,
             capture_output=True,
             text=True,
-            timeout=_node_create_timeout() + wait_seconds,
+            timeout=node_timeout + wait_seconds,
         )
     except subprocess.TimeoutExpired as e:
         # See _write_cluster_local_sh: don't propagate out of the parallel

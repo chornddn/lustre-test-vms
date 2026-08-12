@@ -119,9 +119,13 @@ def _with_vm_stopped(
             try:
                 launch_qemu(vm)
                 if register_before_wait:
-                    provision_vm_ssh(vm, SSH_TIMEOUT, register_before_wait=True)
+                    provision_vm_ssh(
+                        vm,
+                        vm.timeout(SSH_TIMEOUT),
+                        register_before_wait=True,
+                    )
                 else:
-                    provision_vm_ssh(vm, SSH_TIMEOUT)
+                    provision_vm_ssh(vm, vm.timeout(SSH_TIMEOUT))
                 _seed_kdump_boot(vm)
                 print(f"started {vm.name}")
             except SystemExit as e:
@@ -199,7 +203,7 @@ def _seed_kdump_boot(vm: VMInfo) -> None:
         probe = run_ssh(
             vm.ip,
             f"test -f /boot/vmlinuz-{kver} && test -f {initrd_path}",
-            timeout=30,
+            timeout=vm.timeout(30),
         )
     except Exception as e:  # noqa: BLE001 - best-effort step
         print(
@@ -652,7 +656,7 @@ def _handle_existing_vm(name: str, args: argparse.Namespace) -> bool:
     vm = VMInfo.load(name)
     _warn_ignored_resource_flags(vm, args)
     if is_running(vm):
-        wait_for_ssh(vm.ip, SSH_TIMEOUT)
+        wait_for_ssh(vm.ip, vm.timeout(SSH_TIMEOUT))
         register_ssh_name(vm.name, vm.ip)
         if args.json:
             print(
@@ -669,7 +673,7 @@ def _handle_existing_vm(name: str, args: argparse.Namespace) -> bool:
             print(f"{name}: already running")
         return True
     launch_qemu(vm, wait_seconds=getattr(args, "wait", 0))
-    provision_vm_ssh(vm, SSH_TIMEOUT)
+    provision_vm_ssh(vm, vm.timeout(SSH_TIMEOUT))
     _seed_kdump_boot(vm)
     if args.json:
         print(
@@ -1218,7 +1222,7 @@ def _launch_and_wait(
             vm.passthrough_drivers[bdf] = from_drv or ""
         vm.save()
     launch_qemu(vm, wait_seconds=wait_seconds)
-    provision_vm_ssh(vm, SSH_TIMEOUT)
+    provision_vm_ssh(vm, vm.timeout(SSH_TIMEOUT))
     _seed_kdump_boot(vm)
 
 
@@ -1339,7 +1343,9 @@ def cmd_create(args: argparse.Namespace) -> None:
     # the failure would otherwise surface as a QEMU exit with no
     # console output, which is the hardest kind of boot failure to read.
     try:
-        resolve_accel(os_arts.arch, getattr(args, "accel", None) or DEFAULT_ACCEL)
+        resolve_accel(
+            os_arts.arch, getattr(args, "accel", None) or DEFAULT_ACCEL
+        )
     except ValueError as e:
         die(str(e))
 
@@ -1453,7 +1459,7 @@ def cmd_start(args: argparse.Namespace) -> None:
         # running with no DNS entry. deploy_ssh_key is idempotent and
         # cheap on re-start, but necessary for fresh VMs whose create
         # was interrupted (so cmd_start recovers a half-set-up VM).
-        provision_vm_ssh(vm, SSH_TIMEOUT, register_before_wait=True)
+        provision_vm_ssh(vm, vm.timeout(SSH_TIMEOUT), register_before_wait=True)
         _seed_kdump_boot(vm)
         print(f"started {name}")
 

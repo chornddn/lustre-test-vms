@@ -16,7 +16,9 @@ import pytest
 
 from ltvm_pkg import qemu_run
 from ltvm_pkg.vm_state import (
+    TCG_SLOWDOWN,
     VMInfo,
+    accel_slowdown,
     qemu_cpu_for_arch,
     qemu_machine_for_arch,
     resolve_accel,
@@ -1731,6 +1733,26 @@ class TestAccelSelection:
             "virt,accel=tcg,gic-version=max"
         )
         assert args[args.index("-cpu") + 1] == "cortex-a57"
+
+    def test_emulated_guests_get_longer_timeouts(self) -> None:
+        """A working-but-slow VM must not be killed by an hvf-sized budget."""
+        with self._host("Darwin", "arm64"):
+            assert accel_slowdown("aarch64", "tcg") == TCG_SLOWDOWN
+            assert accel_slowdown("aarch64", "auto") == 1
+            # Cross-arch is emulated too, and was already paying this cost.
+            assert accel_slowdown("x86_64", "auto") == TCG_SLOWDOWN
+
+    def test_unresolvable_accel_does_not_scale(self) -> None:
+        """Let the caller report the real error instead of stalling first."""
+        with self._host("Darwin", "arm64"):
+            assert accel_slowdown("aarch64", "kvm") == 1
+
+    def test_vm_timeout_scales_with_its_accel(self, tmp_vmdir: Path) -> None:
+        with self._host("Darwin", "arm64"):
+            slow = _make_vm(tmp_vmdir, arch="aarch64", accel="tcg")
+            fast = _make_vm(tmp_vmdir, arch="aarch64", accel="hvf")
+            assert slow.timeout(30) == 30 * TCG_SLOWDOWN
+            assert fast.timeout(30) == 30
 
     def test_accel_survives_the_info_file(self, tmp_vmdir: Path) -> None:
         """Every later start must use the accelerator create chose."""
