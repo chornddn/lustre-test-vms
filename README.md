@@ -67,6 +67,12 @@ a podman-managed Linux VM + QEMU microvms. A few things differ from Linux:
 - **podman backend is pinned to `applehv`** (Apple's Hypervisor.framework).
   `./ltvm install` forces the applehv machine provider; ltvm has no use for
   the GPU-only libkrun backend.
+- **No 64 KB-page guest runs under hardware acceleration.** Apple silicon
+  implements no 64 KB translation granule, so such a guest stops at MMU
+  enable before its console driver starts -- the VM produces no output at
+  all and create fails at the SSH wait. The stock arm64 targets therefore
+  build 4 KB pages. Use the `rocky8-64k` target with `--accel tcg` to test
+  the 64 KB page size; it is emulated, so expect it to be slow.
 
 ```bash
 git clone git@github.com:lustre-tools/lustre-test-vms.git
@@ -90,6 +96,7 @@ with `ltvm target list --all-kernels`.
 | Target | Arch | Lustre | Default kernel | Fetchable |
 |--------|------|--------|----------------|-----------|
 | rocky8 | aarch64, x86_64 | server (ldiskfs) + client | 4.18-rhel8.10 | rhel8.10 |
+| rocky8-64k | aarch64 | server (ldiskfs) + client | 4.18-rhel8.10 | no (build locally) |
 | rocky9 | aarch64 | server (ldiskfs) + client | 5.14-rhel9.7 | rhel9.5, 9.7, 9.8 |
 | rocky9 | x86_64 | server (ldiskfs) + client | 5.14-rhel9.7 | rhel9.7, 9.8 |
 | rocky10 | aarch64, x86_64 | server (ldiskfs) + client | 6.12-rhel10.0 | rhel10.0, 10.1 |
@@ -112,6 +119,10 @@ kernels rather than a distro SRPM.  Its `--kernel` takes a release
 series (`6.18`), an exact release (`7.2.3`), or one of the moving
 aliases `latest` / `stable` / `longterm`.  See
 [ltvm_pkg/upstream_kernel.py](ltvm_pkg/upstream_kernel.py).
+
+`rocky8-64k` is rocky8 built with the 64 KB arm64 page size RHEL 8 actually
+ships. Lustre must work at both 4 KB and 64 KB, and no other target covers
+64 KB. On a host whose CPU has no 64 KB granule it needs `--accel tcg`.
 
 ## ltvm commands
 

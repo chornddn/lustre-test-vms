@@ -22,6 +22,46 @@ targets:
       - 4.18-rhel8.4
       config:
         CONFIG_XEN_PVH: y
+        # RHEL 8 ships its arm64 kernel with a 64 KB page size, but
+        # Apple silicon does not implement the 64 KB translation
+        # granule.  Such a guest stops at MMU enable under hvf, before
+        # the console driver starts, so the VM gives no output at all
+        # and creation fails at the SSH wait.  Build 4 KB pages, which
+        # every accelerator supports.  The rocky8-64k target keeps the
+        # 64 KB page size for the tests that need it.
+        CONFIG_ARM64_4K_PAGES: y
+        CONFIG_ARM64_16K_PAGES: n
+        CONFIG_ARM64_64K_PAGES: n
+      default: 4.18-rhel8.10
+    lustre:
+      mode: server_ldiskfs
+    os_name: rocky
+    os_version: '8.9'
+    srpm_url: https://dl.rockylinux.org/pub/rocky/8/BaseOS/source/tree/Packages/k
+    status: working
+  # rocky8 with the arm64 page size RHEL 8 actually ships.  Lustre must
+  # work at 4 KB and 64 KB, and rocky8 is the only 64 KB-page target, so
+  # pinning it to 4 KB (see above) would leave that half untested.  This
+  # target restores it.  Build files are symlinks to rocky8's: the two
+  # targets differ in kernel config alone.
+  #
+  # aarch64 only -- there is no 64 KB page size on x86_64, where these
+  # options are simply ignored.
+  #
+  # A host whose CPU implements no 64 KB translation granule (every
+  # Apple silicon Mac) must run these guests under emulation:
+  #   ltvm create ... --target rocky8-64k --arch aarch64 --accel tcg
+  rocky8-64k:
+    container_image: rockylinux:8.9
+    kernels:
+      available:
+      - 4.18-rhel8.10
+      - 4.18-rhel8.9
+      config:
+        CONFIG_XEN_PVH: y
+        CONFIG_ARM64_64K_PAGES: y
+        CONFIG_ARM64_16K_PAGES: n
+        CONFIG_ARM64_4K_PAGES: n
       default: 4.18-rhel8.10
     lustre:
       mode: server_ldiskfs
