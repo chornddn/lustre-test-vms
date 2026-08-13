@@ -173,10 +173,11 @@ def generate_local_sh(
             for d in range(mds_node.mdt_disks):
                 letter = chr(ord("a") + disk_offset + d)
                 lines.append(f"MDSDEV{mdt_idx}=/dev/vd{letter}")
-                if len(mds_list) > 1:
-                    lines.append(
-                        f"mds{mdt_idx}_HOST={mds_node.name}",
-                    )
+                # all_mdts_nodes() reads mds<N>_HOST per MDT and has
+                # no fallback to mds_HOST, so every MDT needs one even
+                # when a single node holds them all.  Without it
+                # all_server_nodes() silently drops the node.
+                lines.append(f"mds{mdt_idx}_HOST={mds_node.name}")
                 mdt_idx += 1
         lines.append("")
 
@@ -201,10 +202,9 @@ def generate_local_sh(
             for d in range(oss_node.ost_disks):
                 letter = chr(ord("a") + disk_offset + d)
                 lines.append(f"OSTDEV{ost_idx}=/dev/vd{letter}")
-                if len(oss_list) > 1:
-                    lines.append(
-                        f"ost{ost_idx}_HOST={oss_node.name}",
-                    )
+                # Same as mds<N>_HOST above: all_osts_nodes() reads
+                # ost<N>_HOST per OST with no fallback to ost_HOST.
+                lines.append(f"ost{ost_idx}_HOST={oss_node.name}")
                 ost_idx += 1
         lines.append("")
 
