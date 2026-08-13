@@ -47,7 +47,8 @@ def _stream_tree(
     ssh_opt_str = " ".join(shlex.quote(o) for o in SSH_OPTS)
     tar_cmd = (
         f"set -o pipefail; "
-        f"tar cf - -C {shlex.quote(str(tree))} "
+        f"tar --no-xattrs --no-acls --no-fflags --no-mac-metadata "
+        f"-cf - -C {shlex.quote(str(tree))} "
         f"{exclude_mod} {exclude_bookkeeping} . "
         f"| sshpass -p {shlex.quote(ROOT_PASSWORD)} ssh {ssh_opt_str} "
         f"root@{shlex.quote(vm.ip)} "
@@ -59,11 +60,13 @@ def _stream_tree(
         )
     except subprocess.TimeoutExpired as e:
         raise RuntimeError(
-            f"tar deploy to {vm.ip} timed out after {e.timeout}s"
+            f"tar deploy to {vm.ip} timed out after {e.timeout}s\ncommand: {tar_cmd}"
         )
     if r.returncode != 0:
         output = (r.stdout or "") + (r.stderr or "")
-        raise RuntimeError(f"tar deploy failed: {output.strip()}")
+        raise RuntimeError(
+            f"tar deploy failed: {output.strip()}\ncommand: {tar_cmd}"
+        )
 
 
 def deploy_to_vm(

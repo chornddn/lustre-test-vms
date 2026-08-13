@@ -330,13 +330,14 @@ class TestDeployToVm:
             patch("ltvm_pkg.deploy.run_ssh", return_value=_ok()),
         ):
             deploy.deploy_to_vm(vm, staging)
-        # bash -c "... tar cf - -C <staging> . | ... ssh ... root@<ip> ..."
+        # bash -c "... tar --no-xattrs ... cf - -C <staging> . | ... ssh ... root@<ip> ..."
         assert captured["args"][0] == "bash"
         assert captured["args"][1] == "-c"
         pipeline = captured["args"][2]
         assert f"-C {staging}" in pipeline or str(staging) in pipeline
         assert "root@10.11.12.13" in pipeline
-        assert "tar cf -" in pipeline
+        assert "tar --no-xattrs" in pipeline
+        assert "cf -" in pipeline
         assert "tar xf -" in pipeline
 
     def test_userspace_only_skips_modules_and_depmod(
