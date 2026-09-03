@@ -578,6 +578,10 @@ def _start_qemu(vm: VMInfo) -> None:
             )
     boot_args = (
         f"console={console} reboot=k panic=1 crashkernel={crashkernel} "
+        # selinux=0 unregisters the LSM. SELINUX=disabled is not enough: the
+        # hooks stay registered and osd_ldiskfs_it_fill() oopses on a NULL
+        # f_security in selinux_file_permission() when an es6 MDT mounts.
+        f"selinux=0 "
         f"net.ifnames=0 biosdevname=0 "
         f"systemd.journald.forward_to_console=1 systemd.log_target=console "
         f"root=/dev/vda rw fc_ip={vm.ip} fc_gw={GATEWAY} "
