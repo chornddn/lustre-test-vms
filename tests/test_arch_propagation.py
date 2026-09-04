@@ -409,6 +409,14 @@ class TestNeedsReconfigureM4Staleness:
         bt = tmp_path / "build-tree"
         (bt / "include" / "config").mkdir(parents=True)
         (bt / "include" / "config" / "kernel.release").write_text(kver + "\n")
+        # The kernel-config stamp counts as much as the release stamp.
+        # Without it, _needs_reconfigure returns True for a tree that
+        # predates the check, and the autoconf-input test below can
+        # never see what it measures.
+        write_kernel_config(bt)
+        (
+            tree / f".ltvm-kconfig-{_stamp_suffix('rocky9', 'x86_64')}"
+        ).write_text(fake_kconfig_id(tmp_path) + "\n")
         return tree, bt
 
     def _set_mtime(self, path: Path, when: float) -> None:
