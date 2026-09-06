@@ -1774,3 +1774,81 @@ class TestAccelSelection:
             + "\n"
         )
         assert VMInfo.load(vm.name).accel == "auto"
+
+
+class TestOrphanQemuReaping:
+    """stop validates the process table, not only the recorded pid."""
+
+    PS_OUT = (
+        "  501 /bin/zsh -l\n"
+        " 9152 /opt/qemu/bin/qemu-system-aarch64 -name co3-mds -m 8192\n"
+        " 9180 /opt/qemu/bin/qemu-system-aarch64 -name co3-oss -m 8192\n"
+    )
+
+    def _ps(self, out: str) -> Any:
+        r = MagicMock()
+        r.returncode = 0
+        r.stdout = out
+        return r
+
+    def test_qemu_pids_for_matches_only_that_vm(self) -> None:
+        with patch(
+            "ltvm_pkg.qemu_run.subprocess.run",
+            return_value=self._ps(self.PS_OUT),
+        ):
+            assert qemu_run.qemu_pids_for("co3-mds") == [9152]
+            assert qemu_run.qemu_pids_for("co3-cli") == []
+
+    def test_stop_kills_a_qemu_the_info_file_lost(
+        self, tmp_vmdir: Path
+    ) -> None:
+        """PID=0 in the .info left the QEMU alive and unowned.
+
+        kill_qemu signals vm.pid only, so a stop that ran while
+        is_running() misreported the VM wrote PID=0 and walked away
+        from a live QEMU.
+        """
+        import signal as _signal
+
+        vm = _make_vm(tmp_vmdir, name="co3-mds")
+        vm.pid = 0
+        sent: list[tuple[int, int]] = []
+        # First scan finds the orphan; the scan after the kill is clean.
+        scans = [self._ps(self.PS_OUT), self._ps("  501 /bin/zsh -l\n")]
+
+        def fake_kill(pid, sig):
+            sent.append((pid, sig))
+            if sig == 0:
+                raise OSError("gone")
+
+        with (
+            patch("ltvm_pkg.qemu_run.run"),
+            patch("ltvm_pkg.qemu_run.subprocess.run", side_effect=scans),
+            patch("ltvm_pkg.qemu_run.os.kill", side_effect=fake_kill),
+            patch("ltvm_pkg.qemu_run.time.sleep"),
+            patch.object(VMInfo, "update_pid"),
+        ):
+            qemu_run.kill_qemu(vm)
+        assert (9152, _signal.SIGTERM) in sent
+
+    def test_stop_errors_when_qemu_survives(self, tmp_vmdir: Path) -> None:
+        """A QEMU that outlives the stop must not be reported as stopped."""
+        vm = _make_vm(tmp_vmdir, name="co3-mds")
+        vm.pid = 0
+
+        def fake_kill(pid, sig):
+            if sig == 0:
+                raise OSError("gone")
+
+        with (
+            patch("ltvm_pkg.qemu_run.run"),
+            patch(
+                "ltvm_pkg.qemu_run.subprocess.run",
+                return_value=self._ps(self.PS_OUT),
+            ),
+            patch("ltvm_pkg.qemu_run.os.kill", side_effect=fake_kill),
+            patch("ltvm_pkg.qemu_run.time.sleep"),
+            patch.object(VMInfo, "update_pid"),
+            pytest.raises(SystemExit),
+        ):
+            qemu_run.kill_qemu(vm)

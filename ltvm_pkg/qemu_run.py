@@ -989,6 +989,84 @@ def _signal_qemu(vm: VMInfo, sig: int) -> None:
         quiet=True,
     )
 
+def qemu_pids_for(name: str) -> list[int]:
+    """Return the pids of every live QEMU process launched for VM *name*.
+
+    Scans the process table rather than the recorded pid, so it finds a
+    QEMU that the .info file lost track of.  That happens when a stop
+    misidentifies the VM as already down: kill_qemu() then writes
+    PID=0 and the QEMU keeps running with nothing pointing at it.
+    """
+    try:
+        r = subprocess.run(
+            ["ps", "-ax", "-o", "pid=,args="]
+            if is_macos()
+            else ["ps", "-eo", "pid=,args="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except OSError:
+        return []
+    if r.returncode != 0:
+        return []
+    pids: list[int] = []
+    for line in r.stdout.splitlines():
+        argv = line.split()
+        if len(argv) < 2:
+            continue
+        try:
+            pid = int(argv[0])
+        except ValueError:
+            continue
+        if not Path(argv[1]).name.startswith("qemu-system"):
+            continue
+        if _cmdline_names_vm(argv[1:], name, strict=True):
+            pids.append(pid)
+    return pids
+
+
+def _reap_orphan_qemu(vm: VMInfo) -> None:
+    """Kill any QEMU still running for *vm* after the recorded pid died.
+
+    kill_qemu() only signals vm.pid.  A VM whose .info lost its pid
+    keeps running while `ltvm list` calls it stopped, and its overlay
+    and memory stay held.  Validate the process table instead of
+    trusting the pid we just cleared.
+    """
+    for pid in qemu_pids_for(vm.name):
+        print(
+            f"'{vm.name}': QEMU pid {pid} was not recorded in the .info "
+            f"file; stopping it",
+            file=sys.stderr,
+        )
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except PermissionError:
+            die(
+                f"'{vm.name}' has an orphan QEMU (pid {pid}) owned by "
+                f"another user; stop it with: sudo ltvm stop {vm.name}"
+            )
+        except OSError:
+            continue
+        for _ in range(50):
+            try:
+                os.kill(pid, 0)
+            except OSError:
+                break
+            time.sleep(0.1)
+        else:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except OSError:
+                pass
+    left = qemu_pids_for(vm.name)
+    if left:
+        die(
+            f"'{vm.name}' still has QEMU running after stop: "
+            f"pid(s) {', '.join(str(p) for p in left)}"
+        )
+
 
 def kill_qemu(vm: VMInfo) -> None:
     """Kill the QEMU process and tear down the TAP device.
@@ -1012,6 +1090,7 @@ def kill_qemu(vm: VMInfo) -> None:
             # process during the 5-second wait.
             if is_running(vm):
                 _signal_qemu(vm, signal.SIGKILL)
+    _reap_orphan_qemu(vm)
     try:
         vm.update_pid(0)
     except VMNotFound:
