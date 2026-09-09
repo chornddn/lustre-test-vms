@@ -691,8 +691,6 @@ class TestSameKverDifferentConfig:
         )
 
 
-
-
 class TestIncrementalRebuildGuard:
     """When per-kernel staging exists for this kernel, treat it as
     incremental.  When it doesn't exist, build fresh."""

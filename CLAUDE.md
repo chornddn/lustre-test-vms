@@ -790,6 +790,7 @@ sudo ltvm cluster destroy co2
 `cluster exec <role>` fans out across every node holding the role and
 exits non-zero if any node did; `cluster ssh <role>` opens a session on
 the first, since it execs a single interactive ssh.
+
 `cluster status` reports what a build and a deploy have to
 match -- target, arch, kernel and net -- so those facts come
 from the cluster rather than from a note that goes stale.

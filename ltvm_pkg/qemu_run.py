@@ -311,12 +311,12 @@ def is_running(vm: VMInfo) -> bool:
     if not comm.startswith("qemu-system"):
         return False
     try:
-        argv = Path(f"/proc/{vm.pid}/cmdline").read_bytes()
+        raw = Path(f"/proc/{vm.pid}/cmdline").read_bytes()
     except OSError:
         # Unreadable: keep the pre-identity behavior rather than
         # reporting a live VM as stopped.
         return True
-    parts = [a.decode(errors="replace") for a in argv.split(b"\0") if a]
+    parts = [a.decode(errors="replace") for a in raw.split(b"\0") if a]
     if not parts:
         # Zombie or otherwise empty cmdline: no identity information,
         # so don't call a live VM stopped.
@@ -988,6 +988,7 @@ def _signal_qemu(vm: VMInfo, sig: int) -> None:
         check=False,
         quiet=True,
     )
+
 
 def qemu_pids_for(name: str) -> list[int]:
     """Return the pids of every live QEMU process launched for VM *name*.

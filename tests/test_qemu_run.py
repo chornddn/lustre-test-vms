@@ -5,6 +5,7 @@ from __future__ import annotations
 import fcntl
 import itertools
 import re
+import signal
 import subprocess
 from collections.abc import Iterator
 from contextlib import contextmanager
