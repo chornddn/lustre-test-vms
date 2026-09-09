@@ -233,7 +233,12 @@ def _deploy_vm(vm: Any, args: argparse.Namespace, use_json: bool) -> int:
         )
 
     status = staging_status(
-        build_path, target, arch=vm_arch, kernel=kernel, variant=vm_variant
+        build_path,
+        target,
+        arch=vm_arch,
+        kernel=kernel,
+        variant=vm_variant,
+        build_tree=tc.kernel_output_dir(kernel=kernel) / "build-tree",
     )
     staging = status.path
 

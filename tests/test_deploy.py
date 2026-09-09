@@ -567,6 +567,7 @@ def _seed_staging(
     staging.mkdir(parents=True)
     (staging / module).write_text("")
     (staging / ".ltvm-staging-stamp").write_text("5.14.0-foo\n")
+    _mark_staging_fresh(staging, build_path, _stub_tc(), kernel=kernel)
     return staging
 
 
@@ -1453,6 +1454,7 @@ class TestCmdDeployVariantPropagation:
         staging.mkdir(parents=True)
         (staging / "ko2iblnd.ko").write_text("")
         (staging / ".ltvm-staging-stamp").write_text("")
+        _mark_staging_fresh(staging, build_path, _stub_tc())
 
         vm = _make_vm(name="co1-mofed", ip="10.0.0.20")
         vm.os_id = "rocky9"

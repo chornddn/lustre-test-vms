@@ -28,6 +28,38 @@ def _no_extras(name: str):
 # ── parse_node_spec ──────────────────────────────────────
 
 
+def _seed_staging_build_record(monkeypatch, src, stage, tmp_path):
+    """Make a staging tree pass the kernel-ABI and configure-flag gate.
+
+    staging_status() refuses a staging that does not record the kernel
+    ABI and the configure flags it was built against.  Point the kernel
+    build-tree at tmp_path and write a record that matches it.
+    """
+    import json as _json
+
+    from ltvm_pkg import vm_cluster as _vc
+    from ltvm_pkg.lustre_build import _hash_file, _stamp_suffix
+
+    build_tree = tmp_path / "build-tree"
+    build_tree.mkdir(parents=True, exist_ok=True)
+    symvers = build_tree / "Module.symvers"
+    symvers.write_text("dummy symvers\n")
+    cfg_hash = "deadbeef" * 8
+    (src / f".ltvm-configure-{_stamp_suffix('rocky9', 'x86_64')}").write_text(
+        cfg_hash + "\n"
+    )
+    (stage / ".ltvm-staging-meta.json").write_text(
+        _json.dumps(
+            {
+                "kernel_version": "5.14.0-fake",
+                "module_symvers_sha256": _hash_file(symvers),
+                "configure_sha256": cfg_hash,
+            }
+        )
+    )
+    monkeypatch.setattr(_vc, "_kernel_build_tree", lambda *a, **k: build_tree)
+
+
 class TestParseNodeSpec:
     """parse_node_spec accepts roles:name[:disks] and rejects garbage."""
 
@@ -767,6 +799,7 @@ def _deploy_harness(
         stage.mkdir(parents=True)
         (stage / "lustre.ko").write_text("")
         (stage / ".ltvm-staging-stamp").write_text("5.14.0\n")
+        _seed_staging_build_record(monkeypatch, src, stage, tmp_path)
 
     writes: list[tuple[str, str, str]] = []
 

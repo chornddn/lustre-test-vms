@@ -986,6 +986,95 @@ class TestStagingStatus:
             os.utime(obj, (future, future))
         assert self._status(tree).usable
 
+    # -- the kernel-ABI and configure-flag gate --
+
+    def _record(
+        self, tree: Path, staging: Path, build_tree: Path, cfg: str
+    ) -> None:
+        """Write the build record staging_status checks build_tree against."""
+        import json
+
+        from ltvm_pkg.lustre_build import _hash_file, _stamp_suffix
+
+        build_tree.mkdir(parents=True, exist_ok=True)
+        symvers = build_tree / "Module.symvers"
+        symvers.write_text("symvers v1\n")
+        (
+            tree / f".ltvm-configure-{_stamp_suffix('rocky9', 'x86_64')}"
+        ).write_text(cfg + "\n")
+        (staging / ".ltvm-staging-meta.json").write_text(
+            json.dumps(
+                {
+                    "module_symvers_sha256": _hash_file(symvers),
+                    "configure_sha256": cfg,
+                }
+            )
+        )
+        # Writing into the tree moved its directory mtime, which reads
+        # as a source edit.  The stamp is what a real build writes last.
+        (staging / ".ltvm-staging-stamp").touch()
+
+    def _gated(self, tree: Path, build_tree: Path):
+        from ltvm_pkg.lustre_build import staging_status
+
+        return staging_status(
+            tree,
+            "rocky9",
+            arch="x86_64",
+            kernel="5.14-rhel9.7",
+            build_tree=build_tree,
+        )
+
+    def test_a_matching_build_record_is_usable(self, tmp_path: Path) -> None:
+        tree = _tree(tmp_path)
+        staging = _built(tree)
+        build_tree = tmp_path / "kernel" / "build-tree"
+        self._record(tree, staging, build_tree, "cfg1")
+        assert self._gated(tree, build_tree).usable
+
+    def test_a_changed_kernel_abi_is_named(self, tmp_path: Path) -> None:
+        """The kernel keeps its release across a rebuild, so only
+        Module.symvers can say the ABI moved."""
+        tree = _tree(tmp_path)
+        staging = _built(tree)
+        build_tree = tmp_path / "kernel" / "build-tree"
+        self._record(tree, staging, build_tree, "cfg1")
+        (build_tree / "Module.symvers").write_text("symvers v2\n")
+        st = self._gated(tree, build_tree)
+        assert not st.usable
+        assert "kernel ABI" in st.reason
+
+    def test_changed_configure_flags_are_named(self, tmp_path: Path) -> None:
+        from ltvm_pkg.lustre_build import _stamp_suffix
+
+        tree = _tree(tmp_path)
+        staging = _built(tree)
+        build_tree = tmp_path / "kernel" / "build-tree"
+        self._record(tree, staging, build_tree, "cfg1")
+        (
+            tree / f".ltvm-configure-{_stamp_suffix('rocky9', 'x86_64')}"
+        ).write_text("cfg2\n")
+        st = self._gated(tree, build_tree)
+        assert not st.usable
+        assert "configure flags" in st.reason
+
+    def test_staging_without_a_record_is_rebuilt(self, tmp_path: Path) -> None:
+        """A staging from an ltvm predating the record has an unknown
+        ABI, so it is refused rather than shipped on a guess."""
+        tree = _tree(tmp_path)
+        _built(tree)
+        build_tree = tmp_path / "kernel" / "build-tree"
+        build_tree.mkdir(parents=True)
+        st = self._gated(tree, build_tree)
+        assert not st.usable
+        assert "build record" in st.reason
+
+    def test_no_build_tree_leaves_the_gate_off(self, tmp_path: Path) -> None:
+        """Callers that cannot name the kernel tree still get an answer."""
+        tree = _tree(tmp_path)
+        _built(tree)
+        assert self._status(tree).usable
+
     def test_build_command_names_for_cluster_and_configure(
         self, tmp_path: Path
     ) -> None:

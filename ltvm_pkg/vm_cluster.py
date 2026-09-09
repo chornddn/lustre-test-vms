@@ -1076,6 +1076,20 @@ def _resolve_deploy_net(
         raise AssertionError("unreachable")
 
 
+def _kernel_build_tree(
+    target: str, arch: str, variant: str, kernel: str
+) -> Path:
+    """Path of the kernel build-tree a deploy's modules must match.
+
+    A seam, not a wrapper: staging_status() reads Module.symvers from
+    here, and the tests need to point that read somewhere they control.
+    """
+    from .target_config import TargetConfig
+
+    tc = TargetConfig(target, arch=arch, variant=variant)
+    return Path(tc.kernel_output_dir(kernel=kernel)) / "build-tree"
+
+
 def cmd_cluster_deploy(args: argparse.Namespace) -> None:
     cluster = ClusterInfo.load(args.name)
     nodes = cluster.get_nodes()
@@ -1130,6 +1144,9 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
         arch=arch,
         kernel=kernel_name,
         variant=params.variant,
+        build_tree=_kernel_build_tree(
+            target, arch, params.variant, kernel_name
+        ),
     )
     if not status.usable:
         die(

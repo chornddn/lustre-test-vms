@@ -354,6 +354,47 @@ def _tree_newer_than(src: Path, stamp: Path) -> bool:
     return r.stdout.strip() != ""
 
 
+def _staging_key_changed(
+    staging: Path,
+    lustre_tree: Path,
+    build_tree: Path,
+    target: str,
+    arch: str,
+) -> str | None:
+    """Name what has moved under the staging since it was built.
+
+    Source mtimes cannot see either signal.  A kernel rebuilt from an
+    edited patch series keeps its directory name and kernel.release
+    while Module.symvers changes, so the staging looked fresh and
+    shipped modules linked against the previous ABI -- the guest then
+    fails `modprobe lustre` with "disagrees about version of symbol".
+    A changed ``configure_args`` in targets.yaml was equally invisible.
+
+    build_lustre records both in ``.ltvm-staging-meta.json``.  An
+    absent or unreadable field means the staging predates the record,
+    which is a rebuild rather than a guess.
+    """
+    meta = read_staging_meta(staging)
+    if not isinstance(meta, dict):
+        return "staging has no build record"
+
+    recorded_symvers = meta.get("module_symvers_sha256")
+    if not isinstance(recorded_symvers, str) or not recorded_symvers:
+        return "staging does not record the kernel ABI it was built for"
+    if _hash_file(build_tree / "Module.symvers") != recorded_symvers:
+        return "the kernel ABI changed since the staging was built"
+
+    recorded_cfg = meta.get("configure_sha256")
+    if not isinstance(recorded_cfg, str) or not recorded_cfg:
+        return "staging does not record the configure flags it was built with"
+    cfg_stamp = lustre_tree / f".ltvm-configure-{_stamp_suffix(target, arch)}"
+    if not cfg_stamp.is_file():
+        return "the tree has no configure stamp"
+    if cfg_stamp.read_text().strip() != recorded_cfg:
+        return "the configure flags changed since the staging was built"
+    return None
+
+
 def staging_status(
     lustre_tree: str | Path,
     target: str,
@@ -361,6 +402,7 @@ def staging_status(
     arch: str,
     kernel: str,
     variant: str = "base",
+    build_tree: Path | None = None,
 ) -> StagingStatus:
     """Resolve staging for one build key and say whether it is usable.
 
@@ -372,6 +414,10 @@ def staging_status(
     end of a successful build, not against the staging directory's mtime:
     a directory mtime only moves when entries are added or removed, so an
     in-place rewrite of an existing .ko leaves it untouched.
+
+    Pass ``build_tree`` -- the kernel build-tree this deploy targets --
+    to also check the kernel ABI and the configure flags the staging was
+    built against.  Omit it only where that tree is unknown.
     """
     tree = Path(lustre_tree)
     path = staging_path(tree, target, arch, kernel=kernel, variant=variant)
@@ -384,6 +430,8 @@ def staging_status(
         reason = "staging has no build stamp (the build did not finish)"
     elif _tree_newer_than(tree, path / ".ltvm-staging-stamp"):
         reason = "the source tree is newer than the staging"
+    elif build_tree is not None:
+        reason = _staging_key_changed(path, tree, build_tree, target, arch)
     return StagingStatus(
         path=path,
         lustre_tree=tree,
