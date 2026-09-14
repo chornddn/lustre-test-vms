@@ -889,8 +889,8 @@ class TestJsonErrorShape:
             (["status"], "missing cluster name"),
             (["create"], "missing everything"),
             (["create", "co1"], "no node specs"),
-            (["deploy", "co1", "--frob"], "unknown flag"),
-            (["deploy", "co1", "--fstype", "btrfs"], "invalid fstype"),
+            (["status", "co1", "--frob"], "unknown flag"),
+            (["create", "co1", "mgs+mds:a:1", "--accel", "wat"], "bad accel"),
             (["nosuch"], "unknown action"),
         ],
     )

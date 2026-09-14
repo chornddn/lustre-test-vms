@@ -54,7 +54,7 @@ variants from your actual state:
 
 ```bash
 ltvm build kernel roc<TAB>        # rocky8 rocky9 rocky9-64k rocky10
-ltvm deploy-lustre co<TAB>        # your VMs
+ltvm deploy co<TAB>               # your VMs and clusters
 ```
 
 If nothing completes, `ltvm doctor` reports it and `ltvm

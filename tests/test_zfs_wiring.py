@@ -556,12 +556,26 @@ def _cluster() -> MagicMock:
     return c
 
 
+def _tcp(cluster: MagicMock) -> object:
+    """The plain tcp net generate_local_sh() needs; ZFS does not care."""
+    from ltvm_pkg.lnet_net import ClusterNet, NodeNet
+
+    nodes = [cluster.mgs_node(), *cluster.oss_nodes()]
+    return ClusterNet(
+        net_type="tcp",
+        net_name="tcp",
+        nodes=tuple(
+            NodeNet(name=n.name, interfaces=("eth0",), ip=n.ip) for n in nodes
+        ),
+    )
+
+
 class TestClusterLocalSh:
     def test_defaults_to_ldiskfs(self) -> None:
-        assert "FSTYPE=ldiskfs" in vc.generate_local_sh(_cluster())
+        assert "FSTYPE=ldiskfs" in vc.generate_local_sh(_cluster(), _tcp(_cluster()))
 
     def test_zfs_selected(self) -> None:
-        out = vc.generate_local_sh(_cluster(), fstype="zfs")
+        out = vc.generate_local_sh(_cluster(), _tcp(_cluster()), fstype="zfs")
         assert "FSTYPE=zfs" in out
         assert "FSTYPE=ldiskfs" not in out
 
@@ -569,13 +583,13 @@ class TestClusterLocalSh:
         """The /dev/vd* devices stay: for ZFS the framework reads them
         as the vdevs to build pools on, and derives the dataset names
         itself.  Rewriting them to dataset names would break that."""
-        out = vc.generate_local_sh(_cluster(), fstype="zfs")
+        out = vc.generate_local_sh(_cluster(), _tcp(_cluster()), fstype="zfs")
         assert "MDSDEV1=/dev/vdb" in out
         assert "OSTDEV1=/dev/vdb" in out
 
     def test_rejects_unknown_fstype(self) -> None:
         with pytest.raises(ValueError, match="unsupported fstype"):
-            vc.generate_local_sh(_cluster(), fstype="btrfs")
+            vc.generate_local_sh(_cluster(), _tcp(_cluster()), fstype="btrfs")
 
 
 # ── publish ──────────────────────────────────────────────
@@ -712,7 +726,7 @@ class TestUserspaceOnlyGuard:
         """Honouring only the --fstype half would pin the VM to a
         backend whose modules the deploy never shipped."""
         src = Path("ltvm_pkg/cli/deploy.py").read_text()
-        assert "if want_zfs and userspace_only:" in src
+        assert 'if fstype == "zfs" and userspace_only:' in src
         assert "incompatible" in src
 
 
@@ -725,12 +739,10 @@ class TestDeployStalenessOnZfsRequest:
         src = Path("ltvm_pkg/lustre_build.py").read_text()
         assert '"zfs_version": zfs_version,' in src
 
-    def test_deploy_rebuilds_when_staging_lacks_zfs(self) -> None:
+    def test_deploy_refuses_zfs_on_staging_built_without_it(self) -> None:
+        """Deploy never builds, so a ZFS request against staging built
+        without ZFS is refused with the build line, not rebuilt."""
         src = Path("ltvm_pkg/cli/deploy.py").read_text()
-        block = src[src.index("staged_zfs = meta.get") :][:600]
-        assert "if want_zfs:" in block
-        assert "if not staged_zfs:" in block
-
-    def test_deploy_rebuilds_on_version_mismatch(self) -> None:
-        src = Path("ltvm_pkg/cli/deploy.py").read_text()
-        assert "staged_zfs != zfs_version_arg" in src
+        assert 'elif fstype == "zfs" and not userspace_only:' in src
+        src = Path("ltvm_pkg/vm_cluster.py").read_text()
+        assert 'elif fstype == "zfs":' in src

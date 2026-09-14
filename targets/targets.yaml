@@ -36,9 +36,15 @@ targets:
     lustre:
       mode: server_ldiskfs
     os_name: rocky
-    os_version: '8.9'
+    os_version: '8.10'
     srpm_url: https://dl.rockylinux.org/pub/rocky/8/BaseOS/source/tree/Packages/k
     status: working
+    # Version `--zfs` builds for this target.  Declaring it does not
+    # turn ZFS on; it only says which release to use when asked.
+    # 2.3.x rather than the 2.4.0 lustre/ChangeLog recommends: 2.4
+    # dropped support for the 4.18 EL8 kernel.
+    zfs:
+      version: 2.3.4
   # rocky8 with the arm64 page size RHEL 8 actually ships.  Lustre must
   # work at 4 KB and 64 KB, and rocky8 is the only 64 KB-page target, so
   # pinning it to 4 KB (see above) would leave that half untested.  This
@@ -52,7 +58,10 @@ targets:
   # Apple silicon Mac) must run these guests under emulation:
   #   ltvm create ... --target rocky8-64k --arch aarch64 --accel tcg
   rocky8-64k:
-    container_image: rockylinux:8.9
+    configure_args:
+    - --enable-gss=yes
+    - --enable-crypto=yes
+    container_image: quay.io/rockylinux/rockylinux:8.10
     kernels:
       available:
       - 4.18-rhel8.10

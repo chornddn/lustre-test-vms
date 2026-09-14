@@ -525,9 +525,10 @@ class TestClusterDeployNeverPrompts:
                 {"name": "co3-oss1", "roles": ["oss"]},
             ],
         )
-        args = argparse.Namespace(
-            name="co3", lustre_source=str(tmp_path), mount=False
-        )
+        args = argparse.Namespace(name="co3", lustre_tree=str(tmp_path))
+        staging = MagicMock(usable=True, path=tmp_path)
+        net = MagicMock(net_name="tcp", net_type="tcp", ip_family="ipv4")
+        per_node = {"side_effect": lambda name, *a, **k: (name, 0, "")}
 
         class _TC:
             os_family = "rhel"
@@ -543,11 +544,23 @@ class TestClusterDeployNeverPrompts:
                 side_effect=lambda name, *a, **k: (name, 0, ""),
             ),
             patch.object(vm_cluster, "generate_local_sh", return_value=""),
+            patch.object(vm_cluster, "_resolve_deploy_net", return_value=net),
             patch.object(
                 vm_cluster,
-                "_write_cluster_local_sh",
-                side_effect=lambda name, *a, **k: (name, 0, ""),
+                "cluster_build_params",
+                return_value=vm_cluster.ClusterBuildParams(
+                    target="rocky9",
+                    os_family="rhel",
+                    kernel="5.14-rhel9.7",
+                    arch="x86_64",
+                ),
             ),
+            patch.object(vm_cluster, "_kernel_build_tree", return_value=None),
+            patch.object(vm_cluster, "staging_status", return_value=staging),
+            patch.object(vm_cluster, "read_staging_meta", return_value={}),
+            patch.object(vm_cluster, "_drop_stale_lnet", **per_node),
+            patch.object(vm_cluster, "_write_lnet_conf", **per_node),
+            patch.object(vm_cluster, "_write_cluster_cfg", **per_node),
             patch.object(
                 VMInfo, "update_deploy", side_effect=PermissionError("nope")
             ),

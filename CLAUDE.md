@@ -365,8 +365,9 @@ it -- which is what lets it be a flag.
 ```bash
 ltvm build zfs rocky9                                  # standalone
 ltvm build lustre rocky9 --lustre-tree ~/lustre-release --zfs
-ltvm deploy-lustre co1-zfs --lustre-tree ~/lustre-release --zfs --mount
-ltvm cluster deploy co2 --build ~/lustre-release --zfs --mount
+ltvm build lustre --for-cluster co2 --lustre-tree ~/lustre-release --zfs
+ltvm deploy co1-zfs --lustre-tree ~/lustre-release --fstype zfs
+ltvm deploy co2 --lustre-tree ~/lustre-release --fstype zfs
 ```
 
 `--zfs` on a **build** means "build the ZFS OSD".  The
@@ -374,12 +375,12 @@ result has *both* backends: `--enable-server --with-zfs`
 produces osd-ldiskfs and osd-zfs from one build, and
 `FSTYPE` picks between them at test time.
 
-`--zfs` on a **deploy** additionally means "run this VM on
-ZFS", so it implies `--fstype zfs`.  Pass `--fstype
-ldiskfs` alongside it to stage ZFS on a VM you want to
-keep running ldiskfs.  `--fstype` writes the setting into
-the VM's `cfg/local.sh`, which is what `llmount.sh`,
-`auster` and a bare `sanity.sh` all read.
+`deploy` takes no `--zfs`: it never builds, so it ships ZFS
+whenever the staging was built with it.  `--fstype zfs` picks
+the backend the VM runs and is refused when the staging has
+no ZFS.  `--fstype` writes the setting into the VM's
+`cfg/local.sh`, which is what `llmount.sh`, `auster` and a
+bare `sanity.sh` all read.
 
 For ZFS the test framework takes `MDSDEV*`/`OSTDEV*` as
 the **vdevs** to build pools on and derives the dataset
@@ -404,7 +405,7 @@ for the 4.18 EL8 kernel.
 `kernels/<kver>/zfs/<version>/` holds `src/` (configured
 and built in place, for Lustre's `--with-zfs`) and
 `staging/` (a `make install DESTDIR=` tree, for
-deploy-lustre to stream into a VM).  It is keyed on the
+deploy to stream into a VM).  It is keyed on the
 kernel's release string **and** the kernel artifact's
 `input_hash`, because zfs.ko links against Module.symvers
 -- which moves when a kernel patch changes without
@@ -969,6 +970,24 @@ container/image, pinned to a specific kernel.  rocky9's
 `mofed-24` is the canonical example: an overlay
 container/image pair plus a kernel pin and `params:`
 consumed by the Dockerfile.
+
+**One OS, two kernel configs:** `kernels.config` belongs to
+the target, so an OS that must be tested under two kernel
+configurations needs two targets.  Artifacts are keyed by
+target name, so the two sets never collide.  `rocky8-64k`
+and `rocky9-64k` are the worked examples, each its base
+target with the 64 KB arm64 page size; `rocky8-64k`'s build
+files are symlinks to rocky8's.  Keep the pattern to
+configuration -- targets that also need different packages
+or a different container are two ordinary targets.
+
+A Lustre tree shared between two such targets is the sharp
+edge: both build the same kernel release, and a 64 KB-page
+`libcfs.ko` loads on a 4 KB-page guest (arm64 vermagic
+carries no page size) and dies in `libcfs_init`.  The kernel
+`.config` stamp described under Cross-building Lustre
+catches it by distcleaning, so give each page size its own
+worktree to avoid a full rebuild on every switch.
 
 ## Development
 

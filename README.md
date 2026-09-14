@@ -220,7 +220,6 @@ ltvm cluster create <name> [TARGET] <roles:vm[:disks]> ...   (needs root)
 ltvm cluster destroy <name>...  Destroy clusters and every node (root)
 ltvm cluster start <name>...    Start every node, as `ltvm start` does
 ltvm cluster stop <name>...     Stop every node
-ltvm cluster deploy <name>      Build + deploy Lustre to every node
 ltvm cluster llmount <name>     Mount Lustre across the cluster
 ltvm cluster llumount <name>    Unmount it and unload the modules
 ltvm cluster status <name>      Nodes and their state
@@ -387,7 +386,7 @@ clusters, kernels and variants:
 ```bash
 ltvm build kernel roc<TAB>              # -> rocky8 rocky9 rocky9-64k rocky10
 ltvm build kernel rocky8 --kernel <TAB> # -> only rocky8's kernels
-ltvm deploy-lustre co<TAB>              # -> your VMs
+ltvm deploy co<TAB>                     # -> your VMs and clusters
 ltvm cluster exec co2 <TAB>             # -> that cluster's roles, then nodes
 ltvm vm restore co1-single <TAB>        # -> that VM's snapshot tags
 ```

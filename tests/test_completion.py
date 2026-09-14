@@ -629,7 +629,11 @@ class TestParserWiring:
 
     def test_arch_is_covered_on_every_subcommand(self, wiring: dict) -> None:
         arch = {k: v for k, v in wiring.items() if k.endswith("|--arch")}
-        assert len(arch) > 30, "‑-arch comes from the shared `common` parent"
+        # --arch sits only on the commands that honour it (arch_arg), so
+        # the ones that take the arch from their nodes do not offer it.
+        assert len(arch) > 20, "--arch comes from the `arch_arg` parent"
+        for cmd in ("test", "llmount", "cluster exec"):
+            assert f"ltvm {cmd}|--arch" not in arch
         assert all(v is completion.complete_arches for v in arch.values())
 
     def test_every_lustre_tree_gets_directory_completion(
@@ -659,7 +663,6 @@ class TestParserWiring:
             ("ltvm cluster destroy|<names>", "complete_clusters"),
             ("ltvm cluster start|<names>", "complete_clusters"),
             ("ltvm cluster stop|<names>", "complete_clusters"),
-            ("ltvm cluster deploy|<name>", "complete_clusters"),
             ("ltvm cluster llmount|<name>", "complete_clusters"),
             ("ltvm cluster llumount|<name>", "complete_clusters"),
             ("ltvm cluster create|--kernel", "complete_kernels"),
@@ -667,10 +670,6 @@ class TestParserWiring:
             ("ltvm cluster status|<name>", "complete_clusters"),
             ("ltvm cluster exec|<name>", "complete_clusters"),
             ("ltvm cluster ssh|<name>", "complete_clusters"),
-            (
-                "ltvm cluster deploy|--build/--lustre-tree",
-                "complete_directories",
-            ),
             ("ltvm make-install|--variant", "complete_variants"),
             ("ltvm make-uninstall|--variant", "complete_variants"),
             ("ltvm make-reinstall|--variant", "complete_variants"),
