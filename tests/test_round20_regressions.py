@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -241,3 +242,57 @@ class TestImageStalenessUpstream:
 
 # (TestBundledSnapshotAlwaysMirrors removed: the source-inspection test
 # was not behavioral and would break on formatting changes.)
+
+
+class TestHostsWriteIsSkippedWhenUnchanged:
+    """Rewriting /etc/hosts and signalling dnsmasq are the only root
+    steps in a restart, and a restart rarely changes the mapping."""
+
+    def _setup(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> tuple[Any, Path, list[int]]:
+        import os as _os
+
+        from ltvm_pkg import vm_net
+
+        fake_hosts = tmp_path / "hosts"
+        fake_hosts.write_text("127.0.0.1\tlocalhost\n")
+        reloads: list[int] = []
+        monkeypatch.setattr(vm_net, "HOSTS_FILE", fake_hosts)
+        monkeypatch.setattr(
+            vm_net, "reload_dns", lambda: reloads.append(1)
+        )
+        monkeypatch.setattr(
+            vm_net,
+            "_real_user_ssh_dir",
+            lambda: ("root", tmp_path / ".ssh"),
+        )
+        monkeypatch.setattr(_os, "chown", lambda *a, **k: None)
+        return vm_net, fake_hosts, reloads
+
+    def test_re_registering_the_same_mapping_writes_nothing(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vm_net, fake_hosts, reloads = self._setup(tmp_path, monkeypatch)
+
+        vm_net._register_ssh_name_locked("co1-mds", "192.168.100.40")
+        assert reloads == [1]
+        before = fake_hosts.read_text()
+        stamp = fake_hosts.stat().st_mtime_ns
+
+        vm_net._register_ssh_name_locked("co1-mds", "192.168.100.40")
+        assert fake_hosts.read_text() == before
+        assert fake_hosts.stat().st_mtime_ns == stamp
+        # No second SIGHUP either -- that is the other root-only step.
+        assert reloads == [1]
+
+    def test_a_changed_ip_still_rewrites(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        vm_net, fake_hosts, reloads = self._setup(tmp_path, monkeypatch)
+
+        vm_net._register_ssh_name_locked("co1-mds", "192.168.100.40")
+        vm_net._register_ssh_name_locked("co1-mds", "192.168.100.41")
+        assert "192.168.100.41" in fake_hosts.read_text()
+        assert "192.168.100.40" not in fake_hosts.read_text()
+        assert reloads == [1, 1]

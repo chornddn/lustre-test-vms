@@ -559,28 +559,33 @@ def _register_etc_hosts(name: str, ip: str) -> None:
     # at end-of-line, so unregister could never remove it again.
     if filtered and not filtered[-1].endswith("\n"):
         filtered[-1] += "\n"
-    _atomic_write(hosts, "".join(filtered) + new_entry)
-    # Registration must not stop here either, for the same reason
-    # unregister_vm doesn't (below).  reload_dns() raises when dnsmasq
-    # is not running, and host_setup restarts dnsmasq without ever
-    # `systemctl enable`-ing it while qemu-bridge *is* enabled -- so
-    # after a reboot on EL the bridge comes back and dnsmasq does not.
-    # The VM by this point has booted, answered SSH and been written to
-    # /etc/hosts; raising here reached cmd_create's `except
-    # BaseException`, which rolled the working VM back and re-raised.
-    # A stale DNS cache is not worth a destroyed VM: the host resolves
-    # the VM through /etc/hosts regardless, and `ltvm doctor` reports
-    # dnsmasq.
-    try:
-        reload_dns()
-    except RuntimeError as e:
-        log.warning(
-            "could not reload dnsmasq after registering %s: %s -- "
-            "guest-to-guest name resolution may be stale until dnsmasq "
-            "is running again",
-            name,
-            e,
-        )
+    # Rewriting /etc/hosts and signalling dnsmasq are the only steps in
+    # a restart that need root, and a restart almost never changes the
+    # mapping, so skip both when the file would not change.
+    desired = "".join(filtered) + new_entry
+    if desired != hosts_text:
+        _atomic_write(hosts, desired)
+        # Registration must not stop here either, for the same reason
+        # unregister_vm doesn't (below).  reload_dns() raises when
+        # dnsmasq is not running, and host_setup restarts dnsmasq
+        # without ever `systemctl enable`-ing it while qemu-bridge *is*
+        # enabled -- so after a reboot on EL the bridge comes back and
+        # dnsmasq does not.  The VM by this point has booted, answered
+        # SSH and been written to /etc/hosts; raising here reached
+        # cmd_create's `except BaseException`, which rolled the working
+        # VM back and re-raised.  A stale DNS cache is not worth a
+        # destroyed VM: the host resolves the VM through /etc/hosts
+        # regardless, and `ltvm doctor` reports dnsmasq.
+        try:
+            reload_dns()
+        except RuntimeError as e:
+            log.warning(
+                "could not reload dnsmasq after registering %s: %s -- "
+                "guest-to-guest name resolution may be stale until "
+                "dnsmasq is running again",
+                name,
+                e,
+            )
 
 
 def _register_ssh_config(name: str, ip: str) -> None:
