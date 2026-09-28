@@ -20,7 +20,7 @@ installation proactively:
 
 ```bash
 ltvm doctor                    # already installed?
-sudo ./ltvm install            # if not: installs QEMU + bridge + dnsmasq + SSH
+sudo ./ltvm install            # if not: QEMU + bridge + dnsmasq + SSH
 ltvm target fetch rocky9       # pre-built artifacts (fastest)
 # or: ltvm build all rocky9 --lustre-tree ~/lustre-release
 ```
@@ -206,19 +206,34 @@ Lustre tree to recompute it from; and a hash that moved with
 no component accounting for it says exactly that.
 
 ```bash
-ltvm build container rocky9
 ltvm build kernel rocky9 --lustre-tree ~/lustre-release
-ltvm build image rocky9                          # default kernel
-ltvm build image rocky9 --kernel 5.14-rhel9.5    # specific kernel
-ltvm build all rocky9 --lustre-tree ~/lustre-release  # stale only
-ltvm build all rocky9 --lustre-tree ~/lustre-release --force  # everything
-ltvm build mofed-kmods rocky9 --variant mofed-24 # MOFED kmods per variant
+ltvm build image rocky9 --kernel 5.14-rhel9.5         # default kernel if omitted
+ltvm build all rocky9 --lustre-tree ~/lustre-release  # stale only; --force for all
+ltvm build mofed-kmods rocky9 --variant mofed-24
 ```
 
-All build commands accept `--arch <arch>` to override
-the target's configured architecture (e.g. `aarch64`).
+`ltvm clean` previews superseded kernel builds, off-list
+kernel groups (dropped from `kernels.available`), and orphan
+images.  Dry-run by default; `--apply` deletes, `--keep N`
+and `--older-than DAYS` scope it.  The target's default
+kernel and any variant-pinned kernel survive unless
+`--force`.  Distinct from `ltvm target clean`, which wipes a
+target's whole arch dir in one shot.
 
-### Pruning stale artifacts
+**The kernel** is built from the Lustre tree's
+`lustre/kernel_patches/` slice for the target -- `.target`
+(SRPM version), `kernel_configs/*.config`, and
+`series/*.series` + `patches/` -- merged with
+[targets/common/kernel-config.fragment](targets/common/kernel-config.fragment)
+and the target's `kernels.config`.  Its SRPMs cache under
+`artifacts/<target>/<arch>/cache/`, with a Rocky-vault
+fallback for older minors.  **The image** is built
+as a container via podman, exported to ext4 with `mke2fs -d`
+under fakeroot, and carries the package lists, source-built
+tools (IOR, mdtest, iozone, pjdfstest, FlameGraph, drgn,
+Lustre-patched e2fsprogs), passwordless root SSH, serial
+autologin and kdump.  No kernel inside it -- QEMU passes
+that via `-kernel`.
 
 `ltvm clean` walks `artifacts/` and previews superseded
 kernel builds, off-list kernel groups (no longer in
@@ -590,22 +605,19 @@ ltvm release co1-mds co1-oss co1-client
 ```
 
 Nothing here creates or destroys a cluster.  Ask the
-operator for one; `cluster create` and `cluster destroy`
-need root, and destroying somebody's cluster to work
-around dirty state loses their logs.
+operator for one; both need root, and destroying somebody's
+cluster to work around dirty state loses their logs.
 
 **Build options exist only on `build lustre`.**  `--configure`,
-`--kernel`, `--arch` and `--force-compat` have exactly one home.
-A build flag appearing on `deploy` would mean deploy is
-building again -- which is how a cluster once received
-`lnet.ko` and `ksocklnd.ko` but no `ko2iblnd.ko`, silently,
-because the deploy re-ran configure without the
-`--configure` args it had no way to forward.
+`--kernel`, `--arch` and `--force-compat` have exactly one
+home.  A build flag on `deploy` would mean deploy is building
+again -- and a deploy that re-runs configure without the
+`--configure` args it cannot forward once shipped a cluster
+`lnet.ko` and `ksocklnd.ko` but no `ko2iblnd.ko`, silently.
 
 **`deploy` takes a VM or a cluster** and asks it what it runs:
 target, kernel, arch and variant come from the node metadata,
-so a deploy cannot contradict the nodes.  There is no
-`--kernel` / `--arch` override; `build lustre` already has one.
+so a deploy cannot contradict the nodes.
 
 **`deploy` never builds.**  Missing or stale staging is a hard
 error naming the exact `build lustre --for-cluster` line to
@@ -620,22 +632,21 @@ runs for tens of minutes inside one blocking call, so the
 answer needs a second command:
 
 ```bash
-ltvm test co1 --status
-ltvm test co1 --follow
+ltvm test co1 --status        # or --follow, which repeats until the run ends
 ```
 
 `--status` reports state, elapsed time, the subtest running
 now, the counts so far, and how many of the suite's subtests
 have been recorded (`87/172`).  It reads the run record
-`ltvm test` writes before it starts, so it works from **another
-session**, and after the session that started the run has
-died.  `--follow` repeats until the run ends.
+`ltvm test` writes before it starts, so it works from
+**another session**, and after the session that started the
+run has died.
 
-Do not reach for `pgrep`, a console tail, or a timer instead.
-Each of those has failed here: `pgrep -f auster` matches the
-shell running the `pgrep`; a run backgrounded with `&` over
-ssh dies with the session; and `cluster exec` gives up after
-120s on a run that is still perfectly alive.
+Do not reach for `pgrep`, a console tail, or a timer
+instead.  All three have failed here: `pgrep -f auster`
+matches the shell running the `pgrep`; a run backgrounded
+with `&` over ssh dies with the session; and `cluster exec`
+gives up after 120s on a run that is still perfectly alive.
 
 **`llmount --cleanup` leaves the node with no Lustre
 resident, or fails.**  `llmountcleanup.sh` on its own does
@@ -645,24 +656,24 @@ mount keeps `mdd` busy so `lustre_rmmod` fails.  It also
 leaves the dm-flakey targets behind.  Cleanup therefore
 escalates -- force-unmount, drop the dm targets, unload
 again -- and exits non-zero naming what is still held.
-Stale state does not announce itself when it is created;
-it reappears later as `mkfs.lustre: Unable to build fs
-(256)`, or as a whole suite that never runs.
+Stale state is silent when it is created and reappears
+later as `mkfs.lustre: Unable to build fs (256)`, or as a
+whole suite that never runs.
 
 **`deploy --net {tcp,o2ib}` picks the cluster's LNet net.**
-A cluster runs **one** net at a time -- the Lustre test
-suites all assume one, and multi-network is uncommon
-outside LNet routers.  `deploy` is the only command that
-sets it; `test` has no `--net` and never reconfigures the
-network.  Switching nets means another deploy, which is
-cheap: `llmount.sh` reformats, so a changed `MGSNID`
-needs no `writeconf`.
-
-Omitting `--net` keeps the net the cluster was last
-deployed with (recorded in its cluster state), or tcp for
-a cluster that never had one.  `--net o2ib` on a cluster
-whose NICs cannot carry it fails before any node is
-touched.
+A cluster runs **one** net at a time, because the Lustre
+test suites all assume one.  `deploy` is the only command
+that sets it; `test` has no `--net`.  Switching nets means
+another deploy, which is cheap: `llmount.sh` reformats, so
+a changed `MGSNID` needs no `writeconf`.  Omitting `--net`
+keeps the net last deployed, or tcp for a cluster that
+never had one.  `--net o2ib` on a cluster whose NICs cannot
+carry it fails before any node is touched.  `tcp` runs on
+the mgmt NIC (`eth0`); `o2ib` runs on the extra NICs and
+their `172.16.100.x` addresses.  For a real-HCA
+(`passthrough`) cluster the boot-time emitter owns the
+config, so deploy refuses `--net o2ib` and refuses a bare
+deploy that would overwrite its `lnet.conf`.
 
 Deploy writes `cfg/local.sh` (`NETTYPE`, `MGSNID`) and
 `/etc/modprobe.d/lnet.conf` together, from one resolved
@@ -761,13 +772,8 @@ lustre`, then unloading it again), and
 
 ```bash
 sudo ltvm cluster create co2 mgs+mds:co2-mds:1 oss:co2-oss:3
-ltvm build lustre --for-cluster co2 --lustre-tree ~/lustre-release
-ltvm deploy co2 --lustre-tree ~/lustre-release
-ltvm cluster exec co2 oss 'lctl dl'    # runs on EVERY oss node
-ltvm cluster exec co2 co2-oss2 'lctl dl'   # or one node by name
-ltvm cluster ssh co2 mds               # interactive; one node
 ltvm cluster status co2
-ltvm cluster list
+ltvm cluster exec co2 oss 'lctl dl'
 sudo ltvm cluster destroy co2
 ```
 
@@ -776,17 +782,30 @@ exits non-zero if any node did; `cluster ssh <role>` opens a session on
 the first, since it execs a single interactive ssh.
 `cluster status` reports what a build and a deploy have to
 match -- target, arch, kernel and net -- so those facts come
-from the cluster rather than from a note that goes stale:
-
-```bash
-ltvm cluster status co2
-```
-
+from the cluster rather than from a note that goes stale.
 When the nodes disagree on any of the three build fields the
 line reads `-` and a warning on stderr names the value per
 node.  That is worth surfacing: one staging tree serves at
 most one kernel, and the other nodes fail at insmod, far
 from the build that chose it.
+
+**`cluster create --nic` defaults to `softroce`**, so a new
+cluster can run either LNet net: a softroce NIC is an
+ordinary virtio-net device with an rxe link on top, and
+socklnd binds that same netdev.  `--nic tcp` still gives a
+tcp-only cluster -- one `deploy --net o2ib` correctly
+refuses.
+
+Extra NICs share a network of their own (`172.16.100.0/24`
+by default, `$LTVM_EXTRA_SUBNET` to change it), separate
+from mgmt.  Repeating `--nic` gives several rails on one
+LNet net -- `--nic tcp --nic tcp` yields
+`tcp0(eth1,eth2)` -- and `rc.local` routes each rail by
+source address so a NI bound to one rail egresses on it.
+For o2iblnd over SoftRoCE see
+[docs/SOFTROCE_SETUP.md](docs/SOFTROCE_SETUP.md); it needs a
+kernel with InfiniBand enabled, and `ko2iblnd.ko` is built
+by default.
 
 #### Distributing extra test-config profiles
 
@@ -814,25 +833,6 @@ replace it.
 `test-scripts` decides what is in them.  Profiles live in
 `~/lustre-dev/test-scripts/clusters/<cluster>/cfg/` -- see
 that repo's `clusters/README.md`.
-
-**`cluster create --nic` defaults to `softroce`**, so a new
-cluster can run either LNet net: a softroce NIC is an
-ordinary virtio-net device with an rxe link on top, and
-socklnd binds that same netdev.  `--nic tcp` still gives a
-tcp-only cluster -- one `deploy --net o2ib` correctly
-refuses.
-
-For an o2iblnd-over-SoftRoCE cluster, see
-[docs/SOFTROCE_SETUP.md](docs/SOFTROCE_SETUP.md) -- it needs
-a kernel with InfiniBand enabled.  `ko2iblnd.ko` is built by
-default, so no extra `--configure` is needed.
-
-Extra NICs share a network of their own (`172.16.100.0/24`
-by default, `$LTVM_EXTRA_SUBNET` to change it), separate
-from mgmt.  Repeating `--nic` gives several rails on one
-LNet net -- `--nic tcp --nic tcp` yields
-`tcp0(eth1,eth2)` -- and `rc.local` routes each rail by
-source address so a NI bound to one rail egresses on it.
 
 Each action is a real subparser, so `ltvm cluster <action> --help`
 works and every action's flags validate and tab-complete.  Two
@@ -863,25 +863,14 @@ ltvm test co2 sanity-lnet --only 630,631
 
 Runs auster on the cluster's client node and prints one
 parsed result object instead of console output to scrape.
+Results come from auster's own `results.yml` (written to
+the `-D` log dir), never from stdout.
 
 **`--only` / `--except` are the only supported spelling.**
 `run_suites()` in `test-framework.sh` begins every suite
 with `unset ONLY EXCEPT START_AT STOP_AT`, so the
 environment form (`EXCEPT="50 109" ./auster ...`) is
 silently discarded and the excluded tests run anyway.
-`ltvm test` has no code path that can emit that form.
-
-Results come from auster's own `results.yml` (written to
-the `-D` log dir), never from stdout.
-
-`yaml.sh` writes failure messages with
-`printf 'error: "%q"'`, which is *shell* quoting inside a
-*YAML* double-quoted scalar.  A message holding an
-apostrophe emits `"Health\ hasn\'t\ recovered"`, and `\'`
-is not a YAML escape, so the file will not parse -- on
-exactly the runs that failed.  The parser repairs this,
-but only after a real parse error, so a well-formed file
-is never rewritten.
 
 `--json` emits:
 
@@ -929,8 +918,14 @@ surfaces at mount as a Lustre-looking fault.
 
 ## Target Configuration
 
-Targets live in [targets/targets.yaml](targets/targets.yaml).
-Per-target keys:
+Targets live in [targets/targets.yaml](targets/targets.yaml),
+which is the source of truth for their keys -- read it
+rather than a copy.  Four are not self-explanatory:
+`os_family` selects the package-manager family (`rhel`),
+`lustre.mode` is the compat-gate mode, `kernels.available`
+lists what may be built while `kernels.default` picks one,
+and `kernels.config` holds per-target kernel config
+overrides.
 
 | Key | Example | Description |
 |---|---|---|
@@ -944,39 +939,21 @@ Per-target keys:
 | kernels.config | {CONFIG_XEN_PVH: y} | Per-target config overrides |
 | variants | {mofed-24: {...}} | Optional add-on variants |
 
-### Package Lists
+**Adding an OS:** add a `targets.yaml` entry, create
+`targets/<name>/` with `container.Dockerfile`,
+`image.Dockerfile` and `packages-os.txt` (plus
+`package-map.txt` if non-RHEL), then `ltvm build all <name>
+--lustre-tree <path>`.  For a new kernel minor on an
+**existing** OS, just add the short name to
+`kernels.available` -- no Dockerfile changes, as long as the
+Lustre tree has the `.target` / `.series` / `.config` for it.
 
-Shared in `targets/common/`:
-`packages-base.txt` (every image),
-`packages-server.txt` (when server-mode),
-`packages-test.txt`, `packages-debug.txt`,
-`packages-dev.txt` (build container only).
-Per-target `packages-os.txt` adds OS-specific packages.
-Non-RHEL targets add `package-map.txt` to translate names.
-
-Format: one package per line, `#` comments, blanks OK.
-
-## Adding a New Target OS
-
-1. Add a `targets.yaml` entry (required keys above).
-2. Create `targets/<name>/` with `container.Dockerfile`,
-   `image.Dockerfile`, `packages-os.txt`.
-3. `package-map.txt` if non-RHEL.
-4. `ltvm build all <name> --lustre-tree <path>`.
-
-For a new kernel minor on an **existing** OS, just add
-the short name to `kernels.available` -- no Dockerfile
-changes needed as long as the Lustre tree has the
-`.target` / `.series` / `.config` for it.
-
-### Variants
-
-A target may declare `variants:` in `targets.yaml` --
-overlay Dockerfiles (under `targets/<name>/variants/`)
-that layer on top of the base container/image, pinned
-to a specific kernel.  See rocky9's `mofed-24` for the
-canonical example: an overlay container/image pair plus
-a kernel pin and `params:` consumed by the Dockerfile.
+**Variants** are overlay Dockerfiles under
+`targets/<name>/variants/` that layer on the base
+container/image, pinned to a specific kernel.  rocky9's
+`mofed-24` is the canonical example: an overlay
+container/image pair plus a kernel pin and `params:`
+consumed by the Dockerfile.
 
 ## Development
 
@@ -1036,6 +1013,7 @@ ltvm build shell rocky9
 ### Cross-building Lustre
 
 ```bash
+ltvm build shell rocky9                                # interactive container
 ltvm build lustre rocky9 --lustre-tree ~/lustre-release
 ltvm build lustre --for-cluster co2 --lustre-tree ~/lustre-release
 ```
@@ -1044,18 +1022,8 @@ Builds inside the target's build container against the
 target's kernel build tree.  Output goes to the Lustre
 tree's `.ltvm-staging/<target>/<arch>/<kernel>[/<variant>]/`.
 
-Incremental by default: repeating the command rebuilds
-only what changed.  `make distclean` runs for `--force`,
-or when `.ltvm-last-build` -- a claim stamp naming the
-`<target> <arch> <variant> <kver>` the tree's shared
-autoconf state (config.h, config.cache, `.deps`, staged
-ldiskfs sources) currently belongs to -- names anything
-other than the build about to run.  So switching targets
-in one source tree distcleans on each switch, and staying
-on one target never does.  autogen + configure re-run on
-a narrower condition still (`_needs_reconfigure`).
-**Building for a cluster:** pass `--for-cluster <name>` to
-take target, kernel and arch from that cluster's nodes.  A
+**Building for a cluster:** `--for-cluster <name>` takes
+target, kernel and arch from that cluster's nodes.  A
 target's default kernel is often not the one a cluster was
 created with, and a plain `build lustre <target>` then
 produces modules the cluster cannot load -- a mismatch that
@@ -1069,34 +1037,23 @@ not needed for that.
 
 ## Release Manifest Schema
 
-Each published release carries `"schema": "ltvm-release/<N>"`
-in its `manifest-*.json`.  Fetch refuses any version it
-doesn't explicitly recognize -- no forward/backward-compat
-muddling.
+Each release carries `"schema": "ltvm-release/<N>"` in its
+`manifest-*.json`, and fetch refuses any version it does not
+explicitly recognize.  Source of truth is `SCHEMA_VERSION`
+in [ltvm_pkg/release_package.py](ltvm_pkg/release_package.py),
+read by both the writer and the fetch-side check so they
+cannot drift.
 
-Source of truth: `SCHEMA_VERSION` in
-[ltvm_pkg/release_package.py](ltvm_pkg/release_package.py).
-Writer and fetch-side check both read it, so they can't
-drift.
-
-**Bump when** an older ltvm couldn't consume the new
+**Bump when** an older ltvm could not consume the new
 release: asset renames, content/compression changes,
-manifest shape changes, per-variant scoping changes,
-extraction-path changes, module-injection changes.
-
-**Don't bump for** additive changes an old fetcher can
-safely ignore (optional manifest fields, new target OSes,
-new variants under existing scheme).
-
-**Procedure:** edit `SCHEMA_VERSION`, add a one-line entry
-to the bump-history comment above it, republish every
-release that should stay fetchable.  Old clients get a
-clear "upgrade ltvm" error and (interactive) an update
-prompt via [ltvm_pkg/update_check.py](ltvm_pkg/update_check.py).
+manifest shape or per-variant scoping changes,
+extraction-path or module-injection changes.  **Do not bump
+for** additive changes an old fetcher can ignore.  To bump:
+edit `SCHEMA_VERSION`, add a one-line entry to the
+bump-history comment above it, and republish every release
+that should stay fetchable.
 
 ## Code Review Guidance
-
-Watch for:
 
 - **Subprocess command building.** Never interpolate into
   shell strings (`bash -c f"...{x}"`).  Use argument lists.
@@ -1118,17 +1075,14 @@ Watch for:
 
 ## Issue Tracking
 
-Two trackers, by scope:
-
-- **`bd` (beads)** -- local, session-scoped work (bugs
-  mid-task, short-lived TODOs).  Fast, doesn't clutter
-  the public tracker.  State syncs via JSONL committed
-  to git.  Exports to `.beads/issues.jsonl`.
-- **GitHub Issues** on `lustre-tools/lustre-test-vms` --
-  longer-term work, feature requests, external-visible.
-
-Rule of thumb: under a week → bead.  Month-plus → GH
-issue.  Migrate beads to GH issues when they age out.
+Two trackers, by scope.  **`bd` (beads)** is local,
+session-scoped work -- bugs found mid-task, short-lived
+TODOs -- and syncs via JSONL committed to git
+(`.beads/issues.jsonl`).  **GitHub
+Issues** on `lustre-tools/lustre-test-vms` is for
+longer-term or external-visible work.  Rule of thumb: under
+a week is a bead, a month-plus is a GH issue; migrate beads
+that age out.
 
 ```bash
 bd ready / bd show <id> / bd update <id> --claim / bd close <id>
