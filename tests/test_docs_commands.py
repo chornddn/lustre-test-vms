@@ -231,14 +231,27 @@ class TestSuggestedAgentsIsGone:
         )
 
 
+def _md_paths(text: str) -> list[Path]:
+    """Every existing Markdown file the text names, in order of mention."""
+    out: list[Path] = []
+    for token in re.findall(r"[~\w./-]+\.md", text):
+        path = Path(token.rstrip(".,;:")).expanduser()
+        if path.is_file() and path not in out:
+            out.append(path)
+    return out
+
+
 class TestWorkspaceEntryPoint:
     """The flow must also reach a session that never opens this repo.
 
     ltvm's own CLAUDE.md loads only when the cwd is inside ltvms/.  Work
     on Lustre itself happens in a sibling checkout, so the workspace
-    CLAUDE.md one level up is the only file such a session reads.  When
-    it named ltvms without a single command, every one of those sessions
-    started by guessing.
+    CLAUDE.md one level up is the only file such a session reads.  It
+    does not carry the flow itself: it names a guide, so a session that
+    never wants a cluster never pays for the commands.  What has to hold
+    is that the pointer resolves and that the guide behind it is
+    complete -- a broken pointer leaves the reader guessing exactly as a
+    silent CLAUDE.md did.
 
     Skipped where that file does not exist -- it belongs to the
     surrounding workspace, not to this repo.
@@ -251,33 +264,68 @@ class TestWorkspaceEntryPoint:
         if not self._WORKSPACE.is_file():
             pytest.skip(f"no workspace CLAUDE.md at {self._WORKSPACE}")
 
-    def test_it_carries_the_four_verbs(self) -> None:
-        text = self._WORKSPACE.read_text()
+    @classmethod
+    def _guide(cls) -> Path | None:
+        """The ltvm guide the workspace CLAUDE.md points at, if it resolves."""
+        for path in _md_paths(cls._WORKSPACE.read_text()):
+            if "ltvm" in path.name:
+                return path
+        return None
+
+    @pytest.fixture
+    def guide(self) -> Path:
+        path = self._guide()
+        if path is None:
+            pytest.skip("no ltvm guide to check")
+        return path
+
+    def test_it_points_at_a_guide_that_resolves(self) -> None:
+        assert self._guide() is not None, (
+            f"{self._WORKSPACE} names ltvms but no ltvm guide it points "
+            f"at exists; a session working in a Lustre checkout reads "
+            f"this file and nothing else from ltvm, so a dead pointer "
+            f"leaves it guessing"
+        )
+
+    def test_the_guide_carries_the_four_verbs(self, guide: Path) -> None:
+        text = guide.read_text()
         missing = [
             v
             for v in ("build lustre", "deploy", "cluster llmount", "test")
             if f"ltvm {v}" not in text
         ]
         assert not missing, (
-            f"{self._WORKSPACE} names ltvms but never shows {missing}; a "
-            f"session working in a Lustre checkout reads this file and "
-            f"nothing else from ltvm"
+            f"{guide} is the only ltvm doc such a session reads, and it "
+            f"never shows {missing}"
         )
 
-    def test_it_says_to_use_for_cluster(self) -> None:
-        text = self._WORKSPACE.read_text()
-        assert "--for-cluster" in text, (
-            f"{self._WORKSPACE} omits --for-cluster, so the flow it "
-            f"teaches builds against the wrong kernel"
+    def test_the_guide_says_to_use_for_cluster(self, guide: Path) -> None:
+        assert "--for-cluster" in guide.read_text(), (
+            f"{guide} omits --for-cluster, so the flow it teaches builds "
+            f"against the wrong kernel"
         )
 
-    def test_its_commands_parse(self) -> None:
+    def test_the_guide_sends_the_reader_on_for_anything_else(
+        self, guide: Path
+    ) -> None:
+        """A quick guide is a subset, so it has to name its own limit."""
+        assert "ltvms/CLAUDE.md" in guide.read_text(), (
+            f"{guide} covers one flow.  Without a pointer to "
+            f"ltvms/CLAUDE.md, a reader who needs anything else has "
+            f"nowhere left to look."
+        )
+
+    def test_their_commands_parse(self) -> None:
+        docs = [self._WORKSPACE]
+        guide = self._guide()
+        if guide is not None:
+            docs.append(guide)
         bad = []
-        for n, argv in _commands(str(self._WORKSPACE)):
-            error = _parses(argv)
-            if error:
-                bad.append(f"{self._WORKSPACE}:{n}: ltvm {shlex.join(argv)}")
-        assert not bad, "workspace CLAUDE.md documents dead commands:\n  " + (
+        for doc in docs:
+            for n, argv in _commands(str(doc)):
+                if _parses(argv):
+                    bad.append(f"{doc}:{n}: ltvm {shlex.join(argv)}")
+        assert not bad, "these document dead commands:\n  " + (
             "\n  ".join(bad)
         )
 
