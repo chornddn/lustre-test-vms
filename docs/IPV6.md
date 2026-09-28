@@ -65,7 +65,7 @@ validation refuses it rather than warning.
 ## Running in IPv6 mode
 
 ```bash
-ltvm deploy co1 --lustre-tree ~/lustre-dev/lustre-release --net tcp --ip-family ipv6 --as my-task
+ltvm deploy co1 --lustre-tree ~/lustre-dev/lustre-release --net tcp --ip-family ipv6
 ```
 
 `--ip-family` defaults to `ipv4` and is recorded on the cluster the same
@@ -181,7 +181,7 @@ Two consequences for testing:
   that setup, and the suite then runs:
 
   ```bash
-  ltvm test co1 sanity-lnet --no-setup --except 50,109 --as my-task
+  ltvm test co1 sanity-lnet --no-setup --except 50,109
   ```
 
   This has been run. `sanity-lnet` starts in IPv6 mode and its subtests

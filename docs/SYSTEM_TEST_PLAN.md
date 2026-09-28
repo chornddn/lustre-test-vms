@@ -299,16 +299,16 @@ ltvm destroy co1-nonexistent           # expect exit 0
 
 ### Phase 13: IPv6
 
-Needs a cluster created after the IPv6 addressing landed, and a claim.
+Needs a cluster created after the IPv6 addressing landed.
 
 ```bash
-ltvm cluster claim co1 --as ipv6 --note "IPv6 checks"
+ltvm claim co1-mds co1-oss co1-client --tree ~/lustre-dev/lustre-release
 ltvm build lustre --for-cluster co1 --lustre-tree ~/lustre-dev/lustre-release
-ltvm deploy co1 --lustre-tree ~/lustre-dev/lustre-release --net tcp --ip-family ipv4 --as ipv6
-ltvm test co1 sanity-lnet --except 50,109,199,241 --as ipv6 --json
-ltvm deploy co1 --lustre-tree ~/lustre-dev/lustre-release --net tcp --ip-family ipv6 --as ipv6
+ltvm deploy co1 --lustre-tree ~/lustre-dev/lustre-release --net tcp --ip-family ipv4
+ltvm test co1 sanity-lnet --except 50,109,199,241 --json
+ltvm deploy co1 --lustre-tree ~/lustre-dev/lustre-release --net tcp --ip-family ipv6
 ltvm cluster status co1
-ltvm cluster release co1 --as ipv6
+ltvm release co1-mds co1-oss co1-client
 ```
 
 Then verify on a node, per [IPV6.md](IPV6.md):

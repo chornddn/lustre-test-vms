@@ -560,7 +560,7 @@ class TestClusterDeployNeverPrompts:
             patch.object(vm_cluster, "read_staging_meta", return_value={}),
             patch.object(vm_cluster, "_drop_stale_lnet", **per_node),
             patch.object(vm_cluster, "_write_lnet_conf", **per_node),
-            patch.object(vm_cluster, "_write_cluster_cfg", **per_node),
+            patch.object(vm_cluster, "_write_cluster_local_sh", **per_node),
             patch.object(
                 VMInfo, "update_deploy", side_effect=PermissionError("nope")
             ),

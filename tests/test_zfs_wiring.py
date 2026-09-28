@@ -572,7 +572,9 @@ def _tcp(cluster: MagicMock) -> object:
 
 class TestClusterLocalSh:
     def test_defaults_to_ldiskfs(self) -> None:
-        assert "FSTYPE=ldiskfs" in vc.generate_local_sh(_cluster(), _tcp(_cluster()))
+        assert "FSTYPE=ldiskfs" in vc.generate_local_sh(
+            _cluster(), _tcp(_cluster())
+        )
 
     def test_zfs_selected(self) -> None:
         out = vc.generate_local_sh(_cluster(), _tcp(_cluster()), fstype="zfs")

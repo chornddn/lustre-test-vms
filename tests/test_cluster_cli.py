@@ -1275,10 +1275,13 @@ class TestCmdClusterLlmountBehavior:
         assert exc.value.code == EXIT_ERROR
 
 
-class TestCmdClusterDeployBuildsForTheNodes:
-    """The Lustre build targets the kernel and variant the nodes boot."""
+class TestCmdClusterDeployLooksForTheNodesStaging:
+    """Deploy looks up the staging for the kernel and variant the nodes
+    boot, not the target's defaults."""
 
-    def test_kernel_and_variant_reach_the_build(self, tmp_path: Path) -> None:
+    def test_kernel_and_variant_reach_the_staging_lookup(
+        self, tmp_path: Path
+    ) -> None:
         class _TC:
             os_family = "rhel"
 
@@ -1292,35 +1295,24 @@ class TestCmdClusterDeployBuildsForTheNodes:
             kernel="/a/kernels/5.14-rhel9.3-5.14.0-362.18.1.el9_3/vmlinuz",
             ip="10.0.0.5",
         )
+        status = MagicMock(usable=False)
         with (
             patch.object(ClusterInfo, "load", return_value=cluster),
             patch.object(vm_cluster.VMInfo, "load", return_value=node),
             patch.object(vm_cluster, "_validate_lustre_source"),
             patch("ltvm_pkg.target_config.TargetConfig", return_value=_TC()),
-            patch.object(vm_cluster.subprocess, "run") as run,
+            patch.object(vm_cluster, "_kernel_build_tree", return_value=None),
             patch.object(
-                vm_cluster,
-                "_deploy_one_node",
-                side_effect=lambda name, *a, **k: (name, 0, ""),
-            ),
-            patch.object(vm_cluster, "generate_local_sh", return_value=""),
-            patch.object(
-                vm_cluster,
-                "_write_cluster_local_sh",
-                side_effect=lambda name, *a, **k: (name, 0, ""),
-            ),
+                vm_cluster, "staging_status", return_value=status
+            ) as lookup,
+            pytest.raises(SystemExit),
         ):
-            run.return_value = MagicMock(returncode=0)
             vm_cluster.cmd_cluster_deploy(
-                argparse.Namespace(
-                    name="co3", lustre_source=str(tmp_path), mount=False
-                )
+                argparse.Namespace(name="co3", lustre_tree=str(tmp_path))
             )
-        build = run.call_args_list[0].args[0]
-        assert build[build.index("--kernel") + 1] == (
-            "5.14-rhel9.3-5.14.0-362.18.1.el9_3"
-        )
-        assert build[build.index("--variant") + 1] == "mofed"
+        kw = lookup.call_args.kwargs
+        assert kw["kernel"] == "5.14-rhel9.3-5.14.0-362.18.1.el9_3"
+        assert kw["variant"] == "mofed"
 
 
 class TestCmdClusterExecBehavior:
@@ -1814,6 +1806,8 @@ class TestClusterCreateDryRun:
             "create", "coY", "mgs+mds:coY-a:1", "--dry-run", "--nope"
         )
         assert "--nope" in err
+
+
 class TestClusterNetPersistence:
     """The cluster remembers the net its nodes were configured for."""
 
@@ -1877,7 +1871,6 @@ class TestDeployRamFlagsReachTheCluster:
             **kw,
         )
         with (
-            patch("ltvm_pkg.cli.cluster.guard_cluster", return_value=None),
             patch("ltvm_pkg.vm_cluster.cmd_cluster_deploy") as m,
         ):
             _deploy_cluster("co1", args, use_json=False)

@@ -1436,7 +1436,7 @@ class TestAmbiguousKernelResolution:
             "5.14-rhel9.7-5.14.0-611.13.1.el9_7",
             "5.14-rhel9.7-5.14.0-611.55.1.el9_7",
         ):
-            (kernels / d).mkdir(parents=True)
+            _make_built_kernel(kernels, d)
         cfg._AMBIGUITY_WARNED.clear()
         with caplog.at_level("WARNING", logger="ltvm"):
             quiet = cfg.resolve_kernel_dir(kernels, "5.14-rhel9.7", warn=False)

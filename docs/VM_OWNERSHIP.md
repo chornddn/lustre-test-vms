@@ -88,9 +88,9 @@ adds `claimed=<owner>` to a claimed VM and a `claim` object (or `null`) to
 each JSON entry.
 
 These commands refuse a VM that another owner holds a live claim on, before
-asking for sudo or building anything: `deploy-lustre`, `llmount`/`llumount`,
+asking for sudo or doing anything: `deploy`, `llmount`/`llumount`,
 `start`, `stop`, `destroy`, `vm snapshot/restore/nmi/crash-collect/set`, and
-`cluster start/stop/deploy/llmount/exec/destroy` (all nodes are checked
+`cluster start/stop/llmount/exec/destroy` (all nodes are checked
 before any is touched).  `ltvm release --force <vm>` breaks the claim.
 `ssh` cannot be gated.
 
@@ -101,7 +101,7 @@ ends when its process exits (`--pid`, `LTVM_OWNER_PID`, or Claude Code's
 on release; a claim with neither lasts until released.  The next claim
 takes over a stale one, and `ltvm doctor --fix` clears them.
 
-`deploy-lustre` and `cluster deploy` claim unclaimed VMs for a session
+`deploy`, to a VM or a cluster, claims unclaimed VMs for a session
 owner (anything but `user:`), recording the Lustre tree, so an agent is
 covered without doing anything.  A person deploying by hand claims nothing.
 
@@ -109,5 +109,5 @@ Claims are files in `VM_DIR/claims/` (mode 1777), one per VM, rewritten in
 place under `flock` and never renamed or unlinked: the sticky bit would stop
 another user taking over a stale claim otherwise.  `ltvm install` and
 `ltvm doctor --fix` create the directory; without it nothing is refused and
-`deploy-lustre` warns that it could not claim.  The Linux sudoers fragment
+`deploy` warns that it could not claim.  The Linux sudoers fragment
 keeps the claim variables across `sudo ltvm`.

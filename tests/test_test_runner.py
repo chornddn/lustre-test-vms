@@ -764,6 +764,22 @@ class TestCmdTest:
         assert len(auster) == 1
         assert "sanity-lnet --only 630" in auster[0]
 
+    def test_a_node_another_session_claimed_is_refused(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import os
+
+        from ltvm_pkg import vm_claim
+
+        monkeypatch.setenv("LTVM_OWNER_ID", "other-session")
+        monkeypatch.setenv("LTVM_OWNER_PID", str(os.getpid()))
+        vm_claim.claim("co2-mds")
+        monkeypatch.setenv("LTVM_OWNER_ID", "this-session")
+
+        rc, calls = self._run(_test_args())
+        assert rc != 0
+        assert not any("auster" in c for c in calls)
+
 
 # ------------------------------------------------------------------
 # Progress: answering "how far in is it?" from any session

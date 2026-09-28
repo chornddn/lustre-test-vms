@@ -63,7 +63,7 @@ ltvm doctor [--fix]             # host infrastructure health
 
 Every VM command also answers under `vm` -- `ltvm vm create` is `ltvm
 create`, and the same for `destroy`, `start`, `stop`, `list`,
-`deploy-lustre`, `llmount`, `llumount` and `doctor`.
+`deploy`, `llmount`, `llumount` and `doctor`.
 
 `--disk-size` sizes the MDT/OST scratch disks; `--root-size` sizes the
 VM's own OS disk (default 8G). Both are fixed at create time, so a VM
@@ -261,8 +261,8 @@ that is not set up for unprivileged VMs (see Root).
 
 The cluster commands take the single-VM flags that carry over.
 `cluster create --kernel <name>` boots every node on that kernel, and
-`cluster deploy` then builds Lustre for it -- the way to run an interop
-cluster on a kernel an older branch still supports:
+`build lustre --for-cluster` then builds Lustre for it -- the way to run
+an interop cluster on a kernel an older branch still supports:
 
 ```bash
 ltvm cluster create co2 --kernel 5.14-rhel9.3 mgs+mds:co2-mds:1 oss:co2-oss:2
@@ -378,7 +378,7 @@ ltvm claim co1-single --tree ~/src/lustre-release   # or: ltvm claim (list)
 ltvm release co1-single                              # when done with it
 ```
 
-`deploy-lustre` claims an unclaimed VM for you.  `deploy-lustre`,
+`deploy` claims every unclaimed VM it deploys to.  `deploy`,
 `llmount`, `start`/`stop`/`destroy`, `vm snapshot/restore/nmi/crash-collect/set`
 and the cluster commands refuse a VM another live session has claimed, and
 `ltvm list` shows `claimed=<owner>`.  When refused, use another VM or ask

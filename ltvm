@@ -424,6 +424,7 @@ _VM_ALIASES = (
     "list",
     "claim",
     "release",
+    "deploy",
     "deploy-lustre",
     "llmount",
     "llumount",

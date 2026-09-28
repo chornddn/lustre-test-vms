@@ -33,8 +33,7 @@ ltvm llmount co1-single
 
 **Day-to-day iteration (change Lustre, redeploy, test):**
 
-The full flow -- build, deploy, mount, test, with the cluster claimed
-for the duration -- is one section in
+The full flow -- build, deploy, mount, test -- is one section in
 [CLAUDE.md](CLAUDE.md#one-way-to-build-deploy-mount-and-test). It is
 kept in one place on purpose, so start there rather than assembling
 the verbs from this page.
@@ -250,7 +249,7 @@ ltvm vm set           <name>    Change --vcpus/--mem of a stopped VM
 ```
 
 `vm` also answers for the top-level VM commands -- `create`, `destroy`,
-`start`, `stop`, `list`, `deploy-lustre`, `llmount`, `llumount` and
+`start`, `stop`, `list`, `deploy`, `llmount`, `llumount` and
 `doctor`.  They were `vm` sub-actions before they were promoted, and
 both spellings reach the same parser: `ltvm vm create co1-single` and
 `ltvm create co1-single` are one command, flags, help and tab
@@ -354,10 +353,10 @@ ltvm claim co1-single --ttl 4h      # `ltvm claim` alone lists claims
 ltvm release co1-single
 ```
 
-`deploy-lustre`, `llmount`, `start`/`stop`/`destroy`, `vm
+`deploy`, `llmount`, `start`/`stop`/`destroy`, `vm
 snapshot/restore/nmi/crash-collect/set` and the cluster commands refuse a VM
 that another live session claimed; `ltvm release --force` breaks a claim.
-An agent session's `deploy-lustre` claims an unclaimed VM.  Claims live in
+An agent session's `deploy` claims every unclaimed VM it deploys to.  Claims live in
 `/opt/qemu-vms/claims` (mode 1777), which `ltvm install` and `ltvm doctor
 --fix` create.  See [VM ownership metadata](docs/VM_OWNERSHIP.md#claims).
 

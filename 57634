@@ -1,0 +1,40 @@
+TestGroup:
+    test_group: acc-sm-co2-cli
+    testhost: co2-cli
+    submission: Thu Aug  6 20:38:58 UTC 2026
+    user_name: root
+project: LUSTRE
+
+Tests:
+-
+        name: sanity-lnet
+        description: sanity-lnet sanity-lnet
+        submission: Thu Aug  6 00:00:00 UTC 2026
+        report_version: 2
+        SubTests:
+        -
+            name: test_630
+            status: PASS
+            duration: 5
+            return_code: 0
+            error:
+        -
+            name: test_631
+            status: PASS
+            duration: 4
+            return_code: 0
+            error:
+        -
+            name: test_50
+            status: FAIL
+            duration: 12
+            return_code: 1
+            error: "Out\ of\ memory"
+        -
+            name: test_634
+            status: SKIP
+            duration: 0
+            return_code: 0
+            error: "Need\ two\ interfaces"
+        duration: 21
+        status: FAIL

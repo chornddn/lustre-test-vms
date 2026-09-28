@@ -408,7 +408,8 @@ _PROGRESS_SECTIONS = ("alive", "total", "current", "results")
 
 
 def _sockets() -> Path:
-    """Resolve the state dir at call time (see cluster_claim._sockets)."""
+    """Resolve the state dir at call time, so a test that repoints
+    vm_state.SOCKETS is honoured."""
     from ltvm_pkg import vm_state
 
     return vm_state.SOCKETS
@@ -439,7 +440,7 @@ class RunRecord:
     def save(self) -> None:
         """Persist this record; a failure costs visibility, not the run."""
         from ltvm_pkg import vm_state
-        from ltvm_pkg.priv import chown_to_real_user
+        from ltvm_pkg.priv import chown_to_invoking_user
 
         path = run_record_path(self.cluster)
         try:
@@ -447,7 +448,7 @@ class RunRecord:
             vm_state._atomic_write(
                 path, json.dumps(asdict(self), indent=2) + "\n"
             )
-            chown_to_real_user(path)
+            chown_to_invoking_user(path)
         except OSError as e:
             log.warning("cannot record the run at %s: %s", path, e)
 

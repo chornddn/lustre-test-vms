@@ -150,6 +150,17 @@ def cmd_test(args: argparse.Namespace) -> int:
         return _error(str(e), use_json)
 
     nodes = cluster.get_nodes()
+
+    # A suite formats and mounts on every node, so a node another live
+    # session claimed would lose its run under this one.
+    from ltvm_pkg import vm_claim
+
+    try:
+        for n in nodes:
+            vm_claim.check(n.name, "run a suite on")
+    except vm_claim.ClaimError as e:
+        return _error(str(e), use_json)
+
     node = _resolve_node(nodes, args.node)
     if node is None:
         return _error(
