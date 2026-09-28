@@ -117,6 +117,12 @@ def _deploy_cluster(name: str, args: argparse.Namespace, use_json: bool) -> int:
                 fstype=getattr(args, "fstype", None),
                 net=getattr(args, "net", None),
                 ip_family=getattr(args, "ip_family", None),
+                # Forwarded explicitly: _qemu_ns builds a fresh
+                # namespace, so anything left out here is silently
+                # dropped rather than refused.
+                ram_osts=getattr(args, "ram_osts", 0) or 0,
+                ram_ost_size=getattr(args, "ram_ost_size", 32),
+                ram_mdt=getattr(args, "ram_mdt", False),
             )
         )
         return EXIT_OK

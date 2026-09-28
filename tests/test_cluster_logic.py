@@ -12,7 +12,12 @@ import pytest
 
 from ltvm_pkg import vm_cluster
 from ltvm_pkg.lnet_net import resolve_net
-from ltvm_pkg.vm_state import ClusterInfo, VMNotFound, nic_ip6
+from ltvm_pkg.vm_state import (
+    ClusterInfo,
+    ClusterNode,
+    VMNotFound,
+    nic_ip6,
+)
 
 
 def _no_extras(name: str):
@@ -153,6 +158,110 @@ def _cluster(*nodes) -> ClusterInfo:
             for n in nodes
         ],
     )
+
+
+class TestGenerateLocalShRamTargets:
+    """Cluster deploy rewrites cfg/local.sh from generate_local_sh, so a
+    ram mapping appended by deploy.configure_ram_osts would be thrown
+    away.  For a cluster the mapping has to come from here."""
+
+    def _net(self, c):
+        return resolve_net(c, "tcp", load_vm=_no_extras)
+
+    def test_osts_move_to_ram_and_keep_cluster_numbering(self) -> None:
+        """OSTDEV<i> is global; the ram index restarts per node, because
+        the path is resolved on ost<i>_HOST."""
+        c = _cluster(
+            ("co-mds", ["mgs", "mds"], 1, 0, "10.0.0.10"),
+            ("co-oss1", ["oss"], 0, 2, "10.0.0.11"),
+            ("co-oss2", ["oss"], 0, 2, "10.0.0.12"),
+        )
+        text = vm_cluster.generate_local_sh(c, self._net(c), ram_osts=True)
+        assert "OSTCOUNT=4" in text
+        assert "OSTDEV1=/dev/ram0" in text
+        assert "OSTDEV2=/dev/ram1" in text
+        # Second node restarts at ram0, and the HOST says which node.
+        assert "OSTDEV3=/dev/ram0" in text
+        assert "OSTDEV4=/dev/ram1" in text
+        assert "ost1_HOST=co-oss1" in text
+        assert "ost3_HOST=co-oss2" in text
+
+    def test_mdt_stays_on_virtio_without_ram_mdt(self) -> None:
+        """--ram-osts must not silently move the MDT."""
+        c = _cluster(
+            ("co-mds", ["mgs", "mds"], 1, 0, "10.0.0.10"),
+            ("co-oss", ["oss"], 0, 2, "10.0.0.11"),
+        )
+        text = vm_cluster.generate_local_sh(c, self._net(c), ram_osts=True)
+        assert "MDSDEV1=/dev/vdb" in text
+
+    def test_ram_mdt_follows_the_ram_osts_on_a_combined_node(self) -> None:
+        """An OSS+MDS node numbers OSTs first, then MDTs, the same order
+        ensure_brd_devices is asked for."""
+        c = _cluster(
+            ("co-all", ["mgs", "mds", "oss"], 1, 2, "10.0.0.10"),
+        )
+        text = vm_cluster.generate_local_sh(
+            c, self._net(c), ram_osts=True, ram_mdt=True
+        )
+        assert "OSTDEV1=/dev/ram0" in text
+        assert "OSTDEV2=/dev/ram1" in text
+        assert "MDSDEV1=/dev/ram2" in text
+
+    def test_ram_mdt_alone_starts_at_zero(self) -> None:
+        c = _cluster(
+            ("co-mds", ["mgs", "mds"], 1, 0, "10.0.0.10"),
+            ("co-oss", ["oss"], 0, 2, "10.0.0.11"),
+        )
+        text = vm_cluster.generate_local_sh(c, self._net(c), ram_mdt=True)
+        assert "MDSDEV1=/dev/ram0" in text
+        # OSTs keep their virtio letters: the ram devices are additional,
+        # they do not shift the vd* layout.
+        assert "OSTDEV1=/dev/vdb" in text
+
+    def test_sizes_are_emitted_for_mkfs(self) -> None:
+        """brd's rd_size is a ceiling, so mkfs still needs a size and it
+        must not exceed the device."""
+        c = _cluster(
+            ("co-mds", ["mgs", "mds"], 1, 0, "10.0.0.10"),
+            ("co-oss", ["oss"], 0, 1, "10.0.0.11"),
+        )
+        text = vm_cluster.generate_local_sh(
+            c, self._net(c), ram_osts=True, ram_ost_size_gb=6
+        )
+        assert "OSTSIZE=6291456" in text
+        assert "MDSSIZE" not in text
+
+    def test_no_size_or_ram_dev_when_off(self) -> None:
+        """The default path must be byte-identical to before."""
+        c = _cluster(
+            ("co-mds", ["mgs", "mds"], 1, 0, "10.0.0.10"),
+            ("co-oss", ["oss"], 0, 2, "10.0.0.11"),
+        )
+        text = vm_cluster.generate_local_sh(c, self._net(c))
+        assert "/dev/ram" not in text
+        assert "OSTSIZE" not in text
+        assert "MDSSIZE" not in text
+
+
+class TestRamDeviceCount:
+    """_ram_device_count decides how many brd devices a node loads."""
+
+    def test_counts_osts_and_mdts_of_the_right_roles(self) -> None:
+        oss = ClusterNode(name="o", roles=["oss"], mdt_disks=0, ost_disks=3)
+        mds = ClusterNode(name="m", roles=["mds"], mdt_disks=2, ost_disks=0)
+        both = ClusterNode(
+            name="b", roles=["mds", "oss"], mdt_disks=1, ost_disks=2
+        )
+        assert vm_cluster._ram_device_count(oss, True, False) == 3
+        assert vm_cluster._ram_device_count(oss, True, True) == 3
+        assert vm_cluster._ram_device_count(mds, True, False) == 0
+        assert vm_cluster._ram_device_count(mds, False, True) == 2
+        assert vm_cluster._ram_device_count(both, True, True) == 3
+
+    def test_a_client_needs_none(self) -> None:
+        cli = ClusterNode(name="c", roles=["client"], mdt_disks=0, ost_disks=0)
+        assert vm_cluster._ram_device_count(cli, True, True) == 0
 
 
 class TestGenerateLocalSh:

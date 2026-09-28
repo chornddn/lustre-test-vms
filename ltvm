@@ -1751,7 +1751,9 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="N",
         help="Back N OSTs with brd ram devices instead of virtio disks, "
         "for benchmarks that want the OST's backing store out of the "
-        "measurement.  Overrides the OSTDEV mapping from --ost-disks.",
+        "measurement.  Overrides the OSTDEV mapping from --ost-disks.  "
+        "On a cluster the OST count comes from the topology, so any "
+        "N greater than 0 means 'put this cluster's OSTs on ram'.",
     )
     sp.add_argument(
         "--ram-ost-size",

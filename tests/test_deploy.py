@@ -1597,10 +1597,13 @@ class TestConfigureRamOsts:
         ram_mdt: bool = False,
         os_family: str = "rhel",
     ) -> str:
-        captured: dict = {}
+        # configure_ram_osts sends two scripts: ensure_brd_devices loads
+        # the module, then the cfg/local.sh block is appended.  Join them
+        # so a test can assert against either half.
+        captured: list[str] = []
 
         def fake_run_ssh(ip, script, timeout=30):
-            captured["script"] = script
+            captured.append(script)
             return _ok()
 
         with patch("ltvm_pkg.deploy.run_ssh", side_effect=fake_run_ssh):
@@ -1611,7 +1614,7 @@ class TestConfigureRamOsts:
                 ram_mdt=ram_mdt,
                 os_family=os_family,
             )
-        return captured["script"]
+        return "\n".join(captured)
 
     def test_osts_map_to_ram_devices_from_zero(self) -> None:
         script = self._capture_script(count=4)

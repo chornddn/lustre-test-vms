@@ -1851,3 +1851,51 @@ class TestClusterNetPersistence:
             (tmp_sockets / "co1.cluster").read_text()
         )
         assert ClusterInfo.load("co1").ip_family == ""
+
+
+# ─────────────────────────────────────────────────────────
+# deploy --ram-osts reaches a cluster
+# ─────────────────────────────────────────────────────────
+
+
+class TestDeployRamFlagsReachTheCluster:
+    """`_deploy_cluster` builds a fresh namespace for cmd_cluster_deploy,
+    so a field left out of that call is dropped in silence.  The ram
+    options used to be dropped exactly that way: `ltvm deploy <cluster>
+    --ram-osts 1` ran a normal deploy and left the OSTs on virtio."""
+
+    def _run(self, **kw: Any) -> Any:
+        from ltvm_pkg.cli.deploy import _deploy_cluster
+
+        args = argparse.Namespace(
+            lustre_tree="/x",
+            cfg_dir=None,
+            net=None,
+            ip_family=None,
+            as_owner=None,
+            force=False,
+            **kw,
+        )
+        with (
+            patch("ltvm_pkg.cli.cluster.guard_cluster", return_value=None),
+            patch("ltvm_pkg.vm_cluster.cmd_cluster_deploy") as m,
+        ):
+            _deploy_cluster("co1", args, use_json=False)
+        assert m.called
+        return m.call_args[0][0]
+
+    def test_ram_options_are_forwarded(self) -> None:
+        ns = self._run(ram_osts=1, ram_ost_size=6, ram_mdt=True)
+        assert ns.ram_osts == 1
+        assert ns.ram_ost_size == 6
+        assert ns.ram_mdt is True
+
+    def test_defaults_leave_ram_off(self) -> None:
+        ns = self._run(ram_osts=0, ram_ost_size=32, ram_mdt=False)
+        assert ns.ram_osts == 0
+        assert ns.ram_mdt is False
+
+    def test_a_caller_without_the_attrs_still_works(self) -> None:
+        """`cluster deploy` and older call sites do not set them."""
+        ns = self._run()
+        assert ns.ram_osts == 0

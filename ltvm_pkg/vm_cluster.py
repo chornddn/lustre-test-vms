@@ -104,6 +104,9 @@ def generate_local_sh(
     net: ClusterNet,
     os_family: str = "rhel",
     fstype: str = "ldiskfs",
+    ram_osts: bool = False,
+    ram_ost_size_gb: int = 32,
+    ram_mdt: bool = False,
 ) -> str:
     """Generate the cluster block for cfg/local.sh.
 
@@ -122,6 +125,18 @@ def generate_local_sh(
     ZFS: the MDSDEV*/OSTDEV* written above are the *vdevs* ZFS builds
     its pools on (test-framework.sh's mdsvdevname/ostvdevname), and the
     dataset names default to ``$FSNAME-mdt<n>/mdt<n>``.
+
+    *ram_osts* / *ram_mdt* point the targets at brd ram devices instead
+    of virtio disks, for benchmarks that want the backing store out of
+    the measurement.  The single-VM path does this by appending to
+    cfg/local.sh (deploy.configure_ram_osts), but a cluster deploy
+    rewrites the whole file from here afterwards, so for a cluster the
+    mapping has to be generated here or it would be thrown away.
+
+    Ram device numbering restarts at 0 on each node, exactly like the
+    virtio letters: OSTDEV<i> is a path on ost<i>_HOST, so two OSTs on
+    different nodes are both /dev/ram0.  The virtio layout is untouched,
+    so the vd* letters of any target left on a disk stay correct.
     """
     if fstype not in ("ldiskfs", "zfs"):
         raise ValueError(f"unsupported fstype: {fstype!r}")
@@ -171,8 +186,18 @@ def generate_local_sh(
             disk_offset = 1
 
             for d in range(mds_node.mdt_disks):
-                letter = chr(ord("a") + disk_offset + d)
-                lines.append(f"MDSDEV{mdt_idx}=/dev/vd{letter}")
+                if ram_mdt:
+                    # The MDT ram devices follow this node's ram OSTs.
+                    base = (
+                        mds_node.ost_disks
+                        if ram_osts and mds_node.is_oss
+                        else 0
+                    )
+                    dev = f"/dev/ram{base + d}"
+                else:
+                    letter = chr(ord("a") + disk_offset + d)
+                    dev = f"/dev/vd{letter}"
+                lines.append(f"MDSDEV{mdt_idx}={dev}")
                 # all_mdts_nodes() reads mds<N>_HOST per MDT and has
                 # no fallback to mds_HOST, so every MDT needs one even
                 # when a single node holds them all.  Without it
@@ -200,8 +225,12 @@ def generate_local_sh(
                 disk_offset = 1 + oss_node.mdt_disks
 
             for d in range(oss_node.ost_disks):
-                letter = chr(ord("a") + disk_offset + d)
-                lines.append(f"OSTDEV{ost_idx}=/dev/vd{letter}")
+                if ram_osts:
+                    dev = f"/dev/ram{d}"
+                else:
+                    letter = chr(ord("a") + disk_offset + d)
+                    dev = f"/dev/vd{letter}"
+                lines.append(f"OSTDEV{ost_idx}={dev}")
                 # Same as mds<N>_HOST above: all_osts_nodes() reads
                 # ost<N>_HOST per OST with no fallback to ost_HOST.
                 lines.append(f"ost{ost_idx}_HOST={oss_node.name}")
@@ -233,6 +262,16 @@ def generate_local_sh(
         if rclients:
             lines.append('RCLIENTS="{}"'.format(" ".join(rclients)))
     lines.append("")
+
+    if ram_osts or ram_mdt:
+        # brd allocates on write, so rd_size is a ceiling.  mkfs still
+        # needs a size, and it must not exceed the device.
+        size_kb = ram_ost_size_gb * 1024 * 1024
+        if ram_osts:
+            lines.append(f"OSTSIZE={size_kb}")
+        if ram_mdt:
+            lines.append(f"MDSSIZE={size_kb}")
+        lines.append("")
 
     lines.append(f"FSTYPE={fstype}")
     lines.append("OSTSEQWIDTH=${OSTSEQWIDTH:-0x20000}")
@@ -767,6 +806,58 @@ def _write_cluster_local_sh(
     return node_name, r.returncode, combined.rstrip("\n")
 
 
+def _ram_device_count(node: ClusterNode, ram_osts: bool, ram_mdt: bool) -> int:
+    """How many brd devices *node* needs, in the OSTs-then-MDTs order
+    that generate_local_sh() assigns them."""
+    count = node.ost_disks if ram_osts and node.is_oss else 0
+    count += node.mdt_disks if ram_mdt and node.is_mds else 0
+    return count
+
+
+def _setup_ram_devices(
+    nodes: list[ClusterNode],
+    ram_osts: bool,
+    ram_ost_size_gb: int,
+    ram_mdt: bool,
+) -> None:
+    """Load brd on every node that holds a ram target.
+
+    Runs after the deploy, so the node has the modules it was given, and
+    before local.sh is written, so a failure stops the deploy rather
+    than leaving a config that names devices which do not exist.
+    """
+    from ltvm_pkg.deploy import ensure_brd_devices
+
+    targets = [(n, _ram_device_count(n, ram_osts, ram_mdt)) for n in nodes]
+    targets = [(n, c) for n, c in targets if c > 0]
+    if not targets:
+        die(
+            "--ram-osts/--ram-mdt matched no target: the cluster has no "
+            "OSS or MDS node holding a disk"
+        )
+
+    total = sum(c for _, c in targets)
+    print(
+        f"\n--- RAM targets: {total} brd device(s) of {ram_ost_size_gb} GiB "
+        f"over {len(targets)} node(s)"
+    )
+    print(
+        "    brd allocates on write, so the size is a ceiling, not a "
+        "reservation."
+    )
+
+    for node, count in targets:
+        try:
+            ip = VMInfo.load(node.name).ip
+        except VMNotFound as e:
+            die(f"cluster node missing: {e}")
+        try:
+            ensure_brd_devices(ip, count, ram_ost_size_gb)
+        except RuntimeError as e:
+            die(f"{node.name}: {e}")
+        print(f"    {node.name}: /dev/ram0..{count - 1}")
+
+
 def _write_cluster_cfg(
     node_name: str,
     node_ip: str,
@@ -1112,6 +1203,13 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
             Path(cfg_dir_arg).expanduser().resolve()
         )
 
+    # A cluster's OST count comes from its topology, so --ram-osts is a
+    # switch here rather than a count.  Say so in the output: silently
+    # reinterpreting a number the user typed is worse than ignoring it.
+    ram_osts = bool(getattr(args, "ram_osts", 0))
+    ram_ost_size_gb = int(getattr(args, "ram_ost_size", 32) or 32)
+    ram_mdt = bool(getattr(args, "ram_mdt", False))
+
     # Resolve the net before anything is deployed: an unrunnable net is
     # an argument error, not a half-configured cluster.
     net = _resolve_deploy_net(
@@ -1226,9 +1324,18 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
             file=sys.stderr,
         )
 
+    if ram_osts or ram_mdt:
+        _setup_ram_devices(nodes, ram_osts, ram_ost_size_gb, ram_mdt)
+
     # After each node's own disk block, so the cluster topology wins.
     local_sh = generate_local_sh(
-        cluster, net, os_family=os_family, fstype=fstype
+        cluster,
+        net,
+        os_family=os_family,
+        fstype=fstype,
+        ram_osts=ram_osts,
+        ram_ost_size_gb=ram_ost_size_gb,
+        ram_mdt=ram_mdt,
     )
     print(f"\n--- Distributing cluster config (net {net.net_name})...")
     print(local_sh)
