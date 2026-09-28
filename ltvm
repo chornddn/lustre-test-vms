@@ -2112,6 +2112,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="Lustre source tree to build and deploy (default: cwd)",
     )
     _cdpl_build.completer = complete_directories  # type: ignore[attr-defined]
+    _cdpl_cfg = cdpl.add_argument(
+        "--cfg-dir",
+        dest="cfg_dir",
+        default=None,
+        metavar="DIR",
+        help="Extra test-config profiles (*.sh) to copy into every "
+        "node's cfg/ alongside the generated local.sh",
+    )
+    _cdpl_cfg.completer = complete_directories  # type: ignore[attr-defined]
     cdpl.add_argument(
         "--mount", action="store_true", help="Mount Lustre after deploying"
     )

@@ -656,6 +656,31 @@ sudo ltvm cluster destroy co2
 `cluster exec <role>` fans out across every node holding the role and
 exits non-zero if any node did; `cluster ssh <role>` opens a session on
 the first, since it execs a single interactive ssh.
+#### Distributing extra test-config profiles
+
+`cluster deploy` always adds the generated cluster block
+to `<lustre libdir>/tests/cfg/local.sh` on every node.
+Pass `--cfg-dir DIR` to distribute additional auster
+profiles alongside it:
+
+```bash
+ltvm cluster deploy co2 --cfg-dir ~/lustre-dev/test-scripts/clusters/co2/cfg
+cd /usr/lib64/lustre/tests && NAME=co2sn ./auster -r -v conf-sanity --only 57c
+```
+
+Every `*.sh` in `DIR` goes to `tests/cfg/<basename>` on
+every node, after `local.sh`, so a profile that sources
+`local.sh` finds it in place.  A failed write is fatal --
+a partly-distributed config is the failure mode this area
+already suffered from.  A profile named `local.sh` is
+rejected: it would clobber the tree's `local.sh` and the
+cluster block in it.  Profiles must source it, not
+replace it.
+
+**Profile content is not ltvm's.** ltvm distributes files;
+`test-scripts` decides what is in them.  Profiles live in
+`~/lustre-dev/test-scripts/clusters/<cluster>/cfg/` -- see
+that repo's `clusters/README.md`.
 
 Each action is a real subparser, so `ltvm cluster <action> --help`
 works and every action's flags validate and tab-complete.  Two

@@ -738,6 +738,74 @@ def _write_cluster_local_sh(
     return node_name, r.returncode, combined.rstrip("\n")
 
 
+def _write_cluster_cfg(
+    node_name: str,
+    node_ip: str,
+    cfg_name: str,
+    content: str,
+    ssh_opts: list[str],
+    os_family: str = "rhel",
+) -> tuple[str, int, str]:
+    """Write an auster cfg file to the standard test location on a node.
+
+    *cfg_name* is the profile name without the ``.sh`` suffix; the file
+    lands at ``<lustre libdir>/tests/cfg/<cfg_name>.sh``.
+
+    Returns (node_name, returncode, output).
+    """
+    lustre_dir = lustre_libdir(os_family)
+    cfg_path = f"{lustre_dir}/tests/cfg/{cfg_name}.sh"
+    try:
+        r = subprocess.run(
+            sshpass_ssh_argv(
+                node_ip,
+                f"mkdir -p {lustre_dir}/tests/cfg && cat > {cfg_path}",
+            ),
+            input=content,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except subprocess.TimeoutExpired as e:
+        # See _write_cluster_local_sh.
+        return node_name, 1, f"timed out after {e.timeout}s writing {cfg_path}"
+    combined = r.stdout
+    if r.stderr:
+        combined = combined + r.stderr if combined else r.stderr
+    return node_name, r.returncode, combined.rstrip("\n")
+
+
+def _load_cfg_profiles(cfg_dir: Path) -> list[tuple[str, str]]:
+    """Read every ``*.sh`` auster profile out of *cfg_dir*.
+
+    Returns [(cfg_name_without_suffix, content), ...] sorted by name.
+    Dies on anything an operator would want to know about before a
+    deploy starts: a bad path, an empty directory, or a profile named
+    ``local.sh`` (which would clobber the tree's local.sh and the
+    cluster block ltvm puts in it).
+    """
+    if not cfg_dir.is_dir():
+        die(f"--cfg-dir: '{cfg_dir}' is not a directory")
+
+    profiles = []
+    for path in sorted(cfg_dir.glob("*.sh")):
+        if path.name == "local.sh":
+            die(
+                f"--cfg-dir: '{path}' would clobber the generated cluster "
+                "block in local.sh. Source it from your "
+                "profile instead of replacing it."
+            )
+        try:
+            content = path.read_text()
+        except OSError as e:
+            die(f"--cfg-dir: cannot read '{path}': {e}")
+        profiles.append((path.stem, content))
+
+    if not profiles:
+        die(f"--cfg-dir: no *.sh config profiles in '{cfg_dir}'")
+    return profiles
+
+
 def _parallel_cluster_op(
     nodes: list,
     submit: Any,
@@ -875,6 +943,15 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
             vm_claim.auto_claim(n.name, build)
     except vm_claim.ClaimHeld as e:
         die(str(e))
+
+    # Read the profiles up front: a typo in --cfg-dir should not cost a
+    # full Lustre build before it is reported.
+    cfg_dir_arg = getattr(args, "cfg_dir", None)
+    cfg_profiles: list[tuple[str, str]] = []
+    if cfg_dir_arg:
+        cfg_profiles = _load_cfg_profiles(
+            Path(cfg_dir_arg).expanduser().resolve()
+        )
 
     # --server-only only affects the llmount.sh invocation, which only
     # runs when --mount is set.  Reject the combination instead of
@@ -1037,6 +1114,31 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
 
     if failed_sh:
         die(f"local.sh distribution failed for: {', '.join(failed_sh)}")
+
+    # Profiles go out after local.sh, so a profile that sources it finds
+    # it already in place.
+    if cfg_profiles:
+        names = ", ".join(f"{n}.sh" for n, _ in cfg_profiles)
+        print(f"\n--- Distributing config profiles from {cfg_dir_arg}: {names}")
+        for cfg_name, content in cfg_profiles:
+            failed_cfg = _parallel_cluster_op(
+                nodes,
+                lambda node, _n=cfg_name, _c=content: _write_cluster_cfg(
+                    node.name,
+                    node_ips[node.name],
+                    _n,
+                    _c,
+                    ssh_opts,
+                    os_family,
+                ),
+                success_verb=f"{cfg_name}.sh written",
+                failure_verb=f"{cfg_name}.sh FAILED",
+            )
+            if failed_cfg:
+                die(
+                    f"{cfg_name}.sh distribution failed for: "
+                    f"{', '.join(failed_cfg)}"
+                )
 
     if args.mount:
         print("=== Mounting Lustre filesystem ===")
