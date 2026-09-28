@@ -479,8 +479,7 @@ class TestPreflight:
             self._probe(
                 "a",
                 lnet_conf='options lnet networks="o2ib0(eth1)"',
-                cfg="FSNAME=lustre\nNETTYPE=o2ib\n"
-                    "MGSNID=192.168.105.10@tcp\n",
+                cfg="FSNAME=lustre\nNETTYPE=o2ib\nMGSNID=192.168.105.10@tcp\n",
             )
         ]
         errs = tr.evaluate_preflight(probes, cluster="co2")
@@ -495,8 +494,7 @@ class TestPreflight:
             self._probe(
                 "a",
                 lnet_conf='options lnet networks="o2ib0(eth1)"',
-                cfg="FSNAME=lustre\nNETTYPE=o2ib\n"
-                    "MGSNID=172.16.100.203@o2ib\n",
+                cfg="FSNAME=lustre\nNETTYPE=o2ib\nMGSNID=172.16.100.203@o2ib\n",
             )
         ]
         assert tr.evaluate_preflight(probes, cluster="co2") == []
@@ -508,7 +506,7 @@ class TestPreflight:
                 "a",
                 lnet_conf='options lnet networks="o2ib0(eth1)"',
                 cfg="FSNAME=lustre\nNETTYPE=o2ib\n"
-                    "MGSNID=172.16.100.203@o2ib0\n",
+                "MGSNID=172.16.100.203@o2ib0\n",
             )
         ]
         assert tr.evaluate_preflight(probes, cluster="co2") == []
@@ -519,8 +517,8 @@ class TestPreflight:
                 "a",
                 lnet_conf='options lnet networks="tcp0(eth1)"',
                 cfg="FSNAME=lustre\nNETTYPE=tcp\n"
-                    "FORCE_LARGE_NID=true\n"
-                    "MGSNID=fd17:2016:1000:f100:f172:f016:f100:f203@tcp\n",
+                "FORCE_LARGE_NID=true\n"
+                "MGSNID=fd17:2016:1000:f100:f172:f016:f100:f203@tcp\n",
             )
         ]
         assert tr.evaluate_preflight(probes, cluster="co2") == []
@@ -531,8 +529,8 @@ class TestPreflight:
                 "a",
                 lnet_conf='options lnet networks="tcp0(eth1)"',
                 cfg="FSNAME=lustre\nNETTYPE=tcp\n"
-                    "FORCE_LARGE_NID=false\n"
-                    "MGSNID=172.16.100.203@tcp\n",
+                "FORCE_LARGE_NID=false\n"
+                "MGSNID=172.16.100.203@tcp\n",
             )
         ]
         assert tr.evaluate_preflight(probes, cluster="co2") == []
@@ -545,8 +543,8 @@ class TestPreflight:
                 "a",
                 lnet_conf='options lnet networks="tcp0(eth1)"',
                 cfg="FSNAME=lustre\nNETTYPE=tcp\n"
-                    "FORCE_LARGE_NID=true\n"
-                    "MGSNID=172.16.100.203@tcp\n",
+                "FORCE_LARGE_NID=true\n"
+                "MGSNID=172.16.100.203@tcp\n",
             )
         ]
         errs = tr.evaluate_preflight(probes, cluster="co2")
@@ -561,8 +559,8 @@ class TestPreflight:
                 "a",
                 lnet_conf='options lnet networks="tcp0(eth1)"',
                 cfg="FSNAME=lustre\nNETTYPE=tcp\n"
-                    "FORCE_LARGE_NID=false\n"
-                    "MGSNID=fd17:2016:1000:f100:f172:f016:f100:f203@tcp\n",
+                "FORCE_LARGE_NID=false\n"
+                "MGSNID=fd17:2016:1000:f100:f172:f016:f100:f203@tcp\n",
             )
         ]
         errs = tr.evaluate_preflight(probes, cluster="co2")
@@ -576,8 +574,7 @@ class TestPreflight:
             self._probe(
                 "a",
                 lnet_conf='options lnet networks="tcp0(eth1)"',
-                cfg="FSNAME=lustre\nNETTYPE=tcp\n"
-                    "MGSNID=172.16.100.203@tcp\n",
+                cfg="FSNAME=lustre\nNETTYPE=tcp\nMGSNID=172.16.100.203@tcp\n",
             )
         ]
         assert tr.evaluate_preflight(probes, cluster="co2") == []
@@ -590,8 +587,8 @@ class TestPreflight:
                 "a",
                 lnet_conf='options lnet networks="tcp0(eth1)"',
                 cfg="FSNAME=lustre\nNETTYPE=tcp\n"
-                    f"FORCE_LARGE_NID={large}\n"
-                    "MGSNID=co1-mds@tcp\n",
+                f"FORCE_LARGE_NID={large}\n"
+                "MGSNID=co1-mds@tcp\n",
             )
         ]
         assert tr.evaluate_preflight(probes, cluster="co2") == []
@@ -812,7 +809,12 @@ def _record(**kw: Any) -> Any:
 
 
 def _sections(**kw: str) -> dict[str, str]:
-    base = {"alive": "yes", "total": "172", "current": "", "results": PARTIAL_YML}
+    base = {
+        "alive": "yes",
+        "total": "172",
+        "current": "",
+        "results": PARTIAL_YML,
+    }
     base.update(kw)
     return base
 
@@ -827,7 +829,11 @@ class TestRunRecord:
             _record(only="630").save()
             got = tr.RunRecord.load("co2")
         assert got is not None
-        assert (got.suite, got.node, got.only) == ("sanity-lnet", "co2-cli", "630")
+        assert (got.suite, got.node, got.only) == (
+            "sanity-lnet",
+            "co2-cli",
+            "630",
+        )
 
     def test_absent_record_is_none_not_an_error(self, tmp_path: Path) -> None:
         from ltvm_pkg import test_runner as tr
@@ -835,14 +841,18 @@ class TestRunRecord:
         with patch("ltvm_pkg.vm_state.SOCKETS", tmp_path):
             assert tr.RunRecord.load("nosuch") is None
 
-    def test_corrupt_record_is_none_not_a_traceback(self, tmp_path: Path) -> None:
+    def test_corrupt_record_is_none_not_a_traceback(
+        self, tmp_path: Path
+    ) -> None:
         from ltvm_pkg import test_runner as tr
 
         with patch("ltvm_pkg.vm_state.SOCKETS", tmp_path):
             tr.run_record_path("co2").write_text("{not json")
             assert tr.RunRecord.load("co2") is None
 
-    def test_a_record_from_a_newer_ltvm_still_loads(self, tmp_path: Path) -> None:
+    def test_a_record_from_a_newer_ltvm_still_loads(
+        self, tmp_path: Path
+    ) -> None:
         """An unknown key must not make an existing run unreadable."""
         from ltvm_pkg import test_runner as tr
 
@@ -874,14 +884,18 @@ class TestProgressScript:
         from ltvm_pkg import test_runner as tr
 
         script = tr.progress_script(_record(log_dir="/tmp/ltvm-test/mine"))
-        assert "/tmp/ltvm\\-test/mine" in script or "/tmp/ltvm-test/mine" in script
+        assert (
+            "/tmp/ltvm\\-test/mine" in script or "/tmp/ltvm-test/mine" in script
+        )
 
     def test_results_section_is_last(self) -> None:
         """A newline inside results.yml must not open a later section."""
         from ltvm_pkg import test_runner as tr
 
         script = tr.progress_script(_record())
-        markers = [ln for ln in script.splitlines() if ln.startswith("echo '@@")]
+        markers = [
+            ln for ln in script.splitlines() if ln.startswith("echo '@@")
+        ]
         assert markers[-1].endswith("results'")
 
     def test_sections_split_and_keep_result_newlines(self) -> None:
@@ -936,7 +950,9 @@ class TestBuildProgress:
         assert p["counts"]["fail"] == 0
         assert p["benign"][0]["why"] == "needs two interfaces"
 
-    def test_a_half_written_results_file_reports_zero_not_an_error(self) -> None:
+    def test_a_half_written_results_file_reports_zero_not_an_error(
+        self,
+    ) -> None:
         from ltvm_pkg import test_runner as tr
 
         p = tr.build_progress(_record(), _sections(results="Tests:\n  - {oops"))

@@ -140,6 +140,22 @@ class TestSha256:
         assert _sha256(p) == expected
 
 
+def _built(kernels, full, vmlinux=False):
+    """Create a kernel dir that counts as a finished build.
+
+    resolve_kernel_dir skips a directory with no meta.json: the build
+    creates the directory up front as the container's /output, so one
+    on its own is as likely to be a build that died as a build that
+    finished.
+    """
+    d = kernels / full
+    d.mkdir(parents=True, exist_ok=True)
+    (d / "meta.json").write_text(json.dumps({"kernel_version": full}))
+    if vmlinux:
+        (d / "vmlinux").write_bytes(b"")
+    return d
+
+
 class TestResolveKernel:
     def test_explicit(self, tmp_path: Path) -> None:
         name, path = _resolve_kernel(tmp_path, "my-kernel")
@@ -166,8 +182,7 @@ class TestResolveKernel:
         older = "4.18-rhel8.10-4.18.0-553.89.1.el8_10"
         newer = "4.18-rhel8.10-4.18.0-553.155.1.el8_10"
         for d in (older, newer):
-            (kernels / d).mkdir(parents=True)
-            (kernels / d / "vmlinux").write_bytes(b"")
+            _built(kernels, d, vmlinux=True)
         assert sorted([older, newer])[-1] == older  # the trap
         assert _resolve_kernel(tmp_path, None)[0] == newer
 
@@ -178,7 +193,7 @@ class TestResolveKernel:
         older = "4.18-rhel8.10-4.18.0-553.89.1.el8_10"
         newer = "4.18-rhel8.10-4.18.0-553.155.1.el8_10"
         for d in (older, newer):
-            (kernels / d).mkdir(parents=True)
+            _built(kernels, d)
         name, _ = _resolve_kernel(tmp_path, "4.18-rhel8.10")
         assert name == newer
 
@@ -197,8 +212,7 @@ class TestResolveKernel:
         default = "6.12-rhel10.0-6.12.0-55.41.1.el10_0"
         newer = "6.12-rhel10.1-6.12.0-124.56.1.el10_1"
         for d in (default, newer):
-            (kernels / d).mkdir(parents=True)
-            (kernels / d / "vmlinux").write_bytes(b"")
+            _built(kernels, d, vmlinux=True)
         name, _ = _resolve_kernel(tmp_path, None, "6.12-rhel10.0")
         assert name == default
 
@@ -209,7 +223,7 @@ class TestResolveKernel:
             "6.12-rhel10.0-6.12.0-55.41.1.el10_0",
             "6.12-rhel10.1-6.12.0-124.56.1.el10_1",
         ):
-            (kernels / d).mkdir(parents=True)
+            _built(kernels, d)
         name, _ = _resolve_kernel(tmp_path, "6.12-rhel10.1", "6.12-rhel10.0")
         assert name == "6.12-rhel10.1-6.12.0-124.56.1.el10_1"
 

@@ -192,9 +192,7 @@ class TestDocumentedCommandsParse:
         _all_commands(),
         ids=lambda v: v if isinstance(v, str) else None,
     )
-    def test_command_parses(
-        self, doc: str, line: int, argv: list[str]
-    ) -> None:
+    def test_command_parses(self, doc: str, line: int, argv: list[str]) -> None:
         error = _parses(argv)
         assert error is None, (
             f"{doc}:{line} documents a command the CLI rejects:\n"
@@ -325,9 +323,7 @@ class TestWorkspaceEntryPoint:
             for n, argv in _commands(str(doc)):
                 if _parses(argv):
                     bad.append(f"{doc}:{n}: ltvm {shlex.join(argv)}")
-        assert not bad, "these document dead commands:\n  " + (
-            "\n  ".join(bad)
-        )
+        assert not bad, "these document dead commands:\n  " + ("\n  ".join(bad))
 
 
 class TestCanonicalFlowIsFindable:

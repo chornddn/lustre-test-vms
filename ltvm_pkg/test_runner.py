@@ -339,7 +339,9 @@ def build_report(
         # halted suite stopped without re-reading results.yml.
         "last": str(subtests[-1].get("name") or ""),
         **buckets,
-        "counts": {k: len(buckets[k]) for k in ("pass", "fail", "skip", "benign")},
+        "counts": {
+            k: len(buckets[k]) for k in ("pass", "fail", "skip", "benign")
+        },
     }
 
 
@@ -442,7 +444,9 @@ class RunRecord:
         path = run_record_path(self.cluster)
         try:
             path.parent.mkdir(parents=True, exist_ok=True)
-            vm_state._atomic_write(path, json.dumps(asdict(self), indent=2) + "\n")
+            vm_state._atomic_write(
+                path, json.dumps(asdict(self), indent=2) + "\n"
+            )
             chown_to_real_user(path)
         except OSError as e:
             log.warning("cannot record the run at %s: %s", path, e)
@@ -613,7 +617,9 @@ def build_progress(
         "last": last,
         "fail": buckets["fail"],
         "benign": buckets["benign"],
-        "coverage_note": coverage_note(recorded, total, last, state != "running"),
+        "coverage_note": coverage_note(
+            recorded, total, last, state != "running"
+        ),
     }
 
 

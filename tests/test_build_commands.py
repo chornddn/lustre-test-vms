@@ -1125,7 +1125,8 @@ class TestCmdStatusFormat:
             patch.object(cfg, "TARGETS_DIR", tmp_targets / "targets"),
             patch.object(cfg, "ARTIFACTS_DIR", tmp_targets / "artifacts"),
             patch.object(
-                cfg, "TARGETS_YAML",
+                cfg,
+                "TARGETS_YAML",
                 tmp_targets / "targets" / "targets.yaml",
             ),
         ):
@@ -1133,9 +1134,7 @@ class TestCmdStatusFormat:
 
         with (
             patch("ltvm_pkg.cli.list_targets", return_value=["rocky9"]),
-            patch(
-                "ltvm_pkg.cli.TargetConfig", return_value=tc
-            ) as mock_tc,
+            patch("ltvm_pkg.cli.TargetConfig", return_value=tc) as mock_tc,
             patch(
                 "ltvm_pkg.cli.kernel_status",
                 return_value={"built": False, "stale": True},
@@ -1143,8 +1142,10 @@ class TestCmdStatusFormat:
             patch(
                 "ltvm_pkg.cli.image_status",
                 return_value={
-                    "built": False, "stale": True,
-                    "kernel": "5.14-rhel9.7", "variant": "base",
+                    "built": False,
+                    "stale": True,
+                    "kernel": "5.14-rhel9.7",
+                    "variant": "base",
                 },
             ),
         ):

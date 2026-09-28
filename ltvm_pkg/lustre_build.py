@@ -321,12 +321,26 @@ def _tree_newer_than(src: Path, stamp: Path) -> bool:
     An unreadable tree counts as newer -- stale is the safe answer.
     """
     prune_names = [
-        "*.o", "*.ko", "*.a", "*.so", "*.so.*", "*.cmd", "*.d",
-        "*.tmp_*", "conftest*", "config.log", "config.status", ".ltvm-*",
+        "*.o",
+        "*.ko",
+        "*.a",
+        "*.so",
+        "*.so.*",
+        "*.cmd",
+        "*.d",
+        "*.tmp_*",
+        "conftest*",
+        "config.log",
+        "config.status",
+        ".ltvm-*",
     ]
     argv = ["find", str(src)]
-    for path_glob in ("*/.git", "*/autom4te.cache", "*/_lpb",
-                      "*/kconftest.dir"):
+    for path_glob in (
+        "*/.git",
+        "*/autom4te.cache",
+        "*/_lpb",
+        "*/kconftest.dir",
+    ):
         argv += ["-path", path_glob, "-prune", "-o"]
     argv.append("(")
     for i, name in enumerate(prune_names):

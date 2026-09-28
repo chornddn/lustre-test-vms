@@ -647,9 +647,7 @@ class TestSameKverDifferentConfig:
             "CONFIG_ARM64_4K_PAGES=y\n",
         )
         assert (
-            _needs_reconfigure(
-                lustre, kernel, force=False, target=self.TARGET
-            )
+            _needs_reconfigure(lustre, kernel, force=False, target=self.TARGET)
             is True
         )
 
@@ -676,9 +674,7 @@ class TestSameKverDifferentConfig:
             is False
         )
         assert (
-            _needs_reconfigure(
-                lustre, kernel, force=False, target=self.TARGET
-            )
+            _needs_reconfigure(lustre, kernel, force=False, target=self.TARGET)
             is False
         )
 
@@ -957,9 +953,7 @@ class TestStagingStatus:
         assert not st.usable
         assert "build stamp" in st.reason
 
-    def test_source_newer_than_the_stamp_is_stale(
-        self, tmp_path: Path
-    ) -> None:
+    def test_source_newer_than_the_stamp_is_stale(self, tmp_path: Path) -> None:
         import os
         import time
 
@@ -1034,9 +1028,7 @@ class TestStaleLdiskfsPatch:
         os.utime(src, (now, now))
         return tree, patch_file, src
 
-    def test_sources_newer_than_patches_proceed(
-        self, tmp_path: Path
-    ) -> None:
+    def test_sources_newer_than_patches_proceed(self, tmp_path: Path) -> None:
         from ltvm_pkg.lustre_build import stale_ldiskfs_patch
 
         tree, _, _ = self._tree_with_ldiskfs(tmp_path)

@@ -78,9 +78,7 @@ class TestResolveTcp:
     """tcp runs on the extra NICs, and on mgmt only without them."""
 
     def test_uses_the_extra_nic(self) -> None:
-        net = resolve_net(
-            _softroce_cluster(), "tcp", load_vm=_softroce_vms()
-        )
+        net = resolve_net(_softroce_cluster(), "tcp", load_vm=_softroce_vms())
         assert net.net_type == "tcp"
         assert net.net_name == "tcp0"
         assert net.nid("co1-mds") == "172.16.100.203@tcp"
@@ -131,9 +129,7 @@ class TestResolveO2ib:
     """o2ib runs on the extra NICs, addressed from each node's .info."""
 
     def test_softroce_node_uses_the_extra_nic(self) -> None:
-        net = resolve_net(
-            _softroce_cluster(), "o2ib", load_vm=_softroce_vms()
-        )
+        net = resolve_net(_softroce_cluster(), "o2ib", load_vm=_softroce_vms())
         assert net.net_name == "o2ib0"
         assert net.nid("co1-mds") == "172.16.100.203@o2ib"
         assert net.nid("co1-oss") == "172.16.100.204@o2ib"
@@ -205,9 +201,7 @@ class TestResolveArguments:
             resolve_net(_cluster(), "tcp")
 
     def test_unknown_node_is_not_silently_answered(self) -> None:
-        net = resolve_net(
-            _softroce_cluster(), "tcp", load_vm=_softroce_vms()
-        )
+        net = resolve_net(_softroce_cluster(), "tcp", load_vm=_softroce_vms())
         with pytest.raises(KeyError):
             net.nid("co1-cli")
 
@@ -217,9 +211,7 @@ class TestAddressFamily:
     NID.  Both are on the node either way."""
 
     def test_ipv4_is_the_default(self) -> None:
-        net = resolve_net(
-            _softroce_cluster(), "tcp", load_vm=_softroce_vms()
-        )
+        net = resolve_net(_softroce_cluster(), "tcp", load_vm=_softroce_vms())
         assert net.ip_family == "ipv4"
         assert not net.force_large_nid
         assert net.nid("co1-mds") == "172.16.100.203@tcp"
@@ -243,9 +235,7 @@ class TestAddressFamily:
     def test_the_lnet_conf_is_the_same_for_both_families(self) -> None:
         """The modprobe config names interfaces, not addresses: LNet
         picks the family at configure time."""
-        v4 = resolve_net(
-            _softroce_cluster(), "tcp", load_vm=_softroce_vms()
-        )
+        v4 = resolve_net(_softroce_cluster(), "tcp", load_vm=_softroce_vms())
         v6 = resolve_net(
             _softroce_cluster(),
             "tcp",
@@ -334,9 +324,7 @@ class TestHasPassthrough:
         assert has_passthrough(_softroce_cluster(), load_vm=load)
 
     def test_softroce_cluster_has_none(self) -> None:
-        assert not has_passthrough(
-            _softroce_cluster(), load_vm=_softroce_vms()
-        )
+        assert not has_passthrough(_softroce_cluster(), load_vm=_softroce_vms())
 
     def test_unloadable_node_reports_none(self) -> None:
         def load(name: str) -> _FakeVM:

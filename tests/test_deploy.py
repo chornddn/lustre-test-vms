@@ -802,7 +802,8 @@ class TestCmdDeployDerivesBuildInputs:
 
         assert rc == 0
         assert tc_mock.call_args.kwargs.get("variant") == "mofed-24"
-        assert captured["staging"].name == "mofed-24"
+        # A variant stages into a sibling of the base kernel dir.
+        assert captured["staging"].name == "5.14-rhel9.7__mofed-24"
 
     def test_arch_flag_is_refused(
         self, tmp_sockets: Path, tmp_path: Path

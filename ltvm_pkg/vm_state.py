@@ -168,7 +168,9 @@ def qemu_cpu_for_arch(arch: str, accel: str) -> str:
     return "Nehalem"
 
 
-def qemu_machine_for_arch(arch: str = "x86_64", accel: str = DEFAULT_ACCEL) -> str:
+def qemu_machine_for_arch(
+    arch: str = "x86_64", accel: str = DEFAULT_ACCEL
+) -> str:
     """Return the -machine argument for a given arch and accel request.
 
     See :func:`resolve_accel` for how *accel* is interpreted.

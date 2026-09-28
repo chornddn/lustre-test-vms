@@ -1379,7 +1379,7 @@ class TestAmbiguousKernelResolution:
         newer = "5.14-rhel9.7-5.14.0-611.55.1.el9_7"
         other = "5.14-rhel9.8-5.14.0-687.39.1.el9_8"
         for d in (older, newer, other):
-            (kernels / d).mkdir(parents=True)
+            _make_built_kernel(kernels, d)
         assert matching_kernel_dirs(kernels, "5.14-rhel9.7") == [newer, older]
         # A different short name must not be swept in.
         assert matching_kernel_dirs(kernels, "5.14-rhel9.8") == [other]
@@ -1398,7 +1398,7 @@ class TestAmbiguousKernelResolution:
             "5.14-rhel9.7-5.14.0-611.13.1.el9_7",
             "5.14-rhel9.7-5.14.0-611.55.1.el9_7",
         ):
-            (kernels / d).mkdir(parents=True)
+            _make_built_kernel(kernels, d)
         cfg._AMBIGUITY_WARNED.clear()
         with caplog.at_level("WARNING", logger="ltvm"):
             first = cfg.resolve_kernel_dir(kernels, "5.14-rhel9.7")

@@ -1350,14 +1350,16 @@ def cmd_status(args: argparse.Namespace) -> int:
     else:
         # Table output: one row per (target, kernel, variant) image.
         hdr = (
-            f"{'Target':<12} {'Container':<14} {'Kernel':<26} "
+            f"{'Target':<12} {'Arch':<9} {'Container':<14} {'Kernel':<26} "
             f"{'Image-Kernel':<44} {'Variant':<10} {'Image':<14}"
         )
         print(hdr)
         print("-" * len(hdr))
         for name, st in all_status.items():
             if "error" in st:
-                print(f"{name:<12} CONFIG ERROR: {st['error']}")
+                print(
+                    f"{name:<12} {status_arch:<9} CONFIG ERROR: {st['error']}"
+                )
                 continue
             c = _artifact_label(st["container"])
             k = _artifact_label(st["kernel"])
@@ -1366,7 +1368,7 @@ def cmd_status(args: argparse.Namespace) -> int:
                 image_kernel = ims.get("kernel", "")
                 variant = ims.get("variant", "base")
                 print(
-                    f"{name:<12} {c:<14} {k:<26} "
+                    f"{name:<12} {status_arch:<9} {c:<14} {k:<26} "
                     f"{image_kernel:<44} {variant:<10} {i:<14}"
                 )
                 if explain:

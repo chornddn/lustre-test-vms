@@ -264,7 +264,8 @@ class TestGenerateLocalSh:
     def test_rhel_libdir_default(self) -> None:
         c = _cluster(("n", ["mgs", "mds"], 1, 0, "10.0.0.1"))
         text = vm_cluster.generate_local_sh(
-            c, resolve_net(c, "tcp", load_vm=_no_extras), os_family="rhel")
+            c, resolve_net(c, "tcp", load_vm=_no_extras), os_family="rhel"
+        )
         assert "LUSTRE=/usr/lib64/lustre" in text
         assert "RLUSTRE=/usr/lib64/lustre" in text
         assert "RPWD=/usr/lib64/lustre/tests" in text
@@ -272,7 +273,8 @@ class TestGenerateLocalSh:
     def test_debian_libdir(self) -> None:
         c = _cluster(("n", ["mgs", "mds"], 1, 0, "10.0.0.1"))
         text = vm_cluster.generate_local_sh(
-            c, resolve_net(c, "tcp", load_vm=_no_extras), os_family="debian")
+            c, resolve_net(c, "tcp", load_vm=_no_extras), os_family="debian"
+        )
         assert "LUSTRE=/usr/lib/lustre" in text
         assert "RPWD=/usr/lib/lustre/tests" in text
 
@@ -429,9 +431,13 @@ class TestClusterBlockKeepsTheStockLocalSh:
         cfg.parent.mkdir()
         cfg.write_text(self.STOCK + self.DISK_BLOCK)
 
-        self._write(cfg, vm_cluster.generate_local_sh(
-            self._cluster(), resolve_net(self._cluster(), "tcp")
-        ))
+        self._write(
+            cfg,
+            vm_cluster.generate_local_sh(
+                self._cluster(),
+                resolve_net(self._cluster(), "tcp", load_vm=_no_extras),
+            ),
+        )
 
         tstusr, tstusr2, mds_host, ostcount, cleanup = self._source(
             cfg, "TSTUSR", "TSTUSR2", "mds_HOST", "OSTCOUNT", "CLEANUP_DM_DEV"
@@ -453,7 +459,8 @@ class TestClusterBlockKeepsTheStockLocalSh:
         cfg.parent.mkdir()
         cfg.write_text(self.STOCK + self.DISK_BLOCK)
         local_sh = vm_cluster.generate_local_sh(
-            self._cluster(), resolve_net(self._cluster(), "tcp")
+            self._cluster(),
+            resolve_net(self._cluster(), "tcp", load_vm=_no_extras),
         )
 
         self._write(cfg, local_sh)
@@ -468,8 +475,9 @@ class TestClusterBlockKeepsTheStockLocalSh:
         r = subprocess.run(
             ["bash", "-n"],
             input=vm_cluster.generate_local_sh(
-            self._cluster(), resolve_net(self._cluster(), "tcp")
-        ),
+                self._cluster(),
+                resolve_net(self._cluster(), "tcp", load_vm=_no_extras),
+            ),
             text=True,
             capture_output=True,
         )
@@ -480,9 +488,13 @@ class TestClusterBlockKeepsTheStockLocalSh:
     ) -> None:
         cfg = tmp_path / "cfg" / "local.sh"
         cfg.parent.mkdir()
-        self._write(cfg, vm_cluster.generate_local_sh(
-            self._cluster(), resolve_net(self._cluster(), "tcp")
-        ))
+        self._write(
+            cfg,
+            vm_cluster.generate_local_sh(
+                self._cluster(),
+                resolve_net(self._cluster(), "tcp", load_vm=_no_extras),
+            ),
+        )
         assert "mds_HOST=co2-mds" in cfg.read_text()
 
 
@@ -715,7 +727,11 @@ class _FakeVM:
 
 
 def _deploy_harness(
-    monkeypatch, tmp_path: Path, write_rc, staging=True, nics=(),
+    monkeypatch,
+    tmp_path: Path,
+    write_rc,
+    staging=True,
+    nics=(),
 ):
     """Patch cmd_cluster_deploy's I/O; return the list of cfg writes.
 
@@ -728,8 +744,11 @@ def _deploy_harness(
         ("co2-oss", ["oss"], 0, 1, "10.0.0.11"),
         ("co2-cli", ["client"], 0, 0, "10.0.0.12"),
     )
-    ips = {"co2-mds": "10.0.0.10", "co2-oss": "10.0.0.11",
-           "co2-cli": "10.0.0.12"}
+    ips = {
+        "co2-mds": "10.0.0.10",
+        "co2-oss": "10.0.0.11",
+        "co2-cli": "10.0.0.12",
+    }
     nic_ips = {
         "co2-mds": ["172.16.100.10", "172.16.100.13"],
         "co2-oss": ["172.16.100.11", "172.16.100.14"],
@@ -772,8 +791,10 @@ def _deploy_harness(
         vm_cluster,
         "cluster_build_params",
         lambda c: vm_cluster.ClusterBuildParams(
-            target="rocky9", os_family="rhel",
-            kernel="5.14-rhel9.7", arch="x86_64",
+            target="rocky9",
+            os_family="rhel",
+            kernel="5.14-rhel9.7",
+            arch="x86_64",
         ),
     )
 
@@ -783,11 +804,14 @@ def _deploy_harness(
         if "input" not in kwargs:
             return _FakeCompleted(0)
         cmd = [
-            a for a in argv
+            a
+            for a in argv
             if "/tests/cfg/" in a or vm_cluster.LNET_CONF_PATH in a
         ][0]
         written = re.search(
-            r"\S*(?:/tests/cfg/\w+\.sh|" + re.escape(vm_cluster.LNET_CONF_PATH) + ")",
+            r"\S*(?:/tests/cfg/\w+\.sh|"
+            + re.escape(vm_cluster.LNET_CONF_PATH)
+            + ")",
             cmd,
         ).group(0)
         node = [a for a in argv if a.startswith("root@")][0]
@@ -815,7 +839,9 @@ class TestDeployCfgDir:
 
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_tree=str(src), cfg_dir=str(cfg_dir),
+                name="co2",
+                lustre_tree=str(src),
+                cfg_dir=str(cfg_dir),
             )
         )
 
@@ -834,14 +860,16 @@ class TestDeployCfgDir:
         cfg_dir.mkdir()
         (cfg_dir / "co2sn.sh").write_text("OSTCOUNT=2\n")
         src, _ = _deploy_harness(
-            monkeypatch, tmp_path,
+            monkeypatch,
+            tmp_path,
             lambda c: 1 if c.endswith("co2sn.sh") else 0,
         )
 
         with pytest.raises(SystemExit):
             vm_cluster.cmd_cluster_deploy(
                 argparse.Namespace(
-                    name="co2", lustre_tree=str(src),
+                    name="co2",
+                    lustre_tree=str(src),
                     cfg_dir=str(cfg_dir),
                 )
             )
@@ -857,11 +885,14 @@ class TestDeployCfgDir:
         src, writes = _deploy_harness(monkeypatch, tmp_path, lambda c: 0)
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_tree=str(src), cfg_dir=None,
+                name="co2",
+                lustre_tree=str(src),
+                cfg_dir=None,
             )
         )
         assert {c.rsplit("/", 1)[-1] for _, c, _ in writes} == {
-            "local.sh", "lnet.conf",
+            "local.sh",
+            "lnet.conf",
         }
 
     def test_missing_staging_refuses_and_builds_nothing(
@@ -893,7 +924,8 @@ class TestDeployCfgDir:
         with pytest.raises(SystemExit):
             vm_cluster.cmd_cluster_deploy(
                 argparse.Namespace(
-                    name="co2", lustre_tree=str(src),
+                    name="co2",
+                    lustre_tree=str(src),
                     cfg_dir=str(cfg_dir),
                 )
             )
@@ -910,9 +942,7 @@ class TestDeployNet:
 
     def _written(self, writes, suffix):
         return {
-            node: text
-            for node, path, text in writes
-            if path.endswith(suffix)
+            node: text for node, path, text in writes if path.endswith(suffix)
         }
 
     def test_o2ib_writes_a_matching_pair_on_every_node(
@@ -923,7 +953,10 @@ class TestDeployNet:
         )
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_tree=str(src), cfg_dir=None, net="o2ib",
+                name="co2",
+                lustre_tree=str(src),
+                cfg_dir=None,
+                net="o2ib",
             )
         )
         local = self._written(writes, "local.sh")
@@ -940,16 +973,21 @@ class TestDeployNet:
         self, monkeypatch, tmp_path: Path
     ) -> None:
         src, writes = _deploy_harness(
-            monkeypatch, tmp_path, lambda c: 0,
+            monkeypatch,
+            tmp_path,
+            lambda c: 0,
             nics=("softroce", "softroce"),
         )
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_tree=str(src), cfg_dir=None, net="o2ib",
+                name="co2",
+                lustre_tree=str(src),
+                cfg_dir=None,
+                net="o2ib",
             )
         )
         lnet = self._written(writes, "lnet.conf")
-        assert all('o2ib0(eth1,eth2)' in t for t in lnet.values())
+        assert all("o2ib0(eth1,eth2)" in t for t in lnet.values())
 
     def test_tcp_writes_the_extra_nic_pair(
         self, monkeypatch, tmp_path: Path
@@ -960,7 +998,10 @@ class TestDeployNet:
         )
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_tree=str(src), cfg_dir=None, net="tcp",
+                name="co2",
+                lustre_tree=str(src),
+                cfg_dir=None,
+                net="tcp",
             )
         )
         local = self._written(writes, "local.sh")
@@ -979,7 +1020,10 @@ class TestDeployNet:
         )
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_tree=str(src), cfg_dir=None, net="tcp",
+                name="co2",
+                lustre_tree=str(src),
+                cfg_dir=None,
+                net="tcp",
             )
         )
         local = self._written(writes, "local.sh")
@@ -998,7 +1042,10 @@ class TestDeployNet:
         )
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_tree=str(src), cfg_dir=None, net="tcp",
+                name="co2",
+                lustre_tree=str(src),
+                cfg_dir=None,
+                net="tcp",
                 ip_family="ipv4",
             )
         )
@@ -1014,7 +1061,10 @@ class TestDeployNet:
         )
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_tree=str(src), cfg_dir=None, net="tcp",
+                name="co2",
+                lustre_tree=str(src),
+                cfg_dir=None,
+                net="tcp",
                 ip_family="ipv6",
             )
         )
@@ -1024,8 +1074,7 @@ class TestDeployNet:
             assert "NETTYPE=tcp" in text
             assert "FORCE_LARGE_NID=true" in text
             mgsnid_line = next(
-                ln for ln in text.splitlines()
-                if ln.startswith("MGSNID=")
+                ln for ln in text.splitlines() if ln.startswith("MGSNID=")
             )
             assert mgsnid_line == (
                 "MGSNID=fd17:2016:1000:f100:f172:f016:f100:f010@tcp"
@@ -1046,7 +1095,10 @@ class TestDeployNet:
         cluster = vm_cluster.ClusterInfo.load("co2")
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_tree=str(src), cfg_dir=None, net="tcp",
+                name="co2",
+                lustre_tree=str(src),
+                cfg_dir=None,
+                net="tcp",
                 ip_family="ipv6",
             )
         )
@@ -1061,7 +1113,10 @@ class TestDeployNet:
         vm_cluster.ClusterInfo.load("co2").ip_family = "ipv6"
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_tree=str(src), cfg_dir=None, net=None,
+                name="co2",
+                lustre_tree=str(src),
+                cfg_dir=None,
+                net=None,
                 ip_family=None,
             )
         )
@@ -1080,8 +1135,11 @@ class TestDeployNet:
         with pytest.raises(SystemExit):
             vm_cluster.cmd_cluster_deploy(
                 argparse.Namespace(
-                    name="co2", lustre_tree=str(src), cfg_dir=None,
-                    net="o2ib", ip_family="ipv6",
+                    name="co2",
+                    lustre_tree=str(src),
+                    cfg_dir=None,
+                    net="o2ib",
+                    ip_family="ipv6",
                 )
             )
         assert writes == []
@@ -1097,7 +1155,9 @@ class TestDeployNet:
         with pytest.raises(SystemExit):
             vm_cluster.cmd_cluster_deploy(
                 argparse.Namespace(
-                    name="co2", lustre_tree=str(src), cfg_dir=None,
+                    name="co2",
+                    lustre_tree=str(src),
+                    cfg_dir=None,
                     net="o2ib",
                 )
             )
@@ -1112,7 +1172,10 @@ class TestDeployNet:
         cluster = vm_cluster.ClusterInfo.load("co2")
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_tree=str(src), cfg_dir=None, net="o2ib",
+                name="co2",
+                lustre_tree=str(src),
+                cfg_dir=None,
+                net="o2ib",
             )
         )
         assert cluster.net == "o2ib"
@@ -1127,7 +1190,10 @@ class TestDeployNet:
         vm_cluster.ClusterInfo.load("co2").net = "o2ib"
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_tree=str(src), cfg_dir=None, net=None,
+                name="co2",
+                lustre_tree=str(src),
+                cfg_dir=None,
+                net=None,
             )
         )
         assert all(
@@ -1144,7 +1210,10 @@ class TestDeployNet:
         )
         vm_cluster.cmd_cluster_deploy(
             argparse.Namespace(
-                name="co2", lustre_tree=str(src), cfg_dir=None, net=None,
+                name="co2",
+                lustre_tree=str(src),
+                cfg_dir=None,
+                net=None,
             )
         )
         assert all(
@@ -1158,14 +1227,17 @@ class TestDeployNet:
         """A node left with one file of the pair is worse than a node
         left untouched, so the deploy must not report success."""
         src, _ = _deploy_harness(
-            monkeypatch, tmp_path,
+            monkeypatch,
+            tmp_path,
             lambda c: 1 if c.endswith("lnet.conf") else 0,
             nics=("softroce",),
         )
         with pytest.raises(SystemExit):
             vm_cluster.cmd_cluster_deploy(
                 argparse.Namespace(
-                    name="co2", lustre_tree=str(src), cfg_dir=None,
+                    name="co2",
+                    lustre_tree=str(src),
+                    cfg_dir=None,
                     net="o2ib",
                 )
             )
@@ -1176,28 +1248,32 @@ class TestDeployNet:
         """A bare deploy must not overwrite the lnet.conf an HCA's
         boot-time emitter composed."""
         src, writes = _deploy_harness(
-            monkeypatch, tmp_path, lambda c: 0,
+            monkeypatch,
+            tmp_path,
+            lambda c: 0,
             nics=("passthrough:0000:85:00.1",),
         )
         with pytest.raises(SystemExit):
             vm_cluster.cmd_cluster_deploy(
                 argparse.Namespace(
-                    name="co2", lustre_tree=str(src), cfg_dir=None,
+                    name="co2",
+                    lustre_tree=str(src),
+                    cfg_dir=None,
                     net=None,
                 )
             )
         assert writes == []
 
-    def test_unknown_net_is_refused(
-        self, monkeypatch, tmp_path: Path
-    ) -> None:
+    def test_unknown_net_is_refused(self, monkeypatch, tmp_path: Path) -> None:
         src, _ = _deploy_harness(
             monkeypatch, tmp_path, lambda c: 0, nics=("softroce",)
         )
         with pytest.raises(SystemExit):
             vm_cluster.cmd_cluster_deploy(
                 argparse.Namespace(
-                    name="co2", lustre_tree=str(src), cfg_dir=None,
+                    name="co2",
+                    lustre_tree=str(src),
+                    cfg_dir=None,
                     net="ib",
                 )
             )
@@ -1230,7 +1306,8 @@ class TestStaleLnetCheck:
         self, monkeypatch
     ) -> None:
         monkeypatch.setattr(
-            vm_cluster, "run_ssh",
+            vm_cluster,
+            "run_ssh",
             lambda ip, cmd, timeout=0: _FakeCompleted(1),
         )
         name, rc, out = vm_cluster._drop_stale_lnet(
@@ -1246,13 +1323,16 @@ class TestStaleLnetCheck:
             monkeypatch, tmp_path, lambda c: 0, nics=("softroce",)
         )
         monkeypatch.setattr(
-            vm_cluster, "run_ssh",
+            vm_cluster,
+            "run_ssh",
             lambda ip, cmd, timeout=0: _FakeCompleted(1),
         )
         with pytest.raises(SystemExit):
             vm_cluster.cmd_cluster_deploy(
                 argparse.Namespace(
-                    name="co2", lustre_tree=str(src), cfg_dir=None,
+                    name="co2",
+                    lustre_tree=str(src),
+                    cfg_dir=None,
                     net="o2ib",
                 )
             )
@@ -1270,13 +1350,16 @@ class TestStaleLnetCheck:
             monkeypatch, tmp_path, lambda c: 0, nics=("softroce",)
         )
         monkeypatch.setattr(
-            vm_cluster, "run_ssh",
+            vm_cluster,
+            "run_ssh",
             lambda ip, cmd, timeout=0: _FakeCompleted(1),
         )
         with pytest.raises(SystemExit):
             vm_cluster.cmd_cluster_deploy(
                 argparse.Namespace(
-                    name="co2", lustre_tree=str(src), cfg_dir=None,
+                    name="co2",
+                    lustre_tree=str(src),
+                    cfg_dir=None,
                     net="o2ib",
                 )
             )

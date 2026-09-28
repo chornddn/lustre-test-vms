@@ -413,9 +413,7 @@ class TestClusterCreateArgs:
         )
 
     def test_accel_applies_to_every_node(self) -> None:
-        cmd_cluster(
-            _ns("create", "co1", "--accel", "tcg", "mgs+mds:co1-mds:1")
-        )
+        cmd_cluster(_ns("create", "co1", "--accel", "tcg", "mgs+mds:co1-mds:1"))
         assert self._captured_ns().accel == "tcg"
 
     def test_accel_defaults_to_unset(self) -> None:

@@ -142,10 +142,7 @@ def _pick_extras(vm: VMInfo, nic_types: tuple[str, ...]) -> list[int]:
     emitter; a node with several softroce NICs yields one net with
     several interfaces.
     """
-    return [
-        i for i, spec in enumerate(vm.nics)
-        if _nic_type(spec) in nic_types
-    ]
+    return [i for i, spec in enumerate(vm.nics) if _nic_type(spec) in nic_types]
 
 
 def _resolve_extra_node(
@@ -167,9 +164,7 @@ def _resolve_extra_node(
     ip6 = ""
     if picked[0] < len(vm.nic_ip6s):
         ip6 = vm.nic_ip6s[picked[0]]
-    return NodeNet(
-        name=node_name, interfaces=interfaces, ip=ip, ip6=ip6
-    )
+    return NodeNet(name=node_name, interfaces=interfaces, ip=ip, ip6=ip6)
 
 
 def resolve_net(
@@ -193,8 +188,7 @@ def resolve_net(
     """
     if net_type not in NET_TYPES:
         raise NetUnavailable(
-            f"unknown net {net_type!r}: valid nets are "
-            f"{', '.join(NET_TYPES)}"
+            f"unknown net {net_type!r}: valid nets are {', '.join(NET_TYPES)}"
         )
     if ip_family not in IP_FAMILIES:
         raise NetUnavailable(

@@ -1760,7 +1760,9 @@ class TestAccelSelection:
         vm.save()
         assert VMInfo.load(vm.name).accel == "tcg"
 
-    def test_info_file_without_accel_loads_as_auto(self, tmp_vmdir: Path) -> None:
+    def test_info_file_without_accel_loads_as_auto(
+        self, tmp_vmdir: Path
+    ) -> None:
         """VMs created before the flag existed keep their behaviour."""
         vm = _make_vm(tmp_vmdir, arch="aarch64")
         vm.save()

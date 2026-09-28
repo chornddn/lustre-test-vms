@@ -858,7 +858,7 @@ def stale_lnet_check(net_type: str) -> str:
         # 0@lo is on every node and belongs to no net.
         "nids=$(lctl list_nids 2>/dev/null | grep -v '@lo$'); "
         # Every NID already on the target net: leave it running.
-        "if [ -n \"$nids\" ] && "
+        'if [ -n "$nids" ] && '
         f"! printf '%s\\n' \"$nids\" | grep -qv '@{net_type}[0-9]*$'; "
         "then exit 0; fi; "
         "lustre_rmmod"
@@ -1125,7 +1125,10 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
             f"recreate the cluster"
         )
     status = staging_status(
-        build, target, arch=arch, kernel=kernel_name,
+        build,
+        target,
+        arch=arch,
+        kernel=kernel_name,
         variant=params.variant,
     )
     if not status.usable:

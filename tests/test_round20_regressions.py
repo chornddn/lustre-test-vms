@@ -259,9 +259,7 @@ class TestHostsWriteIsSkippedWhenUnchanged:
         fake_hosts.write_text("127.0.0.1\tlocalhost\n")
         reloads: list[int] = []
         monkeypatch.setattr(vm_net, "HOSTS_FILE", fake_hosts)
-        monkeypatch.setattr(
-            vm_net, "reload_dns", lambda: reloads.append(1)
-        )
+        monkeypatch.setattr(vm_net, "reload_dns", lambda: reloads.append(1))
         monkeypatch.setattr(
             vm_net,
             "_real_user_ssh_dir",
