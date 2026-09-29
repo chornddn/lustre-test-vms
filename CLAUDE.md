@@ -474,8 +474,13 @@ ltvm vm snapshot co1-single --delete tag
 ltvm vm restore co1-single [tag]      # restore (no tag: list them)
 ltvm vm set co1-single --vcpus 2 --mem 4096   # resize a stopped VM
 ltvm vm crash-collect co1-single --mod-dir $CO/1
+ltvm stop co9                         # cluster name = all its nodes
 ltvm destroy co1-single
 ```
+
+`start` and `stop` also take a cluster name, which stands
+for every node in it.  A VM of that name wins, so the two
+never collide.
 
 The VM commands answer under `vm` too: `ltvm vm create` is `ltvm
 create`, and likewise for `destroy`, `start`, `stop`, `list`,

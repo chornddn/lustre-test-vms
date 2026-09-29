@@ -246,6 +246,7 @@ try:
         complete_targets,
         complete_variants,
         complete_vms,
+        complete_vms_or_clusters,
         complete_zfs_versions,
     )
     from ltvm_pkg.lnet_net import IP_FAMILIES, NET_TYPES  # noqa: E402
@@ -1435,10 +1436,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser(
         "start",
         parents=[common],
-        help="Start one or more stopped VMs",
+        help="Start one or more stopped VMs (or every node of a cluster)",
     )
-    _start_names = sp.add_argument("names", nargs="+", help="VM name(s)")
-    _start_names.completer = complete_vms  # type: ignore[attr-defined]
+    _start_names = sp.add_argument(
+        "names", nargs="+", help="VM or cluster name(s)"
+    )
+    _start_names.completer = complete_vms_or_clusters  # type: ignore[attr-defined]
     sp.add_argument(
         "--wait",
         type=_wait_seconds,
@@ -1456,10 +1459,12 @@ def build_parser() -> argparse.ArgumentParser:
     sp = sub.add_parser(
         "stop",
         parents=[common],
-        help="Stop one or more running VMs",
+        help="Stop one or more running VMs (or every node of a cluster)",
     )
-    _stop_names = sp.add_argument("names", nargs="+", help="VM name(s)")
-    _stop_names.completer = complete_vms  # type: ignore[attr-defined]
+    _stop_names = sp.add_argument(
+        "names", nargs="+", help="VM or cluster name(s)"
+    )
+    _stop_names.completer = complete_vms_or_clusters  # type: ignore[attr-defined]
     sp.set_defaults(func=cmd_vm_stop)
 
     # -- VM info: list --

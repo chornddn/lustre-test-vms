@@ -140,7 +140,8 @@ ltvm create     <name>          Create a VM (idempotent; --root-size sets
                                 the OS disk, --disk-size the MDT/OST ones,
                                 --kernel-args adds boot parameters,
                                 --wait SECONDS waits for host memory)
-ltvm start|stop|destroy <name>  VM power / removal (start takes --wait)
+ltvm start|stop <vm|cluster>    VM power; a cluster = all its nodes (start takes --wait)
+ltvm destroy    <name>          VM removal
 ltvm list                       Show all VMs
 ltvm deploy <vm|cluster>        Deploy Lustre into a running VM
 ltvm make-install               Build + install Lustre onto THIS machine

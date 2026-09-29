@@ -24,6 +24,46 @@ from ltvm_pkg.cli.util import (
 )
 
 
+def _expand_clusters(names: list[str]) -> list[str]:
+    """Replace each cluster name with that cluster's node names.
+
+    A name that is an existing VM always resolves to that VM, so a VM
+    and a cluster sharing a name is not ambiguous.  Order follows the
+    cluster node order and repeats collapse, so a node named twice is
+    started or stopped once.
+
+    Context: reads the .info and .cluster state files.
+    Return: the node names to act on.
+    """
+    from ltvm_pkg.vm_state import ClusterInfo, VMInfo
+
+    vms = set(VMInfo.all_names())
+    clusters = set(ClusterInfo.all_names())
+    out: list[str] = []
+    for name in names:
+        if name in vms or name not in clusters:
+            expanded = [name]
+        else:
+            expanded = [n.name for n in ClusterInfo.load(name).get_nodes()]
+        for node in expanded:
+            if node not in out:
+                out.append(node)
+    return out
+
+
+def _resolve_names(ns: argparse.Namespace, use_json: bool) -> int | None:
+    """Expand cluster names in ``ns.names`` in place.
+
+    Return: an exit code when the cluster state is unreadable, else
+            None.
+    """
+    try:
+        ns.names = _expand_clusters(list(ns.names))
+    except (RuntimeError, ValueError) as e:
+        return _error(str(e), use_json)
+    return None
+
+
 def _vm_call(fn: Any, ns: argparse.Namespace, use_json: bool) -> int:
     """Call a vm_commands function, catching SystemExit and VMNotFound.
 
@@ -45,8 +85,11 @@ def _vm_call(fn: Any, ns: argparse.Namespace, use_json: bool) -> int:
 
 def cmd_vm_start(args: argparse.Namespace) -> int:
     use_json = args.json
+    err = _resolve_names(args, use_json)
+    if err is not None:
+        return err
     names = list(args.names)
-    err = _claim_error(list(args.names), "start", use_json)
+    err = _claim_error(names, "start", use_json)
     if err is not None:
         return err
     err = _vm_privileges(
@@ -64,6 +107,9 @@ def cmd_vm_start(args: argparse.Namespace) -> int:
 
 def cmd_vm_stop(args: argparse.Namespace) -> int:
     use_json = args.json
+    err = _resolve_names(args, use_json)
+    if err is not None:
+        return err
     err = _claim_error(list(args.names), "stop", use_json)
     if err is not None:
         return err

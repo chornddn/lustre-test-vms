@@ -60,6 +60,18 @@ def complete_clusters(
 
 
 @_safe
+def complete_vms_or_clusters(
+    prefix: str = "",
+    parsed_args: argparse.Namespace | None = None,
+    **kwargs: Any,
+) -> list[str]:
+    """For commands that take either a VM name or a cluster name."""
+    from .vm_state import ClusterInfo, VMInfo
+
+    return VMInfo.all_names() + ClusterInfo.all_names()
+
+
+@_safe
 def complete_kernels(
     prefix: str = "",
     parsed_args: argparse.Namespace | None = None,
