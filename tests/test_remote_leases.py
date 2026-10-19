@@ -585,7 +585,7 @@ class TestReapNoLease:
 def test_reap_everything_destroys_live_leases_too(
     reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any, capsys: Any
 ) -> None:
-    # Ticket 10 (`disable --destroy`) calls reap with everything=True.
+    # `serve disable --destroy` calls reap with everything=True.
     from ltvm_pkg.remote import leases
 
     _grant(reaper, "vm", REMOTE_VM, 8)

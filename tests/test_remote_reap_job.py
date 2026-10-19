@@ -1,6 +1,6 @@
 """The job that runs `ltvm serve reap`: a LaunchDaemon or a systemd timer.
 
-`install --serve` (ticket 12) calls reap_job.install.  These tests give
+`install --serve` calls reap_job.install.  These tests give
 it a fake writer and a fake runner, so no test reaches launchctl,
 systemctl or sudo.
 """

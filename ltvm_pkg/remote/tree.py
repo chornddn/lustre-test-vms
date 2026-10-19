@@ -15,7 +15,7 @@ The stream is a gzip tar of these files:
   tree), so LUSTRE-VERSION-GEN on the host reads this file.  The build
   on the host then has the same Lustre version as a local build.
 
-Each request sends the full tree (spec fork F2: no object cache).
+Each request sends the full tree.  The host keeps no object cache.
 """
 
 from __future__ import annotations
