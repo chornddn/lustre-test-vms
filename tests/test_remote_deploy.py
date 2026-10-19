@@ -478,6 +478,45 @@ def job(child: SimpleNamespace) -> Path:
     return Path(json.loads(resp.stdout)["tree"])
 
 
+class TestBuildNeedsATree:
+    """A build verb that uses a Lustre tree must name a job tree."""
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["build", "all", "rocky9"],
+            ["build", "kernel", "rocky9"],
+            ["build", "image", "rocky9"],
+        ],
+    )
+    def test_no_tree_is_refused(
+        self, child: SimpleNamespace, argv: list[str]
+    ) -> None:
+        resp = _send(argv)
+        assert resp.error is not None
+        assert resp.error.code == "path_refused"
+        assert "--lustre-tree" in resp.error.message
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["build", "image", "rocky9", "--no-lustre"],
+            ["build", "kernel", "ubuntu2404"],
+            ["build", "kernel", "mainline"],
+            ["build", "container", "rocky9"],
+            ["build", "status"],
+        ],
+    )
+    def test_a_verb_with_no_tree_passes(
+        self, ltvm: Any, tmp_path: Path, argv: list[str]
+    ) -> None:
+        """Negative control: the check refuses only verbs that use a tree."""
+        from ltvm_pkg.remote import scope
+
+        args = ltvm._parse_request(argv)
+        assert scope.check(argv, args, home=tmp_path) == argv
+
+
 class TestPathArguments:
     @pytest.mark.parametrize(
         "make",
@@ -626,10 +665,10 @@ class TestPodmanSafety:
     @pytest.mark.parametrize(
         "argv",
         [
+            # `build all` with no tree gets path_refused first.
             ["build", "container", "nosuch-x9"],
-            ["build", "all", "nosuch-x9"],
             ["build", "kernel", "nosuch-x9"],
-            ["build", "image", "nosuch-x9"],
+            ["build", "image", "nosuch-x9", "--no-lustre"],
             ["build", "zfs", "nosuch-x9"],
             ["build", "mofed-kmods", "nosuch-x9"],
         ],

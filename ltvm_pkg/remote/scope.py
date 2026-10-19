@@ -248,14 +248,44 @@ def _check_build_paths(
         jobs.job_tree(home, tree, "--lustre-tree")
 
 
-def _check_artifacts(args: argparse.Namespace, home: Path) -> None:
+def _uses_cwd_tree(argv: list[str], args: argparse.Namespace) -> bool:
+    """Whether a build verb with no --lustre-tree builds the cwd.
+
+    Under serve, the cwd is the serve home, not a job tree.
+    """
+    action = argv[1] if argv[0] == "build" and len(argv) > 1 else None
+    if action == "all":
+        return True
+    if action == "image":
+        return not getattr(args, "no_lustre", False)
+    if action == "kernel":
+        from ltvm_pkg.target_config import TargetConfig
+
+        try:
+            tc = TargetConfig(args.target)
+        except (ValueError, FileNotFoundError, KeyError):
+            return False  # the verb reports the bad target
+        return not tc.kernel_deb_source and not tc.is_upstream
+    return False
+
+
+def _check_artifacts(
+    argv: list[str], args: argparse.Namespace, home: Path
+) -> None:
     """Refuse host paths and free URLs in `build` and `target fetch`.
 
-    --lustre-tree is optional for the build verbs, but when it is given
-    it must be a job tree.  The verbs write only into the artifacts
-    directory of serve.
+    A build verb that uses a Lustre tree must have --lustre-tree, and
+    the tree must be a job tree.  The verbs write only into the
+    artifacts directory of serve.
     """
     tree = getattr(args, "lustre_tree", None)
+    if not isinstance(tree, str) and _uses_cwd_tree(argv, args):
+        raise RemoteError(
+            "path_refused",
+            f"`{' '.join(argv[:2])}` needs --lustre-tree on a remote host",
+            hint="Give --lustre-tree with the local Lustre tree.  The "
+            "controller sends it to the host.",
+        )
     _check_build_paths(args, home, tree=tree if isinstance(tree, str) else None)
 
 
@@ -334,7 +364,7 @@ def check(
     elif verb == "cluster":
         _check_cluster(args, home)
     elif verb in ("build", "target"):
-        _check_artifacts(args, home)
+        _check_artifacts(argv, args, home)
     elif verb == "deploy-lustre":
         _check_existing([args.vm])
         _check_build_paths(args, home, tree=args.lustre_tree or "")
