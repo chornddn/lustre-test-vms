@@ -20,6 +20,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ltvm_pkg import paths
+
 from .protocol import RemoteError
 
 if TYPE_CHECKING:
@@ -48,8 +50,7 @@ class Host:
 
 
 def registry_path() -> Path:
-    base = os.environ.get("XDG_CONFIG_HOME") or str(Path.home() / ".config")
-    return Path(base) / "ltvm" / "hosts.json"
+    return paths.config_dir(os.environ) / "hosts.json"
 
 
 def _load() -> dict[str, Host]:

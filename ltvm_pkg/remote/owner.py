@@ -22,6 +22,8 @@ import json
 import os
 from collections.abc import Callable, Mapping
 
+from ltvm_pkg import paths
+
 from . import serve_config
 from .protocol import RemoteError
 
@@ -188,7 +190,6 @@ def status(env: Mapping[str, str], recent: int) -> dict[str, object]:
     the disk only when a disk cap is set, so with no disk cap the used
     disk is null.
     """
-    from pathlib import Path
 
     from . import admission, jobs
 
@@ -200,7 +201,7 @@ def status(env: Mapping[str, str], recent: int) -> dict[str, object]:
     used = admission.as_json(admission.usage(env, disk=disk))
     if not disk:
         used["disk_gb"] = None
-    home = Path(env.get("HOME") or Path.home())
+    home = paths.home(env)
     return {
         "enabled": cfg.enabled,
         "lease_hours": cfg.lease_hours,
@@ -291,11 +292,10 @@ def prune_jobs(env: Mapping[str, str], *, everything: bool) -> list[str]:
     (everything) deletes each job.
     """
     import sys
-    from pathlib import Path
 
     from . import jobs, leases
 
-    home = Path(env.get("HOME") or Path.home())
+    home = paths.home(env)
     max_age: float | None = None
     if not everything:
         try:

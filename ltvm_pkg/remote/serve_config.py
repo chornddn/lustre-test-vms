@@ -22,6 +22,8 @@ from dataclasses import dataclass, fields
 from pathlib import Path
 from typing import Any
 
+from ltvm_pkg import paths
+
 
 @dataclass
 class ServeConfig:
@@ -49,10 +51,7 @@ _TYPES: dict[str, tuple[type, ...]] = {
 
 
 def config_path(env: Mapping[str, str]) -> Path:
-    base = env.get("XDG_CONFIG_HOME") or str(
-        Path(env.get("HOME") or Path.home()) / ".config"
-    )
-    return Path(base) / "ltvm" / "serve.toml"
+    return paths.config_dir(env) / "serve.toml"
 
 
 _STRING_RE = re.compile(r'"((?:[^"\\]|\\.)*)"')

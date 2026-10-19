@@ -29,6 +29,8 @@ from contextlib import redirect_stderr, redirect_stdout
 from dataclasses import asdict, dataclass
 from pathlib import Path
 
+from ltvm_pkg import paths
+
 from .protocol import RemoteError
 
 # The lease code reads the time only through this name, so that the
@@ -56,10 +58,7 @@ class Lease:
 
 
 def store_path(env: Mapping[str, str]) -> Path:
-    base = env.get("XDG_STATE_HOME") or str(
-        Path(env.get("HOME") or Path.home()) / ".local" / "state"
-    )
-    return Path(base) / "ltvm" / "leases.json"
+    return paths.state_dir(env) / "leases.json"
 
 
 @contextlib.contextmanager
@@ -441,7 +440,9 @@ def reap(
     """Destroy each VM and cluster whose lease has expired.
 
     Also destroy each remote VM and cluster with no lease that is older
-    than lease_hours.  One with no known age stays.  With everything, destroy each VM and cluster that remote requests
+    than lease_hours.  One with no known age stays.
+
+    With everything, destroy each VM and cluster that remote requests
     made: what each lease names, expired or not, and then each remote
     cluster and VM with no lease.  `serve disable --destroy` uses it.
 

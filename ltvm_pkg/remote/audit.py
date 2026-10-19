@@ -22,16 +22,15 @@ import time
 from collections.abc import Mapping
 from pathlib import Path
 
+from ltvm_pkg import paths
+
 from .ssh import fingerprint
 
 NO_KEY = "-"
 
 
 def log_path(env: Mapping[str, str]) -> Path:
-    base = env.get("XDG_STATE_HOME") or str(
-        Path(env.get("HOME") or Path.home()) / ".local" / "state"
-    )
-    return Path(base) / "ltvm" / "serve.log"
+    return paths.state_dir(env) / "serve.log"
 
 
 def key_fingerprint(env: Mapping[str, str]) -> str:
