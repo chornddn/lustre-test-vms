@@ -12,7 +12,8 @@ checks, in this order:
 4. the request stays in its scope: it names only VMs that remote
    requests made, it needs no root, and a Lustre tree is a job tree
    that `receive-tree` made (scope.py, jobs.py)
-5. a request that builds has a rootless or VM-backed podman (podman.py)
+5. the request stays inside the caps of serve.toml (admission.py)
+6. a request that builds has a rootless or VM-backed podman (podman.py)
 
 A request with no command is a probe.  `serve` sends only the handshake
 reply, so `host list` gets the versions with no verb.
@@ -20,6 +21,8 @@ reply, so `host list` gets the versions with no verb.
 `receive-tree` is not an ltvm verb.  After check 3, serve unpacks the
 tar stream that follows the handshake line into a new job directory,
 and prints the job (jobs.py).
+
+A later change adds this check: the host is enabled (before 1).
 
 Then `serve` runs the verb in this process, with the update check and
 telemetry off, and with sudo forbidden.  It writes one audit line for
@@ -42,7 +45,7 @@ from typing import IO, Any
 
 from ltvm_pkg import priv
 
-from . import allowlist, audit, jobs, podman, protocol, scope
+from . import admission, allowlist, audit, jobs, podman, protocol, scope
 from .protocol import RemoteError
 from .tree import RECEIVE_TREE
 
@@ -132,8 +135,10 @@ def _check_layout(env: Mapping[str, str]) -> None:
         )
 
 
-def _check_scope(parse: ParseFn, argv: list[str], home: Path) -> list[str]:
-    """Parse argv and check its scope.  Return the argv to run."""
+def _check_scope(
+    parse: ParseFn, argv: list[str], env: Mapping[str, str]
+) -> list[str]:
+    """Parse argv, and check its scope and the caps.  Return the argv to run."""
     sink = io.StringIO()
     try:
         # --help prints during the parse.  The verb prints it again
@@ -143,7 +148,9 @@ def _check_scope(parse: ParseFn, argv: list[str], home: Path) -> list[str]:
     except SystemExit:
         # The verb gets the same parse error and runs nothing.
         return argv
-    return scope.check(argv, args, home=home)
+    to_run = scope.check(argv, args, home=Path(env["HOME"]))
+    admission.check(argv, args, env)
+    return to_run
 
 
 def _run_verb(run: RunFn, argv: list[str]) -> tuple[int, str]:
@@ -254,7 +261,7 @@ def serve_stdio(
             stdout.flush()
             audit.append(log, key=key, argv=argv, result="ok")
             return EXIT_OK
-        to_run = _check_scope(parse, argv, Path(env["HOME"]))
+        to_run = _check_scope(parse, argv, env)
         podman.check(to_run)
     except RemoteError as e:
         stdout.write(protocol.reply_line(_ltvm_version(), e) + "\n")
