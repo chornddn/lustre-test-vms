@@ -48,7 +48,7 @@ def run_remote(
     """Send argv to host `name`.  Return the exit status of the verb.
 
     args is the parsed argv.  With it, `<host>/<vm>` names become bare
-    names, and `list` shows the `<host>/` prefix.
+    names, and the JSON views (names.show) show the `<host>/` prefix.
     """
     from ltvm_pkg.cli.util import EXIT_ERROR, _emit_error
 
@@ -70,9 +70,9 @@ def run_remote(
             error_code=err.code,
         )
         return EXIT_ERROR
-    if argv[:1] == ["list"] and response.status == 0:
-        names.show_list(name, response.stdout, use_json)
-    else:
+    if response.status != 0 or not names.show(
+        name, argv, response.stdout, use_json
+    ):
         sys.stdout.write(response.stdout)
     sys.stderr.write(response.stderr)
     return response.status

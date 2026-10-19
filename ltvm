@@ -3060,8 +3060,11 @@ def run(
         # that only make sense here ignore it.  An explicit --host never
         # runs the verb here: serve refuses what it does not allow.
         # A `<host>/<vm>` name selects its host too.
+        # Read the verb from argv: `vm exec` and `cluster exec` write
+        # their own command to args.command.
+        verb = strip_host_option(argv)[0]
         host = args.host
-        if not host and args.command not in LOCAL_ONLY_VERBS:
+        if not host and verb not in LOCAL_ONLY_VERBS:
             host = names.host_of(args) or os.environ.get("LTVM_HOST")
         if host:
             return run_remote(

@@ -8,16 +8,26 @@ that change VM state, with the conftest isolation in place.
 
 from __future__ import annotations
 
+import json
 import os
+import shlex
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
+from unittest.mock import patch
 
 import pytest
 
 # The real function: conftest replaces the module attribute in each test.
 from ltvm_pkg.update_check import maybe_check_for_updates as _real_update_check
-from tests.test_ltvm_cli import _load_ltvm
+from tests import test_remote_lifecycle as _lifecycle
+from tests.test_ltvm_cli import _LTVM_PATH, _load_ltvm
+from tests.test_remote_lifecycle import REMOTE_OWNER, _audit, _err, _save_vm
+
+# The host fixtures of test_remote_lifecycle.
+child = _lifecycle.child
+inproc = _lifecycle.inproc
 
 
 @pytest.fixture(scope="module")
@@ -78,6 +88,345 @@ class TestChildGuards:
 
         monkeypatch.setenv("LTVM_SELF", "/opt/ltvm/ltvm")
         assert paths.ltvm_command() == [sys.executable, "/opt/ltvm/ltvm"]
+
+
+# ── clusters ─────────────────────────────────────────────
+
+REMOTE_CL = "rcl-sentinel-a1"
+REMOTE_NODE = "rcl-node-sentinel-a1"
+OWNER_CL = "ocl-sentinel-b2"
+OWNER_NODE = "ocl-node-sentinel-b2"
+
+
+def _save_cluster(
+    sockets: Path, name: str, node: str, owner_id: str | None
+) -> None:
+    from ltvm_pkg.vm_state import ClusterInfo
+
+    _save_vm(sockets, node, owner_id)
+    with patch("ltvm_pkg.vm_state.SOCKETS", sockets):
+        ClusterInfo(
+            name=name,
+            owner_id=owner_id,
+            nodes=[
+                {
+                    "name": node,
+                    "roles": ["mgs", "mds"],
+                    "mdt_disks": 1,
+                    "ost_disks": 0,
+                    "ip": "192.168.100.78",
+                }
+            ],
+        ).save()
+
+
+@pytest.fixture
+def ccl(child: SimpleNamespace) -> SimpleNamespace:
+    """The child host, with one remote and one owner cluster."""
+    _save_cluster(child.sockets, REMOTE_CL, REMOTE_NODE, REMOTE_OWNER)
+    _save_cluster(child.sockets, OWNER_CL, OWNER_NODE, "pid:4242")
+    return child
+
+
+class TestClusterDryRun:
+    def test_create_dry_run_plans_a_remote_cluster(
+        self, ccl: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        rc = ltvm.run(
+            [
+                "--host",
+                "t",
+                "cluster",
+                "create",
+                "t/new-cl",
+                "mgs+mds:t/new-cl-a:1",
+                "oss:new-cl-b:2",
+                "--mem",
+                "1024",
+                "--dry-run",
+            ]
+        )
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "Would create cluster 'new-cl' with 2 nodes" in out
+        assert "new-cl-a " in out
+        assert f"owner:   {REMOTE_OWNER}" in out
+        assert not (ccl.sockets / "new-cl.cluster").exists()
+        assert _audit(ccl.home)[-1]["result"] == "ok"
+
+    @pytest.mark.parametrize(
+        ("argv", "code"),
+        [
+            # The name of an owner cluster, or of an owner VM as a node.
+            (["cluster", "create", OWNER_CL, "mgs+mds:x-new:1"], "name_in_use"),
+            (
+                ["cluster", "create", "x-new", f"mgs+mds:{OWNER_NODE}:1"],
+                "name_in_use",
+            ),
+            (
+                [
+                    "cluster",
+                    "create",
+                    "x-new",
+                    "mgs+mds:x-a:1",
+                    "--failover",
+                    f"{OWNER_NODE}=x-a",
+                ],
+                "name_in_use",
+            ),
+            (
+                [
+                    "cluster",
+                    "create",
+                    "x-new",
+                    "mgs+mds:x-a:1",
+                    "--owner",
+                    "me",
+                ],
+                "bad_request",
+            ),
+            (
+                [
+                    "cluster",
+                    "create",
+                    "x-new",
+                    "mgs+mds:x-a:1",
+                    "--nic",
+                    "passthrough:0000:01:00.0",
+                ],
+                "needs_root",
+            ),
+        ],
+    )
+    def test_create_refusals(
+        self, ccl: SimpleNamespace, argv: list[str], code: str
+    ) -> None:
+        resp = _send(shlex.join([*argv, "--dry-run"]))
+        assert resp.error is not None
+        assert resp.error.code == code
+        assert resp.stdout == ""
+
+
+def _send(command: str) -> Any:
+    from ltvm_pkg.remote import hosts
+
+    return hosts.transport_for("t").send(command)  # type: ignore[attr-defined]
+
+
+class TestClusterScope:
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["cluster", "status", OWNER_CL],
+            ["cluster", "status", "no-such-cl"],
+            ["cluster", "status", "../../x"],
+            ["cluster", "destroy", OWNER_CL],
+            ["cluster", "start", OWNER_CL],
+            ["cluster", "stop", OWNER_CL],
+            ["cluster", "exec", OWNER_CL, "mds", "true"],
+        ],
+    )
+    def test_owner_or_absent_cluster_is_not_found(
+        self, ccl: SimpleNamespace, argv: list[str]
+    ) -> None:
+        resp = _send(shlex.join(argv))
+        assert resp.error is not None
+        assert resp.error.code == "cluster_not_found"
+        assert (ccl.sockets / f"{OWNER_CL}.cluster").exists()
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            # Upstream verbs stay refused until the allow-list adds them.
+            ["cluster", "failover", REMOTE_CL, REMOTE_NODE],
+            ["cluster", "failback", REMOTE_CL, REMOTE_NODE],
+            ["cluster", "ssh", REMOTE_CL, "mds"],
+            ["cluster", "krb5", REMOTE_CL],
+            ["cluster", "deploy", REMOTE_CL],
+        ],
+    )
+    def test_other_cluster_actions_are_refused(
+        self, ccl: SimpleNamespace, argv: list[str]
+    ) -> None:
+        resp = _send(shlex.join(argv))
+        assert resp.error is not None
+        assert resp.error.code == "verb_refused"
+
+    def test_status_of_a_remote_cluster_has_the_prefix(
+        self, ccl: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        rc = ltvm.run(["--host", "t", "cluster", "status", REMOTE_CL, "--json"])
+        data = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert data["cluster"] == f"t/{REMOTE_CL}"
+        assert [n["name"] for n in data["nodes"]] == [f"t/{REMOTE_NODE}"]
+        assert [r["node"] for r in data["lustre"]] == [f"t/{REMOTE_NODE}"]
+
+    def test_status_text_has_the_prefix(
+        self, ccl: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        rc = ltvm.run(["--host", "t", "cluster", "status", f"t/{REMOTE_CL}"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert f"cluster: t/{REMOTE_CL}" in out
+        assert f"t/{REMOTE_NODE}" in out
+
+    def test_cluster_list_shows_only_remote_clusters(
+        self, ccl: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        rc = ltvm.run(["--host", "t", "cluster", "list", "--json"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        data = json.loads(out)
+        assert [c["cluster"] for c in data["clusters"]] == [f"t/{REMOTE_CL}"]
+        assert data["clusters"][0]["nodes"][0]["name"] == f"t/{REMOTE_NODE}"
+        assert OWNER_CL not in out
+
+    def test_cluster_list_text_has_the_prefix(
+        self, ccl: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        rc = ltvm.run(["--host", "t", "cluster", "list"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert out.startswith(f"t/{REMOTE_CL}: t/{REMOTE_NODE}(mgs+mds,")
+        assert OWNER_CL not in out
+
+    def test_list_prefixes_clusters_and_members(
+        self, ccl: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        rc = ltvm.run(["--host", "t", "list", "--json"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        data = json.loads(out)
+        assert data["clusters"] == [
+            {
+                "name": f"t/{REMOTE_CL}",
+                "owner_id": REMOTE_OWNER,
+                "members": [f"t/{REMOTE_NODE}"],
+            }
+        ]
+        node = next(v for v in data["vms"] if v["name"] == f"t/{REMOTE_NODE}")
+        assert node["cluster"] == f"t/{REMOTE_CL}"
+        assert OWNER_CL not in out
+
+    def test_cluster_exec_with_ltvm_host_env(
+        self,
+        ccl: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        # cluster exec writes its command to args.command, a list.  The
+        # LTVM_HOST path must still read the verb.
+        monkeypatch.setenv("LTVM_HOST", "t")
+        rc = ltvm.run(["cluster", "exec", "--json", OWNER_CL, "mds", "true"])
+        assert rc == 1
+        assert _err(capsys.readouterr().err)["code"] == "cluster_not_found"
+
+
+@pytest.fixture
+def icl(
+    inproc: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> SimpleNamespace:
+    """The in-process host, with sockets bound in vm_cluster too."""
+    from ltvm_pkg import vm_cluster
+
+    monkeypatch.setattr(vm_cluster, "SOCKETS", inproc.sockets)
+    monkeypatch.setattr(vm_cluster, "_distribute_cluster_hosts", lambda *a: [])
+    return inproc
+
+
+class TestClusterLifecycle:
+    def test_create_runs_guarded_children_of_this_ltvm(
+        self, icl: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        from ltvm_pkg import vm_cluster
+        from ltvm_pkg.vm_state import ClusterInfo, VMInfo
+
+        children: list[tuple[list[str], dict[str, str]]] = []
+
+        def fake_child(cmd: list[str], name: str, *, timeout: float) -> Any:
+            import subprocess
+
+            children.append((cmd, dict(os.environ)))
+            owner = cmd[cmd.index("--owner-id") + 1]
+            VMInfo(name=name, ip="192.168.100.90", owner_id=owner).save()
+            return subprocess.CompletedProcess(cmd, 0, "", "")
+
+        with patch.object(vm_cluster, "_run_prefixed", side_effect=fake_child):
+            rc = ltvm.run(
+                [
+                    "--host",
+                    "t",
+                    "cluster",
+                    "create",
+                    "t/new-cl",
+                    "mgs+mds:t/new-cl-a:1",
+                    "--mem",
+                    "1024",
+                ]
+            )
+        capsys.readouterr()
+        assert rc == 0
+        assert ClusterInfo.load("new-cl").owner_id == REMOTE_OWNER
+        [(cmd, env)] = children
+        # The same Python and ltvm script as serve, never sudo or PATH.
+        assert cmd[:3] == [sys.executable, str(_LTVM_PATH), "create"]
+        assert cmd[3] == "new-cl-a"
+        assert env["LTVM_NO_SUDO"] == "1"
+        assert env["LTVM_UPDATE_CHECK"] == "0"
+        assert env["LTVM_TELEMETRY"] == "0"
+        assert env["LTVM_OWNER_ID"] == REMOTE_OWNER
+        assert "LTVM_HOST" not in env
+
+    def test_exec_runs_on_the_nodes_of_a_remote_cluster(
+        self, icl: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        import subprocess
+
+        _save_cluster(icl.sockets, REMOTE_CL, REMOTE_NODE, REMOTE_OWNER)
+        ran = subprocess.CompletedProcess([], 0, "exec-sentinel-d4\n", "")
+        with patch("ltvm_pkg.vm_cluster.run_ssh", return_value=ran) as ssh:
+            rc = ltvm.run(
+                ["--host", "t", "cluster", "exec", f"t/{REMOTE_CL}"]
+                + [f"t/{REMOTE_NODE}", "lctl", "dl"]
+            )
+        assert rc == 0
+        assert "exec-sentinel-d4" in capsys.readouterr().out
+        assert ssh.call_args.args[1] == "lctl dl"
+
+    def test_destroy_removes_a_remote_cluster(
+        self, icl: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        _save_cluster(icl.sockets, REMOTE_CL, REMOTE_NODE, REMOTE_OWNER)
+        _save_cluster(icl.sockets, OWNER_CL, OWNER_NODE, "pid:4242")
+        rc = ltvm.run(["--host", "t", "cluster", "destroy", f"t/{REMOTE_CL}"])
+        capsys.readouterr()
+        assert rc == 0
+        assert not (icl.sockets / f"{REMOTE_CL}.cluster").exists()
+        assert not (icl.sockets / f"{REMOTE_NODE}.info").exists()
+        assert (icl.sockets / f"{OWNER_CL}.cluster").exists()
+        assert (icl.sockets / f"{OWNER_NODE}.info").exists()
+
+    def test_destroy_refuses_a_remote_cluster_with_an_owner_node(
+        self, icl: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        # A remote cluster record that names an owner VM as a node.
+        from ltvm_pkg.vm_state import ClusterInfo
+
+        _save_vm(icl.sockets, OWNER_NODE, "pid:4242")
+        with patch("ltvm_pkg.vm_state.SOCKETS", icl.sockets):
+            ClusterInfo(
+                name=REMOTE_CL,
+                owner_id=REMOTE_OWNER,
+                nodes=[{"name": OWNER_NODE, "roles": ["mgs", "mds"]}],
+            ).save()
+        rc = ltvm.run(
+            ["--host", "t", "cluster", "destroy", "--json", REMOTE_CL]
+        )
+        assert rc == 1
+        assert _err(capsys.readouterr().err)["code"] == "cluster_not_found"
+        assert (icl.sockets / f"{OWNER_NODE}.info").exists()
 
 
 # ── the exec:// transport ────────────────────────────────

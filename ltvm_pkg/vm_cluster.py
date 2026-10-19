@@ -2318,7 +2318,12 @@ def _node_state(name: str) -> str:
 
 
 def cmd_cluster_list(args: argparse.Namespace) -> None:
+    from . import vm_commands
+
     use_json = bool(getattr(args, "json", False))
+    # serve sets list_filter, so that a remote request sees only remote
+    # clusters.  A filtered list cannot tell whose a broken file is.
+    keep = vm_commands.list_filter
     clusters: list[dict[str, Any]] = []
     for cname in ClusterInfo.all_names():
         try:
@@ -2330,7 +2335,10 @@ def cmd_cluster_list(args: argparse.Namespace) -> None:
             # Corrupt or malformed cluster file -- flag it and keep
             # listing the rest rather than crashing.  Better to see
             # "clusterA: <BROKEN: ...>" than to get nothing at all.
-            clusters.append({"cluster": cname, "error": str(e)})
+            if keep is None:
+                clusters.append({"cluster": cname, "error": str(e)})
+            continue
+        if keep is not None and not keep(cluster.owner_id):
             continue
         clusters.append(
             {
@@ -2350,6 +2358,11 @@ def cmd_cluster_list(args: argparse.Namespace) -> None:
     if use_json:
         print(json.dumps({"clusters": clusters}, indent=2))
         return
+    print_cluster_list(clusters)
+
+
+def print_cluster_list(clusters: list[dict[str, Any]]) -> None:
+    """Print the `cluster list --json` rows as text."""
     if not clusters:
         print("(no clusters)")
         return
@@ -2381,11 +2394,7 @@ def cmd_cluster_status(args: argparse.Namespace) -> None:
         }
         for node in nodes
     ]
-    from .cluster_lustre_state import (
-        lustre_state,
-        print_lustre_state,
-        wait_recovery,
-    )
+    from .cluster_lustre_state import lustre_state, wait_recovery
 
     wait = getattr(args, "wait_recovery", None)
     if wait is None:
@@ -2393,54 +2402,56 @@ def cmd_cluster_status(args: argparse.Namespace) -> None:
     else:
         lustre, recovered = wait_recovery(cluster, wait)
 
+    data: dict[str, Any] = {
+        "cluster": cluster.name,
+        "owner_id": cluster.owner_id,
+        "ip_family": cluster.ip_family or "ipv4",
+        "ost_count": cluster.ost_count or None,
+        "nodes": rows,
+        "lustre": lustre,
+        **({} if recovered is None else {"recovered": recovered}),
+    }
     if use_json:
-        print(
-            json.dumps(
-                {
-                    "cluster": cluster.name,
-                    "owner_id": cluster.owner_id,
-                    "ip_family": cluster.ip_family or "ipv4",
-                    "ost_count": cluster.ost_count or None,
-                    "nodes": rows,
-                    "lustre": lustre,
-                    **({} if recovered is None else {"recovered": recovered}),
-                },
-                indent=2,
-            )
-        )
+        print(json.dumps(data, indent=2))
         if recovered is False:
             raise SystemExit(1)
         return
+    print_cluster_status(data)
+    if recovered is False:
+        die(f"recovery did not end in {wait}s")
 
-    print(f"cluster: {cluster.name}")
-    print(f"owner:   {cluster.owner_id or '-'}")
-    print(f"family:  {cluster.ip_family or 'ipv4'}")
-    if cluster.ost_count:
-        print(f"osts:    {cluster.ost_count} (--ost-count)")
+
+def print_cluster_status(data: dict[str, Any]) -> None:
+    """Print the `cluster status --json` document as text."""
+    from .cluster_lustre_state import print_lustre_state
+
+    nodes: list[dict[str, Any]] = data["nodes"]
+    print(f"cluster: {data['cluster']}")
+    print(f"owner:   {data['owner_id'] or '-'}")
+    print(f"family:  {data['ip_family']}")
+    if data["ost_count"]:
+        print(f"osts:    {data['ost_count']} (--ost-count)")
     print(f"nodes:   {len(nodes)}")
     print()
 
-    # The human path walks the nodes, not `rows`: a dict of mixed value
-    # types comes back out as `object`, and "+".join(object) is not a
-    # thing mypy will accept -- nor should it.
     for node in nodes:
-        status = "running" if _node_state(node.name) == "up" else "stopped"
+        status = "running" if node["state"] == "up" else "stopped"
         disks = ""
-        if node.mdt_disks:
-            disks += f" mdt={node.mdt_disks}"
-        if node.ost_disks:
-            disks += f" ost={node.ost_disks}"
-        if node.is_mgs and not node.is_mds:
+        if node["mdt_disks"]:
+            disks += f" mdt={node['mdt_disks']}"
+        if node["ost_disks"]:
+            disks += f" ost={node['ost_disks']}"
+        if node["mgs_disk"]:
             disks += " mgs=1"
-        if node.failover_for:
-            disks += f" disks of {node.failover_for}"
-        roles = "+".join(node.roles)
+        if node.get("failover_for"):
+            disks += f" disks of {node['failover_for']}"
+        roles = "+".join(node["roles"])
         print(
-            f"  {node.name:<20} {node.ip:<18} {status:<8} {roles:<12}{disks}",
+            f"  {node['name']:<20} {node['ip']:<18} {status:<8} "
+            f"{roles:<12}{disks}",
         )
-    print_lustre_state(lustre)
-    if recovered is False:
-        die(f"recovery did not end in {wait}s")
+    # A host with an older ltvm sends no "lustre".
+    print_lustre_state(data.get("lustre") or [])
 
 
 def cmd_cluster_ssh(args: argparse.Namespace) -> None:

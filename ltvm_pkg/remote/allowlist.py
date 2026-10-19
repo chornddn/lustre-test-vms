@@ -30,6 +30,13 @@ ALLOW_LIST: frozenset[tuple[str, ...]] = frozenset(
         ("vm", "nmi"),
         ("vm", "snapshot"),
         ("vm", "restore"),
+        ("cluster", "create"),
+        ("cluster", "destroy"),
+        ("cluster", "start"),
+        ("cluster", "stop"),
+        ("cluster", "status"),
+        ("cluster", "list"),
+        ("cluster", "exec"),
     }
 )
 

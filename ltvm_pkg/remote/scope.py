@@ -4,7 +4,8 @@ The VMs of the host owner and the remote VMs are in one VM directory.
 `serve` sets the owner ID of each VM that a remote request makes to
 ``remote:<key fingerprint>``.  A remote request can see and change only
 the VMs with that prefix.  To a remote request, a VM of the owner looks
-the same as a VM that does not exist.
+the same as a VM that does not exist.  A cluster is in scope when its
+record and each of its nodes have the remote owner ID.
 
 `check` reads the parsed command, because argparse accepts option
 abbreviations (`--fol` for `--follow`) that a token check can miss.
@@ -136,6 +137,94 @@ def _check_existing(names: list[str]) -> None:
             raise _refuse_root(f"VM {name!r} has a passthrough NIC, so it")
 
 
+def _cluster_owner(name: str) -> tuple[bool, str | None, list[str]]:
+    """(the cluster exists, its owner ID, its node names)."""
+    from ltvm_pkg.vm_state import ClusterInfo, ClusterNotFound
+
+    if not _VM_NAME_RE.fullmatch(name):
+        return False, None, []
+    try:
+        cluster = ClusterInfo.load(name)
+        return True, cluster.owner_id, [n.name for n in cluster.get_nodes()]
+    except ClusterNotFound:
+        return False, None, []
+    except (RuntimeError, ValueError, KeyError, TypeError, OSError):
+        # Unreadable state: it exists, but it is not a remote cluster.
+        return True, None, []
+
+
+def _check_clusters(names: list[str], *, lifecycle: bool) -> None:
+    """Every cluster and each of its nodes must be remote.
+
+    With lifecycle, a node with a passthrough NIC is refused too,
+    because start, stop and destroy of that node need root.
+    """
+    from ltvm_pkg.vm_state import VMInfo
+
+    for name in names:
+        exists, owner, nodes = _cluster_owner(name)
+        owners = [_owner(n) for n in nodes]
+        remote_nodes = all(is_remote(o) for found, o in owners if found)
+        if not (exists and is_remote(owner) and remote_nodes):
+            raise RemoteError(
+                "cluster_not_found",
+                f"this host has no remote cluster named {name!r}",
+                hint="`cluster list` with --host shows the remote clusters.",
+            )
+        if not lifecycle:
+            continue
+        for node in nodes:
+            if _owner(node)[0] and _has_passthrough(VMInfo.load(node).nics):
+                raise _refuse_root(
+                    f"node {node!r} has a passthrough NIC, so it"
+                )
+
+
+def spec_node_name(spec: str) -> str | None:
+    """The node name in a `cluster create` node spec (roles:name[:disks])."""
+    parts = spec.split(":")
+    return parts[1] if len(parts) >= 2 else None
+
+
+def _check_cluster_create(args: argparse.Namespace) -> None:
+    if getattr(args, "owner_id", None) is not None:
+        raise RemoteError(
+            "bad_request",
+            "a remote request cannot set the owner of a cluster",
+            hint="Remove --owner.  serve sets the owner of remote clusters.",
+        )
+    if _has_passthrough(getattr(args, "nic", None)):
+        raise _refuse_root("a passthrough NIC")
+    exists, owner, _ = _cluster_owner(args.name)
+    taken = exists and not is_remote(owner)
+    nodes = [spec_node_name(spec) for spec in args.specs]
+    # --failover PARTNER=PRIMARY makes the node PARTNER too.
+    nodes += [
+        f.partition("=")[0] for f in getattr(args, "failover", None) or []
+    ]
+    for node in nodes:
+        if not node:
+            continue
+        node_exists, node_owner = _owner(node)
+        taken = taken or (node_exists and not is_remote(node_owner))
+    if taken:
+        raise RemoteError(
+            "name_in_use",
+            "the cluster name or a node name is in use on this host",
+            hint="Choose different names.",
+        )
+
+
+def _check_cluster(args: argparse.Namespace) -> None:
+    action = getattr(args, "cluster_action", None)
+    if action == "create":
+        _check_cluster_create(args)
+    elif action in ("destroy", "start", "stop"):
+        _check_clusters(list(args.names), lifecycle=True)
+    elif action in ("status", "exec"):
+        _check_clusters([args.name], lifecycle=False)
+
+
 def check(argv: list[str], args: argparse.Namespace) -> list[str]:
     """Refuse a request outside the remote VMs.  Return the argv to run.
 
@@ -147,6 +236,8 @@ def check(argv: list[str], args: argparse.Namespace) -> list[str]:
         _check_create(args)
     elif verb in _NAMES_VERBS:
         _check_existing(list(args.names))
+    elif verb == "cluster":
+        _check_cluster(args)
     elif verb == "vm":
         action = getattr(args, "vm_action", None)
         _check_existing([args.name])
