@@ -1,28 +1,19 @@
 # Remote VM hosts
 
-## Goal
+You run `ltvm` on one machine, the **controller**. The VMs run on a different machine, the **host**. An AI agent or a person on the controller can create VMs and clusters on the host. It can deploy a Lustre tree to them, run suites, and copy the results back. The command is the same as for local VMs, with `--host <name>` added:
 
-You run `ltvm` on one machine, the **controller**. The VMs run on a different machine, the **host**. An AI agent or a person on the controller can create VMs and clusters on the host. It can deploy a Lustre tree to them, run suites, and get the results back. The command is the same as for local VMs, with `--host <name>` added.
+```bash
+ltvm --host lab1 cluster create co2 mgs+mds:co2-mds:1 oss:co2-oss:2 client:co2-c1
+ltvm --host lab1 cluster deploy co2 --build ~/lustre-release --mount
+ltvm --host lab1 suite run co2 sanity --only '0a 1' --wait
+ltvm --host lab1 pull co2 suite
+```
 
-Often the host is a personal machine, and its owner also uses it for other work. So the design limits what the controller can do on the host, and it keeps the host's owner in control.
+Often the host is a personal machine, and its owner also uses it for other work. So `serve`, the program that runs each request on the host, limits what the controller can do. The host owner keeps control.
 
-Supported hosts are the platforms that ltvm supports now: Linux, macOS on Apple Silicon, and WSL2. Users must follow their own organization's policy for the machines that they connect.
+Supported hosts are Linux, macOS on Apple Silicon, and WSL2. Follow the policy of your organization for the machines that you connect.
 
-## Current behavior
-
-- ltvm runs only on the machine where you install it. It has no host concept, no transport, and no daemon.
-- QEMU starts locally, and ltvm controls it through a local QMP unix socket (`ltvm_pkg/qemu_run.py`).
-- VM state is in `/opt/qemu-vms`. Artifacts are in `<repo>/artifacts/`.
-- `deploy-lustre` builds the tree in a podman container on the local machine. It bind-mounts `--lustre-tree` and runs `git describe` on it. Then it streams the staging tree into the guest with `tar | ssh` (`ltvm_pkg/deploy.py`).
-- Guests are on a private subnet. On macOS the subnet is vmnet `192.168.105.0/24`. On Linux it is the `fcbr0` bridge. Only the local machine can reach the subnet.
-- All guests have the root password `initial0`. ltvm turns off SSH host-key checks for guests. This setup is safe only because no other machine can reach the guest subnet.
-- On a host with the shared layout, members of the `ltvm` group run the full VM lifecycle with no root. On the classic layout, `cluster create` and `cluster destroy` need sudo (`ltvm_pkg/rootless.py`).
-- `create` and `start` already refuse a VM when the RAM of the running VMs plus the new VM is more than the host budget (`qemu_run._memory_shortfall`, `[memory]` in `/etc/ltvm.conf`).
-- Claims (`ltvm claim`, `ltvm_pkg/vm_claim.py`) and the advisory `owner_id` already record which session uses a VM.
-
-## Proposed behavior
-
-### Overview
+## How it works
 
 The design follows the Docker-context model (`DOCKER_HOST=ssh://`). There is no daemon and no new open port. SSH gives authentication and encryption.
 
@@ -35,238 +26,436 @@ ltvm --host lab1 cluster create ...
                                                authorized_keys:
                                                restrict,command="ltvm serve --stdio",from="<ip>"
                                              ltvm serve --stdio   (user: ltvm, not admin)
-                                               check protocol version
-                                               check verb against allow-list
-                                               check caps and leases
-                                               run the verb, write the audit log
-  <- stdout, stderr, exit status, JSON errors
+                                               check: host enabled
+                                               check: protocol version
+                                               check: shared layout, not root
+                                               check: verb on the allow-list
+                                               check: names, paths, podman
+                                               check: AC power and caps
+                                               run the verb, write the audit line
+  <- reply line, verb output, exit status
 ```
 
-### Commands
+- Each request is one SSH session. The controller sends the argument vector as one string. sshd gives it to `serve` in `SSH_ORIGINAL_COMMAND`. `serve` splits it with `shlex` and gives it to no shell.
+- The first line in each direction is a JSON handshake with the protocol version and the ltvm version. The protocol version is 1. It is separate from the ltvm version.
+- The controller parses the command first. So a bad option fails on the controller, before the network.
+- `serve` never runs `sudo`. It refuses to run as root. It refuses a host that does not have the shared layout (see "Root" in the README).
+- `serve` turns off telemetry and the update check for each request and for each child ltvm process.
 
-Controller side:
+## Set up the host
 
-| Command | Action |
-|---|---|
-| `ltvm host add <name> ssh://ltvm@<addr> --hostkey <fp>` | Make a key for this host, pin the host key, write the entry, and print the `serve authorize` line for the host owner. |
-| `ltvm host list` | Show the hosts, their reachability, and their protocol versions. |
-| `ltvm host remove <name>` | Delete the entry and the key. Print the line that the host owner must delete. |
-| `ltvm --host <name> <verb> ...` | Run a verb on the host. `LTVM_HOST=<name>` does the same. |
-| `ltvm --host <name> pull <job\|vm> <what>` | Copy suite results, crash dumps, or debug logs from the host. |
+### 1. Install
 
-Host side:
+Put the ltvm checkout where the dedicated user can read it, for example `/opt/ltvm`. The forced command runs the checkout and its Python as that user. A checkout in your home directory usually fails this check.
 
-| Command | Action |
-|---|---|
-| `./ltvm install --serve` | Do the normal install, create the `ltvm` user, run the `serve init` wizard, check sshd, and print the steps that are left. |
-| `ltvm serve init` | Wizard that writes `serve.toml`. |
-| `ltvm serve authorize '<pubkey>' --from <ip>` | Write one restricted line to `authorized_keys`. |
-| `ltvm serve status` | Show leases, resource use, and the most recent requests. |
-| `ltvm serve disable [--destroy]` | Refuse all requests. With `--destroy`, also destroy all VMs that remote requests made. |
-| `ltvm serve enable` | Accept requests again. |
-| `ltvm serve --stdio` | Forced command. A person does not run it. |
+As an admin user, run the install with `--serve`. On Linux and WSL2, use `sudo`. On macOS, do not use `sudo`.
 
-The name `pull` prevents a collision with `ltvm target fetch`, which already exists.
+```bash
+sudo ./ltvm install --serve            # Linux, WSL2
+./ltvm install --serve                 # macOS
+./ltvm install --serve --yes           # accept the default caps, ask nothing
+```
 
-On the controller, a remote VM has the name `<host>/<vm>`. So a remote VM cannot collide with a local VM.
+`install --serve` does the normal install. Then it does these steps:
 
-### Host bootstrap
-
-A person at the host runs `./ltvm install --serve` as an admin user. The command does these steps:
-
-1. The normal `ltvm install` steps: QEMU, network, socket_vmnet or bridge, and the `ltvm` group.
-2. It creates the dedicated user `ltvm`.
-   - macOS: `sysadminctl`, a hidden user with no password, not in the `admin` group.
-   - Linux and WSL2: `useradd`, with the password locked.
-   - The shell is `/bin/sh`, because the SSH forced command needs a shell.
+1. It makes the dedicated user `ltvm`, if the user does not exist.
+   - macOS: a hidden user (UID 401-499), with no password, not in `admin`. The primary group is `staff`, for socket_vmnet. The home is `/Users/ltvm`.
+   - Linux and WSL2: `useradd`, home `/home/ltvm`, primary group `ltvm`, also in `kvm` when that group exists. `usermod --lock` locks the password.
+   - The shell is `/bin/sh`, because sshd runs the forced command through the shell.
    - The user is a member of the `ltvm` group. So it runs the VM lifecycle with no root on the shared layout.
-   - The user gets its own artifacts directory, `~ltvm/artifacts` (`LTVM_ARTIFACTS_DIR`), because it cannot write to the admin's checkout.
-3. It runs `ltvm serve init` as the `ltvm` user. See [Caps](#caps-and-admission-control).
-4. It checks that sshd runs and that it accepts the `ltvm` user.
-   - macOS: it tells the person how to turn on Remote Login for the `ltvm` user only.
-   - WSL2: it checks sshd inside the distro and prints the WSL2 steps.
-5. It prints the `ltvm host add ... --hostkey <fp>` line for the person to paste on the controller.
+   - The user gets its own artifacts directory, `~ltvm/artifacts`. `serve` sets `LTVM_ARTIFACTS_DIR` to it.
+   - Linux and WSL2: the user gets 65536 subordinate UIDs and GIDs in `/etc/subuid` and `/etc/subgid`, for rootless podman. The range starts after the highest range in each file, and at 100000 or more. A user that has a range keeps it.
+2. It checks that the user can read the checkout and its Python. If a directory blocks the user, it prints the directories and skips the wizard.
+3. It runs the `serve init` wizard as that user. See [Caps](#caps).
+4. It installs the reap job. See [Leases](#leases-and-reap).
+5. Linux (not WSL2): it installs a polkit rule for the power guard. See [Sleep](#sleep-and-power).
+6. It checks sshd for the user: running, `AllowUsers`, `DenyUsers`, `AllowGroups`, `ExposeAuthInfo`, and on macOS the `PATH` and Remote Login.
+7. It prints the steps that you must do, and the `ltvm host add` command for the controller.
 
-ltvm does not install or configure a VPN. The docs recommend Tailscale with an ACL: only `tag:ltvm-controller` can reach `tag:ltvm-host` on port 22. On WSL2, install Tailscale inside the distro. Then the Windows NAT and port proxy have no part in the path.
+`install --serve` never changes the sshd configuration, Remote Login, a firewall or a VPN. It prints these steps for you.
 
-### Pairing
+If the wizard did not run, run it as the dedicated user:
+
+```bash
+sudo -u ltvm -H /usr/local/bin/ltvm serve init
+```
+
+On macOS, every local user is in the `staff` group. So `ltvm` can read the files in your home that `staff` or everyone can read. Check with `ls -la ~`. Use `chmod 0700` where you need to.
+
+### 2. Configure sshd
+
+Add this block to `/etc/ssh/sshd_config.d/ltvm.conf`, or to the end of `/etc/ssh/sshd_config`. `install --serve` prints the block when your sshd needs it.
+
+```
+Match User ltvm
+    ExposeAuthInfo yes
+    PasswordAuthentication no
+    KbdInteractiveAuthentication no
+    AuthenticationMethods publickey
+    PermitTTY no
+    AllowTcpForwarding no
+    AllowAgentForwarding no
+    X11Forwarding no
+    PermitTunnel no
+    PermitUserRC no
+    SetEnv PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+```
+
+- `ExposeAuthInfo yes` is necessary. Without it, sshd does not set `SSH_USER_AUTH`. Then the audit log and the VM owner ID cannot name the controller key, and they show `-`.
+- `SetEnv PATH=...` is necessary on macOS only. On macOS, the sshd PATH for a forced command has no `/usr/local/bin`. So sshd cannot find `ltvm`. `SetEnv` needs OpenSSH 8.7 or later. macOS 13 and later have it.
+- The other lines repeat the `restrict` option of the key line. They are a second layer.
+- A `Match` block must be at the end of `sshd_config`. A drop-in file in `sshd_config.d/` works on RHEL 9, Ubuntu 22.04 and later, and macOS 13 and later.
+
+Check the result, then reload sshd:
+
+```bash
+sudo sshd -t
+sudo sshd -T -C user=ltvm,host=x,addr=127.0.0.1 | grep -E 'exposeauthinfo|setenv'
+sudo systemctl reload sshd                          # Debian and Ubuntu: ssh
+sudo launchctl kickstart -k system/com.openssh.sshd # macOS
+```
+
+On macOS, turn on Remote Login: System Settings > General > Sharing > Remote Login. Under "Allow access for", select "Only these users" and add `ltvm`. Keep your own account in the list only if you use ssh to this Mac. If you add only `ltvm` to `com.apple.access_ssh`, you lock out your own ssh access.
+
+### 3. Restrict the network
+
+ltvm does not install or configure a VPN. We recommend Tailscale with an access control list (ACL) that lets only the controller reach port 22 on the host. Tag the controller `tag:ltvm-controller` and the host `tag:ltvm-host`. Then put this rule in the tailnet policy file:
+
+```json
+{
+  "tagOwners": {
+    "tag:ltvm-controller": ["autogroup:admin"],
+    "tag:ltvm-host":       ["autogroup:admin"]
+  },
+  "acls": [
+    {"action": "accept", "src": ["tag:ltvm-controller"], "dst": ["tag:ltvm-host:22"]}
+  ]
+}
+```
+
+- Remove the default "allow all" rule. No other rule may give a different source access to `tag:ltvm-host:22`.
+- Give the controller Tailscale address (`100.x.y.z`) to `--from` when you pair. Then the key works only from that address.
+- On WSL2, run Tailscale inside the distro. Then the Windows NAT and the port proxy are not in the path.
+
+### 4. WSL2
+
+A WSL2 host needs more steps. `install --serve` prints them when sshd does not run in the distro.
+
+1. Install `openssh-server` in the distro (apt or dnf).
+2. Put `[boot]` and `systemd=true` in `/etc/wsl.conf`. Run `wsl --shutdown` in Windows, then start the distro again. The reap timer and sshd need systemd.
+3. Run `sudo systemctl enable --now ssh` (or `sshd`).
+4. Make port 22 of the distro reachable. The best way is Tailscale inside the distro. Without Tailscale, put `[wsl2]` and `networkingMode=mirrored` in `%UserProfile%\.wslconfig`, or forward port 22 with `netsh interface portproxy`. Then let port 22 in through the Windows firewall, from your private network only.
+5. Set the Windows power plan so that the PC does not sleep while a VM runs. ltvm cannot stop Windows from going to sleep.
+
+Behind the WSL2 NAT, the host sees the vEthernet gateway as the controller address, not the real address. Give the address that the host sees to `--from`.
+
+## Pair the controller and the host
 
 Each side pins the other. No person edits `authorized_keys` by hand.
 
-1. The host prints `ltvm host add <name> ssh://ltvm@<addr> --hostkey <fp>`. The person pastes it on the controller. The controller trusts only that host key.
-2. `host add` makes an ed25519 key at `~/.config/ltvm/keys/<name>`. The key has no passphrase, because agents use it with no person present. `host add` prints `ltvm serve authorize '<pubkey>' --from <controller ip>`.
-3. The person pastes that line on the host. `serve authorize` writes this line, and the restrict options are always present:
+1. `install --serve` prints a line such as this one. The fingerprint is the SHA256 fingerprint of `/etc/ssh/ssh_host_ed25519_key.pub`.
 
-   ```
-   restrict,command="ltvm serve --stdio",from="<controller ip>" ssh-ed25519 AAAA... ltvm:<controller>
+   ```bash
+   ltvm host add lab1 ssh://ltvm@100.64.0.7 --hostkey SHA256:abc...
    ```
 
-To revoke the controller, delete its line. `ltvm host remove` prints the line to delete.
+   Run it on the controller. Use the address that the controller reaches (the VPN address, if you use a VPN). `host add` takes only an ed25519 host key.
 
-We do not use FIDO or Secure Enclave keys. These keys need a touch for each use, and a touch blocks autonomous agents.
+2. `host add` does these steps:
+   - It makes an ed25519 key at `~/.config/ltvm/keys/lab1`, with no passphrase. Agents use the key with no person present.
+   - It runs `ssh-keyscan` and keeps the host key only if its fingerprint is the pinned one. A different key gives `host_key_mismatch`, and `host add` adds nothing. If the host is not reachable, `host add` adds the host. The first request then pins the key against the same fingerprint.
+   - It writes the entry to `$XDG_CONFIG_HOME/ltvm/hosts.json`.
+   - It prints the command for the host owner:
 
-### `serve` and the allow-list
+   ```bash
+   sudo -u ltvm -H ltvm serve authorize 'ssh-ed25519 AAAA... ltvm:<controller>' --from 100.64.0.9
+   ```
 
-`ltvm serve --stdio` reads `SSH_ORIGINAL_COMMAND`. It does not pass the command to a shell. It parses the command into an argument vector and checks it.
+   `--from` is the address that the host sees for the controller. By default, `host add` uses the local address of the route to the host. Change it if a NAT or a VPN is in the path.
 
-`serve` refuses to start if the host does not have the shared layout. It never calls `sudo`. A verb that needs root, such as a VM with a `passthrough` NIC, is refused.
+3. Run that command on the host. `serve authorize` adds one line to `~ltvm/.ssh/authorized_keys` (directory 0700, file 0600). The restrict options are always there:
 
-1. The first message is a version exchange. If the protocol versions are different, `serve` stops. The controller prints the update command for the host owner. The controller never updates the host, because an update would let the controller replace the code that does the checks.
-2. The verb must be on the allow-list.
-3. Arguments that are paths must resolve inside the job directory or the VM state for this request.
-4. Resource requests go through admission control.
-5. `serve` writes one line to `~/.local/state/ltvm/serve.log` for each request: time, key fingerprint, verb, arguments, and result.
+   ```
+   restrict,command="ltvm serve --stdio",from="100.64.0.9" ssh-ed25519 AAAA... ltvm:<controller>
+   ```
 
-Allowed verbs:
+   `serve authorize` refuses a key that already has a line.
 
-- `create`, `destroy`, `start`, `stop`, `list`
-- `vm` subcommands that inspect, snapshot, or collect a crash
-- `cluster`
-- `target fetch`, `target list`, `target show`, `build`, into the `ltvm` user's artifacts directory
-- `deploy-lustre`, but only with a tree from `receive-tree`
-- `llmount`, `llumount`
-- `suite`
-- `ssh <vm> <cmd>`, which runs a command in a guest
-- `receive-tree`, `pull`, `lease`, `status`
+4. On the controller, check the host:
 
-Refused verbs:
+   ```bash
+   ltvm host list            # status: ok, or an error code
+   ltvm host list --json     # name, url, status, protocol, ltvm
+   ```
 
-- `install`, `update`, `skills`, `doctor --fix`, `clean`. These verbs need sudo or change the host's ltvm.
-- `make-install`, `make-uninstall`, `make-reinstall`. These verbs act on the host itself, not on a guest.
-- `target delete --remote`, `target publish`.
-- `telemetry`. `serve` forces telemetry off for all remote requests.
-- Any verb that is not on the allow-list. A new verb is refused until someone adds it to the list.
+To remove a controller, delete its line from `~ltvm/.ssh/authorized_keys`. On the controller, `ltvm host remove lab1` deletes the entry and the key files, and prints the line that the host owner must delete.
 
-### Remote build and deploy
+The controller ssh command ignores your `~/.ssh/config` (`-F /dev/null`). So a `ProxyJump` in that file does not apply. The command uses `BatchMode`, `StrictHostKeyChecking=yes`, the per-host known_hosts file, no agent and no forwards.
 
-The build runs on the host. The controller and the host can have different architectures. For example, an aarch64 Mac cannot build natively for an x86_64 guest on a WSL2 host.
+We do not use FIDO or Secure Enclave keys. These keys need a touch for each use, and a touch blocks agents.
 
-1. On the controller, `ltvm --host X deploy-lustre --lustre-tree <path>` makes a tar stream. The stream holds:
-   - the files that `git ls-files` lists
-   - untracked files that git does not ignore
-   - the git metadata that `git describe` needs
-2. `serve receive-tree <job>` unpacks the stream into `~ltvm/jobs/<job>/tree`.
-3. `serve` runs the normal `deploy-lustre` on that directory.
+## Use a remote host
 
-**Security boundary.** A Lustre tree holds Makefiles and configure scripts. A deploy runs code that the controller sends. The forced command limits which ltvm verbs run, but it is not a sandbox. Two layers give the isolation:
+### Select the host
 
-- the build container: the podman machine VM on macOS, or rootless podman on Linux and WSL2
-- the `ltvm` user, which is not an admin and cannot read the owner's files
+- `ltvm --host lab1 <verb> ...` sends the verb to the host. `--host` must come before the verb. `ltvm list --host lab1` is an error.
+- `LTVM_HOST=lab1` in the environment does the same for every verb, except `serve` and `host`.
+- A name `lab1/<vm>` selects host `lab1` when `lab1` is a registered host. `--host` wins over the name prefix, and the prefix wins over `LTVM_HOST`.
 
-`serve` refuses a remote build if podman is not rootless and not VM-backed.
+On the controller, a remote VM has the name `<host>/<vm>`. `list`, `cluster list`, `cluster status` and `cluster exec` show the prefix. You can give a name with or without the prefix. Exception: the values of `--node-target VM=...` and `--node-kernel VM=...` take the bare node name.
 
-### Guest access
+### Allowed verbs
 
-The controller reaches guests only through `serve`: `ssh <vm> <cmd>`, `suite`, `llmount`, and `pull`. The design does not allow SSH ProxyJump or port forwards. The guests share the root password `initial0`, so only `serve` must be able to reach them.
-
-### Results
-
-The command `ltvm --host X pull <job|vm> <what>` copies results to the controller.
-
-The `serve` command accepts 4 values of `<what>`: `suite`, `crash`, `dk`, and `console`. It reads only from the job directory or the VM state for that request. The `pull` verb does not accept a free path.
-
-### Caps and admission control
-
-`serve init` finds the host's CPUs, RAM, and free disk. It suggests a value for each cap. The person presses Enter to accept a value.
-
-| Cap | Default |
+| Area | Allowed |
 |---|---|
-| vCPUs for VMs | 80 % of logical CPUs |
-| RAM for VMs | 80 % of physical RAM |
-| Disk for jobs and images | the smaller of 100 GB and 25 % of free space |
-| Default lease | 8 h |
-| Run only on AC power | yes on a laptop. The wizard does not ask on a desktop. |
+| Lifecycle | `create`, `destroy`, `start`, `stop`, `list` |
+| VM actions | `vm console-log`, `vm crash-collect`, `vm nmi`, `vm snapshot`, `vm restore`, `vm exec`, `vm dk-collect` |
+| Clusters | `cluster create`, `destroy`, `start`, `stop`, `status`, `list`, `exec`, `deploy`, `llmount`, `llumount` |
+| Artifacts | `target list`, `target show`, `target fetch`, `build all`, `build container`, `build kernel`, `build image`, `build zfs`, `build mofed-kmods`, `build status` |
+| Lustre | `deploy-lustre`, `llmount`, `llumount`, `suite run`, `suite status`, `suite collect` |
+| Remote only | `pull`, `lease renew` (and `receive-tree`, which the controller sends for a deploy) |
 
-`--yes` accepts all defaults. Flags such as `--max-vcpus N` set one value. These options let a person script the setup. The caps are in `~ltvm/.config/ltvm/serve.toml`.
+`serve` refuses every other verb with `verb_refused`. Examples: `install`, `update`, `doctor`, `clean`, `skills`, `telemetry`, `claim`, `release`, `vm set`, `cluster ssh`, `cluster krb5`, `build lustre`, `build shell`, `target build`, `target publish`, `target delete`, and the `make-*` verbs. A new ltvm verb stays refused until a person adds it to `ltvm_pkg/remote/allowlist.py`. `serve` also refuses the aliases under `vm` (for example `vm create`). Use the top-level verbs.
 
-The RAM cap uses the memory admission check that exists now. `serve` adds the same type of check for vCPUs and disk.
+### Scope rules
 
-There is no cap on the number of VMs. For example, the vCPU cap is 80. Then the controller can make 80 VMs with 1 vCPU each. Or it can make 10 VMs with 8 vCPUs each. RAM and disk must also be sufficient.
+`serve` lets the controller act only on what remote requests made. A VM that a remote request makes has the owner ID `remote:<key fingerprint>`.
 
-`serve` refuses a request at once if the request goes above a cap. It does not put the request in a queue. The error has the requested, used, and free value for each resource, as text and as JSON:
+- `list` and `cluster list` show only remote VMs and clusters. They do not show the VMs of the host owner.
+- A verb on a VM or cluster that the owner made gives `vm_not_found` or `cluster_not_found`. The message is the same as for a VM that does not exist.
+- `create` with the name of an owner VM gives `name_in_use`. `create` with the name of a remote VM starts it, as on a local host.
+- `create --owner` gives `bad_request`.
+- A `passthrough` NIC gives `needs_root`.
+- Path options give `path_refused`: `create --image`, `vm crash-collect --outdir` and `--mod-dir`, `suite run --results-dir`, `suite collect --dest` and `--results-dir`, `--zfs-source`, `--url`, and a `--lustre-tree` that is not a job tree.
+- `vm console-log --follow` gives `verb_refused`, because `serve` does not stream that output.
+- `vm crash-collect` always writes to `VM_DIR/crashes/<vm>/` on the host. `vm dk-collect` always writes to `VM_DIR/dk/<vm>/`.
+- A build or a deploy gives `podman_unsafe` when podman on a Linux or WSL2 host is not rootless. On macOS, podman runs containers in the podman machine VM, so `serve` accepts it.
 
-```json
-{"error": "over_cap",
- "requested": {"vcpus": 16, "ram_gb": 32, "disk_gb": 40},
- "used":      {"vcpus": 72, "ram_gb": 96, "disk_gb": 60},
- "cap":       {"vcpus": 80, "ram_gb": 102, "disk_gb": 100}}
+The controller reaches guests only through `serve`: `vm exec`, `cluster exec`, `suite`, `llmount`, and `pull`. There is no ProxyJump and no port forward. All guests have the root password `initial0`, so only the host must reach the guest subnet.
+
+### Deploy a Lustre tree
+
+```bash
+ltvm --host lab1 create co1-single --vcpus 2 --mem 4096 --lease 4h
+ltvm --host lab1 deploy-lustre co1-single --lustre-tree ~/lustre-release --mount
+ltvm --host lab1 vm exec co1-single lctl dl
 ```
 
-An agent can then ask for a smaller cluster, or use local VMs.
+The build runs on the host, in the build container of the host. The controller and the host can have different architectures.
 
-### Leases
+1. The controller makes a gzip tar stream of the tree. The stream holds the files from `git ls-files --cached --others --exclude-standard`, without deleted files and submodule directories. It also holds a `LUSTRE-VERSION-FILE` that the controller makes from `git describe`. It does not hold `.git`.
+2. `serve` unpacks the stream into a new job directory, `~ltvm/jobs/j-YYYYMMDD-HHMMSS-<hex>/tree/`.
+3. The controller replaces `--lustre-tree` (or `--build`) with the job tree, and `serve` runs the verb.
 
-Each VM or cluster that a remote request makes gets a lease. The default is 8 h. `ltvm --host X lease renew <vm|cluster> [--for 4h]` extends a lease. A launchd job or systemd timer runs `serve reap`. It destroys VMs whose lease has expired. So a controller that crashes does not leave VMs on the host.
+The controller sends the tree for `deploy-lustre`, `cluster deploy`, and `build all|kernel|image` with `--lustre-tree`. With no tree option, `deploy-lustre` and `cluster deploy` send the current directory.
 
-### Sleep
+- The tree must be a git checkout. A tree that is not a git checkout gives `bad_request` on the controller. So a remote deploy of a release tarball or of the Lustre that `target fetch` bundles is not possible.
+- Each deploy sends the full tree and makes a new job. Each job has its own ccache. So each deploy is a full build on the host. See fork F2 in [Design decisions](#design-decisions).
+- The controller prints the output of a verb only when the verb ends. A deploy shows nothing while it builds.
+- A request can take at most `LTVM_REMOTE_TIMEOUT` seconds (default 8 hours, `0` for no limit). Then it fails with `timed_out`. SSH keepalives stop a request in about 2 minutes when the host or the network is dead.
 
-While a lease is active, `serve` stops the host from going to sleep.
+### Copy results back
 
-- macOS: `caffeinate -s`, which works only on AC power.
-- Linux: `systemd-inhibit`.
-- WSL2: no action. The docs tell the person to set the Windows power plan.
+```bash
+ltvm --host lab1 pull co2 suite                  # to ./ltvm-pull/lab1/suite/
+ltvm pull lab1/co1-single crash --dest /tmp/out  # the name selects the host
+ltvm --host lab1 pull j-20261019-101500-1a2b3c4d dk
+```
 
-If the lid closes, or if the host goes to battery and the AC-only cap is set, the host goes to sleep. The leases stay. The VMs continue after the host wakes.
+`pull <vm|cluster|job> <what>` copies one type of result into `--dest`. The default is `./ltvm-pull/<host>/<what>/`. `--dest` and `--json` stay on the controller. `pull` with no host is an error.
 
-### Owner controls
+| `<what>` | Read on the host from | Made by |
+|---|---|---|
+| `suite` | `VM_DIR/suites/ltvm-suite/<vm or cluster>/` | `suite run --wait`, `suite collect` |
+| `crash` | `VM_DIR/crashes/<vm>/` | `vm crash-collect` |
+| `dk` | `VM_DIR/dk/<vm>/` | `vm dk-collect` |
+| `console` | `VM_DIR/sockets/<vm>.log` | QEMU |
 
-The host owner always has control:
+- A cluster name selects all of its nodes for `crash`, `dk` and `console`. For `suite` it selects the results directory of the cluster.
+- A job name selects the VMs and clusters that the job deployed to.
+- The request has no path. `serve` refuses any other shape with `bad_request`.
+- `serve` does not follow a symbolic link. A link in the path gives `path_refused`. `serve` skips a link inside a result directory, and prints a message on stderr.
+- `pull` replaces a file in the destination. `pull` does not write through a symbolic link in the destination.
+- When there are no results, `pull` prints "no <what> results" and exits 0.
 
-- `ltvm serve disable --destroy` stops all remote use at once.
-- `ltvm serve status` shows who uses the host and how much.
-- `serve.log` is append-only. It records each request.
-- To revoke a controller, delete its `authorized_keys` line.
+`vm dk-collect <vm> [--outdir DIR] [--timeout S]` runs `lctl dk` in the guest and writes `dk-<vm>-<timestamp>.log`. Locally, the default directory is `~/ltvm-dk`. Through `serve`, the directory is always `VM_DIR/dk/<vm>/`, and `pull ... dk` copies it back. `lctl dk` empties the debug buffer of the guest.
 
-## Design forks
+## Leases and reap
 
-**F1. Leases and claims.** ltvm has claims now (`ltvm claim`). Options:
-- (a) Make a lease a claim with an expiry time.
-- (b) Keep leases separate from claims.
+Each VM or cluster that a remote `create` or `cluster create` makes gets a lease. When the lease expires, the host destroys the VM or the cluster. So a controller that crashes or forgets does not leave VMs on the host.
 
-Recommendation: (a), if the claim code can hold an expiry time without a change to local behavior. Read `ltvm_pkg/cli/claim.py` before step 5.
+- The default lease is `lease_hours` in `serve.toml` (8 hours by default). `--lease TIME` on `create` or `cluster create` sets a different length (`30m`, `4h`, `2d`). `--lease` without `--host` is an error.
+- `ltvm --host lab1 lease renew <vm|cluster> [--for TIME]` makes the lease end TIME from now. The name of a cluster node renews the lease of its cluster.
+- `serve` writes the lease before the verb runs. So a create that fails still has a lease. Reap drops a lease when its VM does not exist.
+- A cluster has one lease. Its nodes have no lease of their own.
+- A `create` on a remote VM that exists resets the lease length. `--dry-run` gives no lease.
+- A remote `destroy` does not drop the lease. Reap drops it later.
+- Through `--host`, `list --json` shows `lease_expires` on each VM and cluster. The text shows `lease=YYYY-MM-DDTHH:MM`.
 
-**F2. Tree transfer size.** A full send of a lustre-release tree for each deploy is about 100 MB or more. Options:
-- (a) Send the full tree each time.
-- (b) Keep a git object cache on the host, and send only the missing objects with `git bundle`.
+A reap job runs `ltvm serve reap` as the dedicated user every 5 minutes:
 
-Recommendation: (a) first, and measure it. Add (b) only if the time to send is a problem on the end-to-end test.
+- macOS: `/Library/LaunchDaemons/io.github.ltvm.serve-reap.plist` (`StartInterval` 300).
+- Linux and WSL2: `/etc/systemd/system/ltvm-serve-reap.timer` and `.service` (`OnBootSec=60s`, `OnUnitActiveSec=300s`). WSL2 needs `systemd=true`.
 
-## Risks and limits
+For each expired lease, reap runs the scope checks of `serve`, then `destroy` or `cluster destroy`, and writes one audit line. A failed destroy keeps the lease, and the next reap tries again.
 
-- **A deploy runs code from the controller.** The build container and the `ltvm` user are the isolation. A container escape or a local privilege escalation on the host defeats this design.
-- **Root daemons stay on the host.** socket_vmnet and dnsmasq run as root on macOS. The `ltvm` user does not remove them.
-- **A key with no passphrase.** A person who steals the controller key can use the host. The allow-list and the caps still apply. The key works only from the `from=` address.
-- **One cluster on one host.** The guest subnet is private to each host. A cluster cannot span hosts. Clusters across hosts are a follow-up.
-- **No automatic update.** The protocol version check stops all remote use until a person updates the host.
+Reap also deletes old jobs. A job goes when it is older than `lease_hours` and no remote VM or cluster that exists uses it. A job delete writes no audit line.
 
-## Test plan
+Leases are separate from claims (`ltvm claim`). See fork F1 in [Design decisions](#design-decisions).
 
-1. **Automated, on any Linux CI host.** A second local user acts as the remote host on `localhost`, with its own `authorized_keys`. Tests run the full controller-to-host path.
-2. **Adversarial tests of `serve`.** Each case must fail:
-   - a verb that is not on the allow-list
-   - shell metacharacters in arguments
-   - a `pull` path that tries to leave the job directory with `..` or with a symlink in the tree
-   - a different protocol version
-   - a request above a cap
-   - a request while `serve` is disabled
-3. **Manual, end-to-end.**
-   - a macOS host on Apple Silicon (aarch64 guests)
-   - a WSL2 host (x86_64 guests)
-   - Each run creates a cluster, deploys a tree, mounts Lustre, runs a suite, pulls the results, and lets a lease expire.
+## Caps
 
-## Delivery
+`serve init` finds the CPUs, RAM and free disk of the host, and suggests a value for each cap. Press Enter to accept a value. Type `none` to remove a cap.
 
-The work has 6 changes, in this order:
+| Cap | Flag | Default |
+|---|---|---|
+| vCPUs of all remote VMs | `--max-vcpus N` | 80 % of the logical CPUs |
+| RAM of all remote VMs | `--max-ram-gb GB` | 80 % of the physical RAM |
+| Disk | `--max-disk-gb GB` | the smaller of 100 GB and 25 % of the free disk |
+| Default lease | `--lease-hours H` | 8 |
+| New VMs only on AC power | `--ac-only`, `--no-ac-only` | on for a laptop, off for a desktop |
 
-1. `serve` and the allow-list
-2. `host add` and the `--host` transport
-3. `receive-tree` and remote build and deploy
-4. `pull`
-5. leases, caps, and sleep control
-6. docs and an update to the ltvm skill
+`--yes` accepts all defaults. `--json` asks nothing. `install --serve` gives the same flags to the wizard. The file is `~ltvm/.config/ltvm/serve.toml`:
 
-We open no pull request until the full feature passes the end-to-end tests on both hosts.
+```toml
+enabled = true
+max_vcpus = 12
+max_ram_gb = 25.6
+max_disk_gb = 100.0
+lease_hours = 8.0
+ac_only = true
+```
 
-## Status
+Admission control checks only `create` and `cluster create`:
 
-UNBUILT. This document is the design only.
+- Requested: `--vcpus` and `--mem` for each new VM. With no `--mem`, the default memory of the target. Disk: 1 GB for each new VM, because the disk files are sparse. A remote VM that exists asks for nothing.
+- Used: all remote VMs, both running and stopped. Disk used is the allocated blocks of the remote VM disks. It also includes `~ltvm/jobs` and the artifacts directory. `serve` counts the disk only when the owner sets a disk cap.
+- A resource is over its cap when used plus requested is more than the cap.
+
+There is no cap on the number of VMs. For example, with a vCPU cap of 80, the controller can make 80 VMs with 1 vCPU each, or 10 VMs with 8 vCPUs each.
+
+`serve` refuses a request at once. It does not put the request in a queue. With `--json`, the controller writes this envelope to stderr. The error code is in `code`, and the message is in `error`:
+
+```json
+{
+  "error": "the request goes above the host cap for vcpus",
+  "code": "over_cap",
+  "hint": "Ask for less, or use local VMs.",
+  "requested": {"vcpus": 16, "ram_gb": 32.0, "disk_gb": 4.0},
+  "used":      {"vcpus": 72, "ram_gb": 96.0, "disk_gb": 60.3},
+  "cap":       {"vcpus": 80, "ram_gb": 102.4, "disk_gb": 100.0}
+}
+```
+
+Without `--json`, the text has the same data as `requested: vcpus=16 ram_gb=32.0 disk_gb=4.0` lines. A value of `null` (text: `-`) is a resource with no cap. GB values are GiB.
+
+The memory admission check of a local host (`[memory]` in `/etc/ltvm.conf`) also applies when the VM starts.
+
+## Sleep and power
+
+While a lease is active, `serve` keeps a detached process that stops idle sleep:
+
+- macOS: `caffeinate -s`. It works only on AC power. It needs no privilege.
+- Linux: `systemd-inhibit --what=sleep --mode=block sleep infinity`. The ltvm user runs from ssh or from the reap timer, and has no local session. So `install --serve` installs a polkit rule, `/etc/polkit-1/rules.d/50-ltvm-serve.rules`. The rule lets the user `ltvm` take `org.freedesktop.login1.inhibit-block-sleep`.
+- WSL2: no action. Set the Windows power plan.
+
+`serve` starts the guard before a create, and checks it after each verb. Reap stops it when no lease is active. A problem with the guard prints one warning and never fails a request. The guard log is `~ltvm/.local/state/ltvm/power-guard.log`.
+
+Ubuntu 22.04 has polkit 0.105. This version reads `.pkla` files and not `rules.d`. So the rule does nothing there, and the guard cannot hold the lock. Add an equivalent `.pkla` file by hand on that release.
+
+**Lid close.** A closed lid puts the host to sleep. Neither guard stops lid sleep. `caffeinate -s` does not stop it. By default, logind ignores sleep locks for the lid switch (`LidSwitchIgnoreInhibited=yes`). The VMs stop with the host and continue when the host wakes. The leases stay, but lease time continues while the host sleeps. The next reap destroys a VM whose lease expired during the sleep.
+
+**AC only.** With `ac_only = true`, `create` and `cluster create` fail with `on_battery` while the host runs on battery. `serve` does not check `start`. The probe is `pmset -g batt` on macOS and `/sys/class/power_supply` on Linux. A host with no battery, or a probe that fails, counts as AC power. WSL2 usually shows no battery, so `ac_only` does nothing there.
+
+## Owner controls
+
+Run the owner commands as the dedicated user. The settings, the leases, the audit log and the jobs are in the home directory of that user. Only that user destroys remote VMs with no sudo.
+
+```bash
+sudo -u ltvm -H ltvm serve status            # leases, use against caps, last 10 requests
+sudo -u ltvm -H ltvm serve status --recent 50 --json
+sudo -u ltvm -H ltvm serve disable           # refuse all requests
+sudo -u ltvm -H ltvm serve disable --destroy # also destroy every remote VM and cluster, and delete the jobs
+sudo -u ltvm -H ltvm serve enable            # accept requests again
+sudo -u ltvm -H ltvm serve init              # change the caps
+```
+
+- `serve disable` writes `enabled = false` and keeps the caps. `serve` then refuses every request with `disabled`, the probe of `host list` too.
+- `serve disable --destroy` destroys each VM and cluster with a lease, and each remote VM with no lease. Then it deletes all jobs. A request that started before `disable` can still finish. Run `disable --destroy` again to remove what it made.
+- A `serve.toml` that `serve` cannot read refuses every request with `bad_config`.
+- To remove a controller, delete its line in `~ltvm/.ssh/authorized_keys`.
+
+`serve` writes one audit line for each request to `~ltvm/.local/state/ltvm/serve.log`. Each line has the time, the key fingerprint, the verb, the arguments and the result. `serve` opens the file in append mode, with mode 0600. A verb that kills `serve` leaves no line.
+
+| Item | Path on the host |
+|---|---|
+| Settings | `~ltvm/.config/ltvm/serve.toml` |
+| Leases | `~ltvm/.local/state/ltvm/leases.json` |
+| Audit log | `~ltvm/.local/state/ltvm/serve.log` |
+| Jobs (trees, builds) | `~ltvm/jobs/` |
+| Artifacts | `~ltvm/artifacts/` |
+| Remote VMs | `VM_DIR` (`/opt/qemu-vms`), with owner ID `remote:<key>` |
+
+## Errors
+
+Each refusal has a stable code. With `--json`, the code is in the `code` field and the message is in the `error` field. A refusal exits 1.
+
+| Code | Meaning | What to do |
+|---|---|---|
+| `disabled` | The host owner disabled remote use of the host. | Use local VMs. |
+| `version_mismatch` | The controller and the host use different protocol versions. | If the host is older, the owner runs `ltvm update` on the host. If the host is newer, update the controller. |
+| `verb_refused` | The verb is not on the allow-list. | Run it locally. |
+| `bad_request` | `serve` cannot read the request. | Fix the command. |
+| `bad_reply` | The controller cannot read the reply. For example, the host has an ltvm with no `serve`. | Update the host. |
+| `unknown_host` | The controller has no host with that name. | Run `ltvm host list`. |
+| `layout_unsupported` | The host does not have the shared layout, or `serve` runs as root. | The owner runs `ltvm install` on the host, and `ltvm doctor` to check it. |
+| `needs_root` | The request needs root on the host. | Use local VMs. |
+| `path_refused` | A path argument is not allowed on a remote host. | Remove the option. Use `pull` for results. |
+| `vm_not_found` | No VM that a remote request made has that name. | Check `ltvm --host <h> list`. |
+| `cluster_not_found` | No cluster that a remote request made has that name. | Check `ltvm --host <h> cluster list`. |
+| `name_in_use` | A VM or cluster that the host owner made has that name. | Use a different name. |
+| `unreachable` | The controller cannot connect to the host. | Use local VMs. The ssh message is in the hint. |
+| `timed_out` | The host did not finish the request in time. | Check `LTVM_REMOTE_TIMEOUT`. |
+| `host_key_mismatch` | The host key is not the key that the controller pinned. | Stop. Ask the host owner. |
+| `over_cap` | The request goes above a cap that the host owner set. | Ask for less, or use local VMs. |
+| `bad_config` | `serve` cannot read `serve.toml`. | The owner fixes the file. |
+| `on_battery` | The host runs on battery, and the owner allows new VMs only on AC power. | Use local VMs, or wait. |
+| `podman_unsafe` | podman on the host is not rootless and not in a VM. | The owner fixes podman. |
+
+The list of codes is `ERROR_CODES` in `ltvm_pkg/remote/protocol.py`.
+
+## Security boundary
+
+**A deploy runs code from the controller on the host.** A Lustre tree holds Makefiles and configure scripts. The allow-list limits which ltvm verbs run. It is not a sandbox. Two layers give the isolation:
+
+- The build container. It is rootless podman on Linux and WSL2, or the podman machine VM on macOS. For a build, the host refuses podman that is not rootless and not in a VM (`podman_unsafe`).
+- The dedicated user `ltvm`. It is not an admin, it has no password, and it cannot use sudo. It must not be able to read the files of the owner.
+
+A container escape or a local privilege escalation on the host defeats this design. Connect only controllers that you trust to run code as a normal user on the host.
+
+Other limits:
+
+- **A key with no passphrase.** A person who steals the controller key can use the host. The allow-list, the scope rules and the caps still apply. The key works only from the `from=` address.
+- **Root daemons stay.** socket_vmnet and dnsmasq run as root on macOS. The `ltvm` user does not change that.
+- **No automatic update.** The controller never updates the host, because an update would let the controller replace the code that does the checks. A protocol version change stops all remote use until the owner updates the host.
+- **Guests share one root password.** Only the host reaches the guest subnet. Do not route the guest subnet to other machines.
+
+## Design decisions
+
+**F1. Leases are separate from claims.** An expired claim means "another session can use the VM". An expired lease means "destroy the VM". `release --force` by any local user, and a renewed claim, would also clear a lease. So leases are in their own file, `leases.json`, and local claims do not change.
+
+**F2. Full tree each deploy.** Each deploy sends the full tree (about 100 MB for lustre-release) and builds it in a new job. There is no git object cache on the host and no ccache between jobs. Add a cache only if the end-to-end test shows that the time to send or build is a problem.
+
+## Known limits
+
+These items are not proven on a real host yet. The end-to-end test on a macOS host and a WSL2 host will prove them.
+
+- No request went over a real sshd. The tier-2 ssh tests (`tests/test_remote_ssh_tier2.py`) need a second local user and did not run.
+- `install --serve` did not make a real user. No real launchd job or systemd timer ran.
+- No real Lustre build, deploy, `pull` or `lctl dk` ran through `serve`. The tests replace the verb handlers.
+- The power guard did not run on a real laptop. The lid-close behavior and the polkit rule are from documentation only.
+- The controller builds the tree stream in memory, with no size limit. `serve` does not check the disk cap while a stream arrives.
+- `serve` does not check `build *`, `target fetch` and `receive-tree` against the disk cap.
+- Two parallel creates can both pass the cap check. `serve` takes no lock.
+- A cluster cannot span hosts. The guest subnet is private to each host.
+- The controller does not stream verb output. A long deploy prints only at the end.

@@ -634,6 +634,14 @@ with it set no notice is printed. Only a random (version 4) UUID is
 accepted. `state_dir` takes effect only alongside `install_id`; without
 it each user keeps their own schedule, as before.
 
+## Remote hosts
+
+`ltvm --host <name> <verb>` runs VMs and clusters on a different machine
+over SSH, with the same commands as for local VMs. The host owner sets
+caps and leases, and can turn remote use off at any time. See
+[Remote VM hosts](docs/REMOTE_HOSTS.md) for the host setup, pairing,
+the security boundary, and WSL2.
+
 ## More
 
 See [CLAUDE.md](CLAUDE.md) for the full developer reference. Agents get

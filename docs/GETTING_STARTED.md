@@ -328,3 +328,8 @@ ltvm build lustre rocky9 --lustre-tree ~/lustre-v2    # staging overwritten agai
 ```
 
 In practice: build, deploy, test, iterate.
+
+## Next: Remote Hosts
+
+To run VMs on a different machine, such as a lab desktop or a WSL2 PC,
+read [Remote VM hosts](REMOTE_HOSTS.md).

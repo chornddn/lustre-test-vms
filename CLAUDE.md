@@ -1489,5 +1489,7 @@ gh issue list / view <n> / create --title ... --body ...
   o2iblnd over SoftRoCE.
 - [docs/SYSTEM_TEST_PLAN.md](docs/SYSTEM_TEST_PLAN.md) --
   end-to-end test matrix.
+- [docs/REMOTE_HOSTS.md](docs/REMOTE_HOSTS.md) -- VMs on a
+  remote host with `--host`: `serve`, leases, caps, `pull`.
 - [docs/VM_OWNERSHIP.md](docs/VM_OWNERSHIP.md) -- the
   advisory `owner_id` a VM records, and who sets it.
