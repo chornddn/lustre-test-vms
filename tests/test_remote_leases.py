@@ -443,3 +443,17 @@ class TestRenew:
         )
         assert rc == 1
         assert _leases(reaper)["vm:" + REMOTE_VM][1] == T0 + HOUR
+
+
+def test_reap_everything_destroys_live_leases_too(
+    reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any, capsys: Any
+) -> None:
+    # Ticket 10 (`disable --destroy`) calls reap with everything=True.
+    from ltvm_pkg.remote import leases
+
+    _grant(reaper, "vm", REMOTE_VM, 8)
+    with patch("ltvm_pkg.vm_commands.unregister_vm_dns", create=True):
+        out = leases.reap(ltvm.run, _host_env(reaper), everything=True)
+    capsys.readouterr()
+    assert [r["result"] for r in out] == ["reaped"]
+    assert not (reaper.sockets / f"{REMOTE_VM}.info").exists()

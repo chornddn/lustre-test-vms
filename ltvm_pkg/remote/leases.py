@@ -316,8 +316,12 @@ def reap(
     env: Mapping[str, str],
     *,
     script: str | None = None,
+    everything: bool = False,
 ) -> list[dict[str, object]]:
     """Destroy each VM and cluster whose lease has expired.
+
+    With everything, destroy what each lease names, expired or not.
+    `disable --destroy` uses it.
 
     run is ltvm.run.  Each destroy runs in this process, with sudo
     forbidden, as a remote request does.  Return one entry for each
@@ -330,7 +334,8 @@ def reap(
 
     serve._guard_children(script)
     priv.forbid_sudo()
-    now = clock()
+    # A time after every lease makes each lease expired.
+    now = float("inf") if everything else clock()
     log = audit.log_path(env)
     out: list[dict[str, object]] = []
     for key, lease in sorted(load_all(env).items()):
