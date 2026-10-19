@@ -133,6 +133,7 @@ from ltvm_pkg.cli.make import (  # noqa: E402
     cmd_make_reinstall,
     cmd_make_uninstall,
 )
+from ltvm_pkg.cli.serve_setup import cmd_serve_init  # noqa: E402
 from ltvm_pkg.cli.setup import (  # noqa: E402
     _current_version,
     _git,
@@ -282,6 +283,7 @@ __all__ = [
     "cmd_telemetry",
     "cmd_host",
     "cmd_serve_authorize",
+    "cmd_serve_init",
     "cmd_targets",
     "cmd_update",
     "cmd_validate",

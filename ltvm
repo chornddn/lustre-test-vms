@@ -233,6 +233,7 @@ try:
         cmd_release,
         cmd_restore,
         cmd_serve_authorize,
+        cmd_serve_init,
         cmd_setup,
         cmd_skills,
         cmd_snapshot,
@@ -266,6 +267,7 @@ try:
         complete_vms,
         complete_zfs_versions,
     )
+    from ltvm_pkg.remote import serve_init  # noqa: E402
     from ltvm_pkg.shell_completion import (  # noqa: E402
         SHELLS as SHELL_COMPLETION_SHELLS,
     )
@@ -658,6 +660,15 @@ def build_parser() -> argparse.ArgumentParser:
         "(sshd from= patterns, with commas between)",
     )
     ssp.set_defaults(func=cmd_serve_authorize)
+    ssp = serve_sub.add_parser(
+        "init",
+        parents=[common],
+        help="Ask for the caps of remote use and write serve.toml "
+        "(run it as the dedicated user)",
+    )
+    serve_init.add_cap_args(ssp)
+    ssp.set_defaults(func=cmd_serve_init)
+
     srp = serve_sub.add_parser(
         "reap",
         parents=[common],
