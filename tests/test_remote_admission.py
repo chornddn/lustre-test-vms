@@ -288,6 +288,75 @@ class TestDiskCap:
         assert err.details["cap"]["disk_gb"] is None
 
 
+# The verbs that write to the disk of the host, but make no VM.
+DISK_VERBS = [
+    ["build", "container", "rocky9"],
+    ["build", "all", "rocky9"],
+    ["build", "kernel", "rocky9"],
+    ["build", "image", "rocky9", "--no-lustre"],
+    ["build", "zfs", "rocky9"],
+    ["build", "mofed-kmods", "rocky9"],
+    ["target", "fetch", "rocky9"],
+    ["vm", "snapshot", "x", "s1"],
+    ["vm", "crash-collect", "x"],
+    ["vm", "dk-collect", "x"],
+]
+
+
+def _fill_jobs(host: SimpleNamespace, mib: int) -> None:
+    job = host.home / "jobs" / "job-1" / "tree"
+    job.mkdir(parents=True, exist_ok=True)
+    (job / "big.o").write_bytes(b"x" * (mib << 20))
+
+
+class TestDiskCapOnOtherVerbs:
+    @pytest.mark.parametrize("argv", DISK_VERBS, ids=lambda a: " ".join(a))
+    def test_a_full_disk_refuses_the_verb(
+        self, ltvm: Any, host: SimpleNamespace, argv: list[str]
+    ) -> None:
+        _caps(host, max_disk_gb=1 / 1024)
+        _fill_jobs(host, 2)
+        err = _refusal(ltvm, host, argv)
+        assert "disk_gb" in err.message
+        assert err.details["used"]["disk_gb"] is not None
+
+    @pytest.mark.parametrize("argv", DISK_VERBS, ids=lambda a: " ".join(a))
+    def test_below_the_cap_the_verb_passes(
+        self, ltvm: Any, host: SimpleNamespace, argv: list[str]
+    ) -> None:
+        """Negative control: the same verbs pass with room on the disk."""
+        _caps(host, max_disk_gb=1.0)
+        _fill_jobs(host, 2)
+        _admit(ltvm, host, argv)
+
+    @pytest.mark.parametrize("argv", [["list"], ["build", "status"]])
+    def test_a_verb_that_writes_nothing_passes_a_full_disk(
+        self, ltvm: Any, host: SimpleNamespace, argv: list[str]
+    ) -> None:
+        _caps(host, max_disk_gb=1 / 1024)
+        _fill_jobs(host, 2)
+        _admit(ltvm, host, argv)
+
+    @pytest.mark.parametrize("sub", ["crashes", "dk", "suites"])
+    def test_results_of_remote_vms_count(
+        self,
+        host: SimpleNamespace,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        sub: str,
+    ) -> None:
+        from ltvm_pkg import vm_state
+        from ltvm_pkg.remote import admission
+
+        monkeypatch.setattr(vm_state, "VM_DIR", tmp_path / "vms")
+        before = admission.usage(host.env).disk_gb
+        out = tmp_path / "vms" / sub / "rvm"
+        out.mkdir(parents=True)
+        (out / "vmcore").write_bytes(b"x" * (4 << 20))
+        added_mib = (admission.usage(host.env).disk_gb - before) * 1024
+        assert 4 <= added_mib < 5
+
+
 class TestClusterCap:
     def test_a_cluster_above_the_cap_is_refused_as_a_whole(
         self, ltvm: Any, host: SimpleNamespace

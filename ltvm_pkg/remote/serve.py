@@ -97,14 +97,23 @@ def _read_hello(stdin: IO[Any]) -> str:
     return str(line)
 
 
-def _receive_tree(argv: list[str], stdin: IO[Any], home: Path, key: str) -> str:
-    """Unpack the tree stream into a new job.  Return the verb stdout."""
+def _receive_tree(
+    argv: list[str], stdin: IO[Any], env: Mapping[str, str], key: str
+) -> str:
+    """Unpack the tree stream into a new job.  Return the verb stdout.
+
+    The stream must fit below the disk cap.  The unpack stops at it.
+    """
     if len(argv) != 1:
         raise RemoteError("bad_request", f"{RECEIVE_TREE} takes no arguments")
     stream: object = stdin
     if isinstance(stream, io.TextIOBase):
         raise RemoteError("bad_request", "stdin cannot carry a tree stream")
-    info = jobs.receive(stdin, home, key)
+    room = admission.disk_room(env)
+    try:
+        info = jobs.receive(stdin, Path(env["HOME"]), key, limit=room)
+    except jobs.TooBig as e:
+        raise admission.stream_over_cap(env, e.size) from None
     return json.dumps({k: info[k] for k in ("job", "tree", "files", "bytes")})
 
 
@@ -293,7 +302,7 @@ def serve_stdio(
         _check_layout(env)
         allowlist.check(argv)
         if argv[0] == RECEIVE_TREE:
-            out = _receive_tree(argv, stdin, Path(env["HOME"]), key)
+            out = _receive_tree(argv, stdin, env, key)
             stdout.write(protocol.reply_line(_ltvm_version(), None) + "\n")
             stdout.write(out + "\n")
             stdout.flush()

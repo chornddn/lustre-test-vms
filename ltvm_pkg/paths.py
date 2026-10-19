@@ -17,10 +17,29 @@ import json
 import logging
 import os
 import sys
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("ltvm")
+
+
+def home(env: Mapping[str, str]) -> Path:
+    """HOME of env, or the home of this user when env has none."""
+    return Path(env.get("HOME") or Path.home())
+
+
+def config_dir(env: Mapping[str, str]) -> Path:
+    """The ltvm directory under XDG_CONFIG_HOME of env."""
+    base = env.get("XDG_CONFIG_HOME") or str(home(env) / ".config")
+    return Path(base) / "ltvm"
+
+
+def state_dir(env: Mapping[str, str]) -> Path:
+    """The ltvm directory under XDG_STATE_HOME of env."""
+    base = env.get("XDG_STATE_HOME") or str(home(env) / ".local" / "state")
+    return Path(base) / "ltvm"
+
 
 # The absolute path of the ltvm script that child ltvm processes run.
 # `serve` sets it: sshd gives a forced command a short PATH, and a child

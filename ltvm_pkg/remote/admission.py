@@ -14,11 +14,17 @@ How serve counts each resource:
   `start` needs no check, and `create` of a remote VM that exists asks
   for nothing.  The VMs of the host owner do not count.
 - disk_gb: the bytes on disk (allocated blocks, not the file size) of
-  the remote VM disks, the job directories and the artifacts (images,
-  kernels, containers) of the dedicated user.  A new VM asks for
-  NEW_VM_DISK_GB, an estimate of what its overlay and scratch disks
-  write first.  The disk files are sparse, so the full disk size would
-  stop a host long before its disk is full.
+  the remote VM disks, the job directories, the artifacts (images,
+  kernels, containers) of the dedicated user, and the crash, dk and
+  suite results of remote VMs.  A new VM asks for NEW_VM_DISK_GB, an
+  estimate of what its overlay and scratch disks write first.  The
+  disk files are sparse, so the full disk size would stop a host long
+  before its disk is full.
+
+The disk cap also applies to the verbs that write to the disk but make
+no VM (DISK_VERBS).  When the used disk is at the cap, they get
+over_cap.  receive-tree gets over_cap when the stream does not fit
+below the cap.  The unpack stops at the cap.
 
 The memory check at launch (qemu_run._memory_shortfall) still runs as
 before.  The RAM cap is a second limit on top of it.
@@ -33,6 +39,8 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from ltvm_pkg import paths
+
 from . import power, scope, serve_config
 from .protocol import RemoteError
 
@@ -45,9 +53,22 @@ GIB = 1 << 30
 # that the guest writes, and the scratch disks are sparse.
 NEW_VM_DISK_GB = 1.0
 
-# The job directories of remote requests, under HOME of the dedicated
-# user.  Ticket 06 makes them.
-JOBS_DIR = "jobs"
+# The verbs that write to the disk of the host but make no VM.  An
+# entry is a tuple of argv tokens, as in allowlist.ALLOW_LIST.
+DISK_VERBS: frozenset[tuple[str, ...]] = frozenset(
+    {
+        ("build", "all"),
+        ("build", "container"),
+        ("build", "kernel"),
+        ("build", "image"),
+        ("build", "zfs"),
+        ("build", "mofed-kmods"),
+        ("target", "fetch"),
+        ("vm", "snapshot"),
+        ("vm", "crash-collect"),
+        ("vm", "dk-collect"),
+    }
+)
 
 
 @dataclass
@@ -70,7 +91,7 @@ def _show(value: float | None) -> float | int | None:
     return round(value, 2)
 
 
-def _as_json(res: Resources | serve_config.ServeConfig) -> dict[str, object]:
+def as_json(res: Resources | serve_config.ServeConfig) -> dict[str, object]:
     if isinstance(res, serve_config.ServeConfig):
         values = {
             "vcpus": res.max_vcpus,
@@ -210,13 +231,72 @@ def usage(env: Mapping[str, str], *, disk: bool = True) -> Resources:
         for vm in vms:
             files.append(Path(OVERLAYS) / f"{vm.name}.qcow2")
             files.extend(Path(OVERLAYS).glob(f"{vm.name}-disk*.img"))
-        home = Path(env.get("HOME") or Path.home())
-        files += [home / JOBS_DIR, _artifacts_dir()]
+        from . import jobs
+
+        files += [jobs.root(paths.home(env)), _artifacts_dir()]
+        files += [
+            scope.crash_dir("-").parent,
+            scope.dk_dir("-").parent,
+            scope.suite_dir(),
+        ]
         used.disk_gb = _allocated(files) / GIB
     return used
 
 
 # ── the check ────────────────────────────────────────────
+
+
+def _load(env: Mapping[str, str]) -> serve_config.ServeConfig:
+    try:
+        return serve_config.load(env)
+    except (OSError, ValueError) as e:
+        raise RemoteError(
+            "bad_config",
+            f"serve cannot read its caps: {e}",
+            hint="The host owner corrects serve.toml.",
+        ) from None
+
+
+def _over_cap(
+    over: list[str],
+    asked: Resources,
+    used: dict[str, object],
+    cfg: serve_config.ServeConfig,
+) -> RemoteError:
+    return RemoteError(
+        "over_cap",
+        "the request goes above the host cap for " + ", ".join(over),
+        hint="Ask for less, or use local VMs.",
+        details={
+            "requested": as_json(asked),
+            "used": used,
+            "cap": as_json(cfg),
+        },
+    )
+
+
+def disk_room(env: Mapping[str, str], asked_gb: float = 0.0) -> float | None:
+    """The bytes left below the disk cap, or None with no disk cap.
+
+    Raise over_cap when the used disk is at the cap.
+    """
+    cfg = _load(env)
+    if cfg.max_disk_gb is None:
+        return None
+    used = usage(env)
+    if used.disk_gb >= cfg.max_disk_gb:
+        asked = Resources(disk_gb=asked_gb)
+        raise _over_cap(["disk_gb"], asked, as_json(used), cfg)
+    return (cfg.max_disk_gb - used.disk_gb) * GIB
+
+
+def stream_over_cap(env: Mapping[str, str], size: int) -> RemoteError:
+    """The over_cap error for a tree stream that does not fit."""
+    cfg = _load(env)
+    used = usage(env)
+    return _over_cap(
+        ["disk_gb"], Resources(disk_gb=size / GIB), as_json(used), cfg
+    )
 
 
 def check(
@@ -225,15 +305,10 @@ def check(
     """Raise over_cap if the request goes above a cap of serve.toml."""
     asked = request(argv, args)
     if asked is None:
+        if tuple(argv[:2]) in DISK_VERBS:
+            disk_room(env)
         return
-    try:
-        cfg = serve_config.load(env)
-    except (OSError, ValueError) as e:
-        raise RemoteError(
-            "bad_config",
-            f"serve cannot read its caps: {e}",
-            hint="The host owner corrects serve.toml.",
-        ) from None
+    cfg = _load(env)
     if cfg.ac_only and power.on_battery():
         raise RemoteError(
             "on_battery",
@@ -258,17 +333,9 @@ def check(
     ]
     if not over:
         return
-    raise RemoteError(
-        "over_cap",
-        "the request goes above the host cap for " + ", ".join(over),
-        hint="Ask for less, or use local VMs.",
-        details={
-            "requested": _as_json(asked),
-            # With no disk cap, serve does not count the disk.
-            "used": {
-                **_as_json(used),
-                **({"disk_gb": None} if cfg.max_disk_gb is None else {}),
-            },
-            "cap": _as_json(cfg),
-        },
-    )
+    # With no disk cap, serve does not count the disk.
+    shown = {
+        **as_json(used),
+        **({"disk_gb": None} if cfg.max_disk_gb is None else {}),
+    }
+    raise _over_cap(over, asked, shown, cfg)

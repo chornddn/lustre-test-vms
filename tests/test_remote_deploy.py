@@ -464,6 +464,42 @@ def _forbid_tree_commands(real: Any, tree: Path) -> Any:
     return run
 
 
+class TestReceiveTreeDiskCap:
+    """receive-tree counts against max_disk_gb, before and in the unpack."""
+
+    def _cap(self, child: SimpleNamespace, gb: float) -> None:
+        from tests.remote_helpers import write_serve_toml
+
+        write_serve_toml(child.home, f"max_disk_gb = {gb!r}\n")
+
+    def test_a_stream_above_the_cap_is_refused_and_leaves_no_job(
+        self, child: SimpleNamespace
+    ) -> None:
+        self._cap(child, 1 / 1024)
+        resp = _receive(_tar(("file", "big.o", "x" * (2 << 20))))
+        assert resp.error is not None
+        assert resp.error.code == "over_cap"
+        assert list((child.home / "jobs").iterdir()) == []
+        assert _audit(child.home)[-1]["result"] == "over_cap"
+
+    def test_a_full_disk_refuses_the_stream(
+        self, child: SimpleNamespace
+    ) -> None:
+        self._cap(child, 1 / 1024)
+        full = child.home / "jobs" / "j-old" / "tree"
+        full.mkdir(parents=True)
+        (full / "big.o").write_bytes(b"x" * (2 << 20))
+        resp = _receive(_tar(("file", "ok", "x")))
+        assert resp.error is not None
+        assert resp.error.code == "over_cap"
+
+    def test_a_stream_that_fits_is_kept(self, child: SimpleNamespace) -> None:
+        """Negative control: a stream below the cap makes a job."""
+        self._cap(child, 1 / 1024)
+        resp = _receive(_tar(("file", "small.c", "x" * (64 << 10))))
+        assert resp.error is None
+
+
 def _send(argv: list[str]) -> Any:
     from ltvm_pkg.remote import hosts
 

@@ -70,6 +70,14 @@ def _new_job(home: Path) -> Path:
         return job
 
 
+class TooBig(Exception):
+    """The stream holds more bytes than the limit of receive."""
+
+    def __init__(self, size: int) -> None:
+        super().__init__(f"the tree stream holds more than {size} bytes")
+        self.size = size
+
+
 def _refuse(message: str) -> RemoteError:
     return RemoteError(
         "path_refused",
@@ -115,11 +123,18 @@ def _check_links(tree: Path) -> None:
         raise _refuse(f"link {str(rel)!r} points outside the tree")
 
 
-def _unpack(stream: IO[bytes], tree: Path) -> tuple[int, int]:
-    """Unpack the tar stream into tree.  Return (files, bytes)."""
+def _unpack(
+    stream: IO[bytes], tree: Path, limit: float | None
+) -> tuple[int, int]:
+    """Unpack the tar stream into tree.  Return (files, bytes).
+
+    Raise TooBig before a file goes above limit bytes in total.
+    """
     files = size = 0
     with tarfile.open(fileobj=stream, mode="r|*") as tar:
         for member in tar:
+            if limit is not None and size + member.size > limit:
+                raise TooBig(size + member.size)
             rel = _member_path(member.name)
             dest = tree / rel
             if not _inside(tree, dest.parent):
@@ -156,15 +171,21 @@ def _unpack(stream: IO[bytes], tree: Path) -> tuple[int, int]:
     return files, size
 
 
-def receive(stream: IO[bytes], home: Path, key: str) -> dict[str, Any]:
-    """Unpack a tree stream into a new job.  Return what to print."""
+def receive(
+    stream: IO[bytes], home: Path, key: str, *, limit: float | None = None
+) -> dict[str, Any]:
+    """Unpack a tree stream into a new job.  Return what to print.
+
+    limit is the most bytes of file data that the job can hold, or
+    None for no limit.  Raise TooBig above it.
+    """
     job = _new_job(home)
     (job / TREE_DIR).mkdir(mode=0o755)
     # The canonical path: job_tree accepts only this form.
     tree = Path(os.path.realpath(job / TREE_DIR))
     try:
-        files, size = _unpack(stream, tree)
-    except RemoteError:
+        files, size = _unpack(stream, tree, limit)
+    except (RemoteError, TooBig):
         shutil.rmtree(job, ignore_errors=True)
         raise
     except (tarfile.TarError, OSError, EOFError) as e:

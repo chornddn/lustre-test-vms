@@ -197,7 +197,7 @@ def status(env: Mapping[str, str], recent: int) -> dict[str, object]:
     except (OSError, ValueError) as e:
         raise _bad_config(e) from None
     disk = cfg.max_disk_gb is not None
-    used = admission._as_json(admission.usage(env, disk=disk))
+    used = admission.as_json(admission.usage(env, disk=disk))
     if not disk:
         used["disk_gb"] = None
     home = Path(env.get("HOME") or Path.home())
@@ -207,7 +207,7 @@ def status(env: Mapping[str, str], recent: int) -> dict[str, object]:
         "ac_only": cfg.ac_only,
         "leases": _lease_rows(env),
         "used": used,
-        "cap": admission._as_json(cfg),
+        "cap": admission.as_json(cfg),
         "jobs": {
             "count": len(jobs.all_jobs(home)),
             "disk_gb": admission._allocated([jobs.root(home)]) / admission.GIB,
