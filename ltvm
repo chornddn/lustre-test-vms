@@ -2907,7 +2907,26 @@ def main() -> int:
         argcomplete.autocomplete(parser)
     except ImportError:
         pass
-    args = parse_cli(parser, sys.argv[1:])
+    return run(sys.argv[1:], parser=parser)
+
+
+def run(
+    argv: list[str],
+    *,
+    update_check: bool = True,
+    telemetry: bool = True,
+    parser: argparse.ArgumentParser | None = None,
+) -> int:
+    """Run one ltvm command in this process and return its exit status.
+
+    main() calls this for the local CLI.  `serve` calls it to run a
+    remote request on the host.  Set update_check=False to skip the
+    update check.  Set telemetry=False to skip telemetry: no record and
+    no send.  A parse error raises SystemExit, as argparse does.
+    """
+    if parser is None:
+        parser = build_parser()
+    args = parse_cli(parser, argv)
 
     level = logging.DEBUG if getattr(args, "verbose", False) else logging.INFO
     logging.basicConfig(level=level, format="%(name)s: %(message)s")
@@ -2936,7 +2955,7 @@ def main() -> int:
     # it runs once per new terminal.  A nag there would print into every
     # shell the user opens, and the check's state file would be written
     # by however many shells start at once.
-    if args.command not in ("install", "completion"):
+    if update_check and args.command not in ("install", "completion"):
         try:
             from ltvm_pkg.update_check import maybe_check_for_updates
 
@@ -2958,7 +2977,7 @@ def main() -> int:
     # `completion` is excluded for the same reason as above: it runs
     # from shell rc files, and counting one invocation per terminal
     # opened would drown out every command a human actually ran.
-    if args.command not in ("install", "telemetry", "completion"):
+    if telemetry and args.command not in ("install", "telemetry", "completion"):
         try:
             from ltvm_pkg.telemetry import maybe_send, record
 

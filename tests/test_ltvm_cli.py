@@ -2280,3 +2280,66 @@ class TestWaitFlag:
                 p.parse_args(["create", "co1-x", "--wait", bad])
         err = capsys.readouterr().err
         assert "not a whole number of seconds: 'soon'" in err
+
+
+# ---------------------------------------------------------------------------
+# run(): the in-process entry point that main() and `serve` share
+# ---------------------------------------------------------------------------
+
+
+class TestRunInProcess:
+    def test_run_matches_the_cli(
+        self, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """run(argv) gives the same exit status and output as the CLI."""
+        # `list` reads the host memory size; on macOS that runs sysctl.
+        with patch(
+            "ltvm_pkg.vm_commands._host_total_mem_mb", return_value=4096
+        ):
+            cli_rc = _run_main(["list", "--json"], capsys)
+            cli_out = capsys.readouterr()
+
+            rc = ltvm.run(["list", "--json"])
+            out = capsys.readouterr()
+
+        assert rc == cli_rc == EXIT_OK
+        assert out.out == cli_out.out
+        assert out.err == cli_out.err
+        listing = json.loads(out.out)
+        assert listing["vms"] == []
+        assert listing["totals"]["mem_host_mb"] == 4096
+
+    @staticmethod
+    @contextmanager
+    def _sentinels(calls: list[str]) -> Iterator[None]:
+        """Note each update check, telemetry record and telemetry send."""
+        import ltvm_pkg.telemetry as tel
+        import ltvm_pkg.update_check as uc
+
+        with (
+            patch.object(
+                uc,
+                "maybe_check_for_updates",
+                lambda **kw: calls.append("update_check"),
+            ),
+            patch.object(tel, "record", lambda a, rc: calls.append("record")),
+            patch.object(tel, "maybe_send", lambda: calls.append("send")),
+            patch("ltvm_pkg.vm_commands._host_total_mem_mb", return_value=4096),
+        ):
+            yield
+
+    def test_switches_off_skip_update_check_and_telemetry(self) -> None:
+        calls: list[str] = []
+        with self._sentinels(calls):
+            rc = ltvm.run(
+                ["list", "--json"], update_check=False, telemetry=False
+            )
+        assert rc == EXIT_OK
+        assert calls == []
+
+    def test_switches_default_on(self) -> None:
+        """Control: the sentinels fire when the switches stay on."""
+        calls: list[str] = []
+        with self._sentinels(calls):
+            assert ltvm.run(["list", "--json"]) == EXIT_OK
+        assert calls == ["update_check", "record", "send"]
