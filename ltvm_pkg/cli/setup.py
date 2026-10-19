@@ -179,6 +179,10 @@ def cmd_setup(args: argparse.Namespace) -> int:
         except Exception as e:  # noqa: BLE001
             log.warning("skills not linked: %s", e)
 
+    if getattr(args, "serve", False):
+        from ltvm_pkg.cli.serve_setup import install_serve
+
+        return install_serve(args)
     return EXIT_OK
 
 

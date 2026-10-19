@@ -46,3 +46,24 @@ def cmd_serve_init(args: argparse.Namespace) -> int:
     for line in serve_config.dumps(cfg).splitlines():
         print(f"  {line}")
     return EXIT_OK
+
+
+def install_serve(args: argparse.Namespace) -> int:
+    """The --serve steps of `ltvm install` (after the normal install)."""
+    from ltvm_pkg import host_setup
+    from ltvm_pkg.remote import serve_install
+
+    deps = serve_install.Deps(wsl2=host_setup.is_wsl2())
+    try:
+        # With --json, stdout holds only the JSON report.
+        report = serve_install.install(
+            deps,
+            serve_init.cap_argv(args),
+            stdout=sys.stderr if args.json else sys.stdout,
+            quiet=args.json,
+        )
+    except (serve_install.ServeInstallError, RuntimeError) as e:
+        return _error(f"install --serve: {e}", args.json)
+    if args.json:
+        _output(report, True)
+    return EXIT_OK

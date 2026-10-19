@@ -800,6 +800,13 @@ def build_parser() -> argparse.ArgumentParser:
         help="Bridge subnet (default: 192.168.100, or the next free "
         "192.168.x when something else already uses it)",
     )
+    sp.add_argument(
+        "--serve",
+        action="store_true",
+        help="Also make this machine a remote host: the dedicated user, "
+        "the serve init wizard and the reap job.  See docs/REMOTE_HOSTS.md",
+    )
+    serve_init.add_cap_args(sp)
     sp.set_defaults(func=cmd_setup)
 
     # -- update --
