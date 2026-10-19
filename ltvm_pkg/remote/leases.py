@@ -355,37 +355,80 @@ def _reap_one(
     return "reaped"
 
 
-def _unleased(env: Mapping[str, str], kind: str) -> list[Lease]:
-    """The remote VMs or clusters that have no lease.
+_UNREADABLE = (RuntimeError, ValueError, KeyError, TypeError, OSError)
+
+
+def _created(name: str) -> float:
+    """When a VM was made, or 0 if its state does not say."""
+    from ltvm_pkg.vm_state import VMInfo
+
+    try:
+        return float(VMInfo.load(name).created or 0)
+    except _UNREADABLE:
+        return 0.0
+
+
+def _unleased(env: Mapping[str, str], kind: str) -> list[tuple[Lease, float]]:
+    """The remote VMs or clusters that have no lease, with their age.
 
     VMs that remote requests made before leases existed have no lease.
-    The Lease that comes back has no times (0).  A cluster node is not
-    in the list while its cluster exists.
+    The Lease that comes back has no times (0).  The second value is
+    when the VM was made (the oldest node for a cluster), or 0 if the
+    state does not say.  A cluster node is not in the list while its
+    cluster exists.
     """
     from ltvm_pkg.vm_state import ClusterInfo, VMInfo
 
     from . import scope
 
     leased = load_all(env)
-    unreadable = (RuntimeError, ValueError, KeyError, TypeError, OSError)
-    out: list[Lease] = []
+    out: list[tuple[Lease, float]] = []
+    members: set[str] = set()
+    for name in ClusterInfo.all_names():
+        try:
+            cluster = ClusterInfo.load(name)
+            nodes = [n.name for n in cluster.get_nodes()]
+        except _UNREADABLE:
+            continue
+        members.update(nodes)
+        owner = cluster.owner_id
+        if (
+            kind == CLUSTER
+            and scope.is_remote(owner)
+            and f"{CLUSTER}:{name}" not in leased
+        ):
+            made = [t for t in map(_created, nodes) if t > 0]
+            lease = Lease(CLUSTER, name, str(owner), 0.0, 0.0)
+            out.append((lease, min(made, default=0.0)))
     if kind == CLUSTER:
-        for name in ClusterInfo.all_names():
-            try:
-                owner = ClusterInfo.load(name).owner_id
-            except unreadable:
-                continue
-            if scope.is_remote(owner) and f"{CLUSTER}:{name}" not in leased:
-                out.append(Lease(CLUSTER, name, str(owner), 0.0, 0.0))
         return out
     for name in VMInfo.all_names():
-        try:
-            owner = VMInfo.load(name).owner_id
-        except unreadable:
+        if name in members:
             continue
+        try:
+            vm = VMInfo.load(name)
+        except _UNREADABLE:
+            continue
+        owner = vm.owner_id
         if scope.is_remote(owner) and f"{VM}:{name}" not in leased:
-            out.append(Lease(VM, name, str(owner), 0.0, 0.0))
+            lease = Lease(VM, name, str(owner), 0.0, 0.0)
+            out.append((lease, float(vm.created or 0)))
     return out
+
+
+def _no_lease_age(env: Mapping[str, str]) -> float:
+    """How long a remote VM or cluster with no lease lives, in seconds.
+
+    It is lease_hours of serve.toml.  The reap does not stop for a
+    missing or bad serve.toml: it then uses the default.
+    """
+    from . import serve_config
+
+    try:
+        cfg = serve_config.load(env)
+    except (OSError, ValueError):
+        cfg = serve_config.ServeConfig()
+    return cfg.lease_hours * 3600
 
 
 def reap(
@@ -397,7 +440,8 @@ def reap(
 ) -> list[dict[str, object]]:
     """Destroy each VM and cluster whose lease has expired.
 
-    With everything, destroy each VM and cluster that remote requests
+    Also destroy each remote VM and cluster with no lease that is older
+    than lease_hours.  One with no known age stays.  With everything, destroy each VM and cluster that remote requests
     made: what each lease names, expired or not, and then each remote
     cluster and VM with no lease.  `serve disable --destroy` uses it.
 
@@ -432,10 +476,11 @@ def reap(
         if not lease.expired(now) or not _still_expired(env, key, now):
             continue
         one(lease)
-    if everything:
-        # Clusters first: a cluster destroy also destroys its nodes.
-        for kind in (CLUSTER, VM):
-            for lease in _unleased(env, kind):
+    # Clusters first: a cluster destroy also destroys its nodes.
+    max_age = _no_lease_age(env)
+    for kind in (CLUSTER, VM):
+        for lease, made in _unleased(env, kind):
+            if everything or (made > 0 and now - made > max_age):
                 one(lease)
     power.sync(env)
     return out

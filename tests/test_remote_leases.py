@@ -8,6 +8,7 @@ The clock of the lease code is fixed: each test sets `leases.clock`.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -18,6 +19,7 @@ from tests import test_remote_clusters as _clusters
 from tests import test_remote_lifecycle as _lifecycle
 from tests.test_ltvm_cli import _load_ltvm
 from tests.test_remote_lifecycle import (
+    OWNER_VM,
     REMOTE_OWNER,
     REMOTE_VM,
     _audit,
@@ -497,6 +499,87 @@ class TestRenew:
         assert err["code"] == "bad_request"
         assert "24" in err["error"]
         assert _leases(reaper)["vm:" + REMOTE_VM][1] == T0 + HOUR
+
+
+def _set_created(sockets: Path, name: str, created: float) -> None:
+    from ltvm_pkg.vm_state import VMInfo
+
+    with patch("ltvm_pkg.vm_state.SOCKETS", sockets):
+        vm = VMInfo.load(name)
+        vm.created = int(created)
+        vm.save()
+
+
+class TestReapNoLease:
+    """A remote VM or cluster with no lease lives for lease_hours."""
+
+    def test_an_old_vm_with_no_lease_is_destroyed(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _set_created(reaper.sockets, REMOTE_VM, T0 - 8 * HOUR - 1)
+        rc, reaped = _reap(ltvm, capsys)
+        assert rc == 0
+        assert [(r["name"], r["result"]) for r in reaped] == [
+            (REMOTE_VM, "reaped")
+        ]
+        assert not (reaper.sockets / f"{REMOTE_VM}.info").exists()
+        assert (reaper.sockets / f"{OWNER_VM}.info").exists()
+
+    def test_a_new_vm_with_no_lease_stays(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        """Negative control: a create gets its lease before the VM."""
+        _set_created(reaper.sockets, REMOTE_VM, T0 - 8 * HOUR + 60)
+        rc, reaped = _reap(ltvm, capsys)
+        assert (rc, reaped) == (0, [])
+        assert (reaper.sockets / f"{REMOTE_VM}.info").exists()
+
+    def test_an_old_owner_vm_stays(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _set_created(reaper.sockets, REMOTE_VM, T0)
+        _set_created(reaper.sockets, OWNER_VM, T0 - 100 * HOUR)
+        rc, reaped = _reap(ltvm, capsys)
+        assert (rc, reaped) == (0, [])
+        assert (reaper.sockets / f"{OWNER_VM}.info").exists()
+
+    def test_an_old_cluster_with_no_lease_is_destroyed(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        from ltvm_pkg import vm_cluster
+        from tests.test_remote_clusters import (
+            REMOTE_CL,
+            REMOTE_NODE,
+            _save_cluster,
+        )
+
+        monkeypatch.setattr(vm_cluster, "SOCKETS", reaper.sockets)
+        _set_created(reaper.sockets, REMOTE_VM, T0)
+        _save_cluster(reaper.sockets, REMOTE_CL, REMOTE_NODE, REMOTE_OWNER)
+        _set_created(reaper.sockets, REMOTE_NODE, T0 - 9 * HOUR)
+        rc, reaped = _reap(ltvm, capsys)
+        assert rc == 0
+        assert [(r["kind"], r["name"]) for r in reaped] == [
+            ("cluster", REMOTE_CL)
+        ]
+        assert not (reaper.sockets / f"{REMOTE_CL}.cluster").exists()
 
 
 def test_reap_everything_destroys_live_leases_too(
