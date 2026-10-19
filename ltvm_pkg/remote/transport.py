@@ -39,6 +39,8 @@ class Response:
     error: RemoteError | None = None
     # The handshake reply from serve: its protocol and ltvm versions.
     peer: dict[str, Any] = field(default_factory=dict)
+    # The verb stdout as bytes, for a reply that is not text (pull).
+    body: bytes = b""
 
 
 class Transport(Protocol):
@@ -63,11 +65,14 @@ def _ltvm_version() -> str:
     return str(__version__)
 
 
-def parse_reply(status: int, stdout: str, stderr: str) -> Response:
+def parse_reply(
+    status: int, stdout: str, stderr: str, raw: bytes | None = None
+) -> Response:
     """Split the handshake reply from the verb output.
 
     Every transport uses this function, so they all read the reply the
-    same way.
+    same way.  raw is the stdout before it was decoded.  The verb part
+    of it goes in Response.body.
     """
     first, _, rest = stdout.partition("\n")
     try:
@@ -103,7 +108,8 @@ def parse_reply(status: int, stdout: str, stderr: str) -> Response:
         except ValueError as e:
             err = RemoteError("bad_reply", f"bad error in the reply: {e}")
         return Response(status, "", stderr, err, peer)
-    return Response(status, rest, stderr, None, peer)
+    body = rest.encode() if raw is None else raw.partition(b"\n")[2]
+    return Response(status, rest, stderr, None, peer, body)
 
 
 class ExecTransport:
@@ -150,7 +156,7 @@ class ExecTransport:
                     ),
                 )
         return parse_reply(
-            proc.returncode, text(proc.stdout), text(proc.stderr)
+            proc.returncode, text(proc.stdout), text(proc.stderr), proc.stdout
         )
 
     def _sshd_env(self, command: str, tmp: Path) -> dict[str, str]:

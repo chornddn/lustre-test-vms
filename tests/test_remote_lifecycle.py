@@ -440,8 +440,10 @@ class InProcTransport:
                 script=str(_LTVM_PATH),
             )
         out.flush()
-        raw = out.buffer.getvalue().decode()  # type: ignore[attr-defined]
-        return transport.parse_reply(rc, raw, err.getvalue())
+        raw = out.buffer.getvalue()  # type: ignore[attr-defined]
+        return transport.parse_reply(
+            rc, transport.text(raw), err.getvalue(), raw
+        )
 
 
 @pytest.fixture

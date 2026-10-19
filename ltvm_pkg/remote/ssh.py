@@ -436,7 +436,13 @@ class SshTransport:
             # The hint holds the ssh message, so stderr stays clean
             # for --json.
             return Response(255, "", "", _ssh_error(err))
-        return parse_reply(proc.returncode, out, err)
+        raw: object = proc.stdout  # bytes: run() got text=False
+        return parse_reply(
+            proc.returncode,
+            out,
+            err,
+            raw if isinstance(raw, bytes) else None,
+        )
 
 
 def _ssh_error(stderr: str) -> RemoteError:
