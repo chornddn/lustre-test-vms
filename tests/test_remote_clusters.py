@@ -8,6 +8,7 @@ that change VM state, with the conftest isolation in place.
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import os
 import shlex
@@ -427,6 +428,86 @@ class TestClusterLifecycle:
         assert rc == 1
         assert _err(capsys.readouterr().err)["code"] == "cluster_not_found"
         assert (icl.sockets / f"{OWNER_NODE}.info").exists()
+
+
+# ── artifacts ────────────────────────────────────────────
+
+
+class TestArtifacts:
+    def test_serve_uses_the_artifacts_dir_in_its_home(
+        self, child: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        # No LTVM_ARTIFACTS_DIR from sshd: serve must use HOME/artifacts,
+        # not the artifacts directory of the checkout.
+        from ltvm_pkg import target_config
+        from ltvm_pkg.remote import hosts
+
+        host = hosts.get("t")
+        env = {k: v for k, v in host.env.items() if k != "LTVM_ARTIFACTS_DIR"}
+        hosts.remove("t")
+        hosts.add(dataclasses.replace(host, env=env))
+        with patch.object(
+            target_config, "ARTIFACTS_DIR", child.home / "artifacts"
+        ):
+            tc = target_config.TargetConfig("rocky9", arch="x86_64")
+            meta = tc.meta_path("container")
+        meta.parent.mkdir(parents=True)
+        meta.write_text(json.dumps({"sentinel": "home-artifacts-c7"}))
+        rc = ltvm.run(
+            ["--host", "t", "build", "status", "--arch", "x86_64", "--json"]
+        )
+        data = json.loads(capsys.readouterr().out)
+        assert rc == 0
+        assert data["rocky9"]["container"]["sentinel"] == "home-artifacts-c7"
+
+    @pytest.mark.parametrize("action", ["show", "fetch"])
+    def test_target_verbs_reach_the_verb(
+        self, child: SimpleNamespace, action: str
+    ) -> None:
+        # An unknown target fails in the verb, with no network use.  So
+        # the request went through every check in serve.
+        resp = _send(shlex.join(["target", action, "nosuch-x9", "--json"]))
+        assert resp.error is None
+        assert resp.status == 2
+        assert "Unknown target: 'nosuch-x9'" in resp.stderr
+        assert _audit(child.home)[-1]["result"] == "exit 2"
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["build", "kernel", "rocky9", "--lustre-tree", "/home/owner/lr"],
+            ["build", "all", "rocky9", "--lustre-tree=/home/owner/lr"],
+            ["build", "image", "rocky9", "--lustre-tree", "../x"],
+            ["build", "zfs", "rocky9", "--zfs-source", "/home/owner/zfs"],
+            ["target", "fetch", "rocky9", "--url", "file:///etc/passwd"],
+        ],
+    )
+    def test_host_paths_and_urls_are_refused(
+        self, child: SimpleNamespace, argv: list[str]
+    ) -> None:
+        resp = _send(shlex.join(argv))
+        assert resp.error is not None
+        assert resp.error.code == "path_refused"
+        assert _audit(child.home)[-1]["result"] == "path_refused"
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["build", "shell", "rocky9"],
+            ["build", "lustre", "rocky9"],
+            ["target", "build", "rocky9"],
+            ["target", "clean", "rocky9"],
+            ["target", "delete", "rocky9"],
+            ["target", "validate", "rocky9"],
+            ["target", "export", "rocky9"],
+        ],
+    )
+    def test_other_artifact_verbs_are_refused(
+        self, child: SimpleNamespace, argv: list[str]
+    ) -> None:
+        resp = _send(shlex.join(argv))
+        assert resp.error is not None
+        assert resp.error.code == "verb_refused"
 
 
 # ── the exec:// transport ────────────────────────────────

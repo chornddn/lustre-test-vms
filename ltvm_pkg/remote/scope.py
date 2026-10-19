@@ -225,6 +225,21 @@ def _check_cluster(args: argparse.Namespace) -> None:
         _check_clusters([args.name], lifecycle=False)
 
 
+def _check_artifacts(args: argparse.Namespace) -> None:
+    """Refuse host paths and free URLs in `build` and `target fetch`.
+
+    A remote build has no Lustre tree yet, so --lustre-tree is refused.
+    The verbs write only into the artifacts directory of serve.
+    """
+    for dest, option in (
+        ("lustre_tree", "--lustre-tree"),
+        ("zfs_source", "--zfs-source"),
+        ("url", "--url"),
+    ):
+        if getattr(args, dest, None):
+            raise _refuse_path(option)
+
+
 def check(argv: list[str], args: argparse.Namespace) -> list[str]:
     """Refuse a request outside the remote VMs.  Return the argv to run.
 
@@ -238,6 +253,8 @@ def check(argv: list[str], args: argparse.Namespace) -> list[str]:
         _check_existing(list(args.names))
     elif verb == "cluster":
         _check_cluster(args)
+    elif verb in ("build", "target"):
+        _check_artifacts(args)
     elif verb == "vm":
         action = getattr(args, "vm_action", None)
         _check_existing([args.name])

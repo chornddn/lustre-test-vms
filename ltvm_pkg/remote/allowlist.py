@@ -37,6 +37,16 @@ ALLOW_LIST: frozenset[tuple[str, ...]] = frozenset(
         ("cluster", "status"),
         ("cluster", "list"),
         ("cluster", "exec"),
+        ("target", "list"),
+        ("target", "show"),
+        ("target", "fetch"),
+        ("build", "all"),
+        ("build", "container"),
+        ("build", "kernel"),
+        ("build", "image"),
+        ("build", "zfs"),
+        ("build", "mofed-kmods"),
+        ("build", "status"),
     }
 )
 
