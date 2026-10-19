@@ -405,20 +405,20 @@ def _lustre_tree_version(tree: Path | str) -> str | None:
     so we don't fork a subprocess on every header print.  Returns
     ``None`` if the tree has neither.
     """
+    from ltvm_pkg.lustre_version import read_tree_file, tree_is_untrusted
+
     tree = Path(tree)
-    vf = tree / "LUSTRE-VERSION-FILE"
-    if vf.is_file():
-        try:
-            text = vf.read_text().strip()
-        except OSError:
-            return None
+    text = read_tree_file(tree / "LUSTRE-VERSION-FILE")
+    if text is not None:
+        text = text.strip()
         # Format: "LUSTRE_VERSION = 2.17.51_dirty"
         _, _, val = text.partition("=")
         val = val.strip()
         if val:
             return val
     gen = tree / "LUSTRE-VERSION-GEN"
-    if gen.is_file():
+    # Under serve, the script came from a remote controller.
+    if gen.is_file() and not tree_is_untrusted():
         import subprocess
 
         try:

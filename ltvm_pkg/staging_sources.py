@@ -76,6 +76,11 @@ def _is_built(path: Path) -> bool:
 
 def _git_ls(tree: Path, *extra: str) -> set[str] | None:
     """Paths ``git ls-files`` reports for ``tree``, or None if not a repo."""
+    from .lustre_version import tree_is_untrusted
+
+    if tree_is_untrusted():
+        # git reads .git/config of the tree, which can run a program.
+        return None
     try:
         r = subprocess.run(
             ["git", "-C", str(tree), "ls-files", "-z", *extra],

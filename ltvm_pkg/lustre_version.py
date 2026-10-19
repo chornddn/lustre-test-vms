@@ -35,6 +35,63 @@ class LustreVersion:
     reason: str = ""
 
 
+def tree_is_untrusted() -> bool:
+    """Whether this process runs a remote request (serve).
+
+    Under serve, the Lustre tree is a job tree.  A remote controller
+    wrote each file in it.  So the host must not run git or a script on
+    the tree, and must not follow a link in it.
+    """
+    from ltvm_pkg.remote.scope import is_remote
+
+    return is_remote(os.environ.get("LTVM_OWNER_ID"))
+
+
+def read_tree_file(path: Path) -> str | None:
+    """Read a file of a Lustre tree.  Do not follow a link at the end.
+
+    Return None for a link, a missing file or a read error.
+    """
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, errors="replace") as f:
+            return f.read()
+    except OSError:
+        return None
+
+
+def write_tree_file(path: Path, text: str) -> None:
+    """Write a file of a Lustre tree.  Do not follow a link at the end.
+
+    Raise OSError if path is a link.
+    """
+    flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+    with os.fdopen(os.open(path, flags, 0o644), "w") as f:
+        f.write(text)
+
+
+def _inside(root: str, path: str) -> bool:
+    real = os.path.realpath(path)
+    return real == root or real.startswith(root + os.sep)
+
+
+def link_out_of(root: Path) -> Path | None:
+    """The first link under root whose real path is outside root.
+
+    Return None when each link resolves to a path in root.
+    """
+    top = os.path.realpath(root)
+    for here, dirs, files in os.walk(root):
+        for name in dirs + files:
+            path = os.path.join(here, name)
+            if os.path.islink(path) and not _inside(top, path):
+                return Path(path)
+    return None
+
+
 def _git(tree: Path, *args: str) -> subprocess.CompletedProcess[str]:
     # safe.directory: under sudo the tree belongs to someone else.
     # GIT_OPTIONAL_LOCKS=0: status must not rewrite the index, which
@@ -67,18 +124,16 @@ def git_version(tree: Path) -> tuple[str | None, str]:
 
 
 def default_version(tree: Path) -> str | None:
-    try:
-        text = (tree / VERSION_GEN).read_text()
-    except OSError:
+    text = read_tree_file(tree / VERSION_GEN)
+    if text is None:
         return None
     m = re.search(r"^DEFAULT_VERSION=(\S+)", text, re.MULTILINE)
     return m.group(1) if m else None
 
 
 def read_version_file(tree: Path) -> str | None:
-    try:
-        text = (tree / VERSION_FILE).read_text()
-    except OSError:
+    text = read_tree_file(tree / VERSION_FILE)
+    if text is None:
         return None
     m = re.match(r"LUSTRE_VERSION = (\S+)", text)
     return m.group(1) if m else None
@@ -87,7 +142,11 @@ def read_version_file(tree: Path) -> str | None:
 def pin_version(tree: Path) -> LustreVersion:
     """Decide the build's version and write it where configure finds it."""
     default = default_version(tree)
-    version, why = git_version(tree)
+    if tree_is_untrusted():
+        # The controller sends the version in LUSTRE-VERSION-FILE.
+        version, why = None, "a job tree takes its version from a file"
+    else:
+        version, why = git_version(tree)
     if version is not None:
         line = f"LUSTRE_VERSION = {version}\n"
         if read_version_file(tree) != version:

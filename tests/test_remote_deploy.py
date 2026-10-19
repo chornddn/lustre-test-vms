@@ -206,6 +206,9 @@ class TestUnsafeStreams:
             ],
             # A later link moves an earlier link out of the tree.
             [("sym", "up", "d/.."), ("sym", "d", ".")],
+            # git on the host reads .git/config, which can run a program.
+            [("file", ".git/config", "[core]\n\tfsmonitor = x\n")],
+            [("file", "lnet/.git", "gitdir: /tmp\n")],
         ],
     )
     def test_unsafe_stream_is_refused_and_leaves_no_job(
@@ -259,6 +262,206 @@ class TestUnsafeStreams:
         )
         assert resp.error is not None
         assert resp.error.code == "bad_request"
+
+
+@pytest.fixture
+def served(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Make this process run as serve does for a remote request."""
+    from ltvm_pkg.remote import scope
+
+    monkeypatch.setenv("LTVM_OWNER_ID", scope.owner_id("SHA256:k"))
+
+
+def _hostile_tree(tmp_path: Path) -> tuple[Path, Path]:
+    """A job-like tree whose git and version script make a sentinel.
+
+    A container build can add a .git to a job tree.  Return (tree,
+    sentinel).
+    """
+    tree = tmp_path / "tree"
+    tree.mkdir()
+    sentinel = tmp_path / "host-code-sentinel"
+    subprocess.run(["git", "init", "-q", str(tree)], check=True)
+    with (tree / ".git" / "config").open("a") as f:
+        f.write(f"[core]\n\tfsmonitor = touch {sentinel}; false\n")
+    gen = tree / "LUSTRE-VERSION-GEN"
+    gen.write_text(f"#!/bin/sh\ntouch {sentinel}\necho 9.9.9\n")
+    gen.chmod(0o755)
+    (tree / "LUSTRE-VERSION-FILE").write_text("LUSTRE_VERSION = 2.17.58\n")
+    return tree, sentinel
+
+
+@needs_git
+class TestJobTreeOnTheHost:
+    """Under serve, the host runs no code from a job tree."""
+
+    def test_pin_version_runs_no_git(
+        self, tmp_path: Path, served: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ltvm_pkg.lustre_version import pin_version
+
+        tree, sentinel = _hostile_tree(tmp_path)
+        monkeypatch.setattr(
+            subprocess, "run", _forbid_tree_commands(subprocess.run, tree)
+        )
+        pin = pin_version(tree)
+        assert not sentinel.exists()
+        assert (pin.version, pin.source) == ("2.17.58", "file")
+
+    def test_pin_version_does_not_write_through_a_link(
+        self, tmp_path: Path, served: None
+    ) -> None:
+        from ltvm_pkg.lustre_version import pin_version
+
+        tree, _ = _hostile_tree(tmp_path)
+        outside = tmp_path / "outside"
+        outside.write_text("OUTSIDE\n")
+        (tree / "LUSTRE-VERSION-FILE").unlink()
+        (tree / "LUSTRE-VERSION-FILE").symlink_to(outside)
+        pin = pin_version(tree)
+        assert outside.read_text() == "OUTSIDE\n"
+        assert pin.source == "default"
+
+    def test_deploy_source_check_runs_no_git(
+        self, tmp_path: Path, served: None, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from ltvm_pkg import staging_sources
+
+        tree, sentinel = _hostile_tree(tmp_path)
+        monkeypatch.setattr(
+            subprocess, "run", _forbid_tree_commands(subprocess.run, tree)
+        )
+        assert staging_sources._source_files(tree) is None
+        assert not sentinel.exists()
+
+    def test_header_version_runs_no_tree_script(
+        self, tmp_path: Path, served: None
+    ) -> None:
+        from ltvm_pkg.cli.util import _lustre_tree_version
+
+        tree, sentinel = _hostile_tree(tmp_path)
+        (tree / "LUSTRE-VERSION-FILE").unlink()
+        assert _lustre_tree_version(tree) is None
+        assert not sentinel.exists()
+
+    def test_build_lock_adds_no_git_exclude(
+        self, tmp_path: Path, served: None
+    ) -> None:
+        from ltvm_pkg.lustre_build import _tree_build_lock
+
+        tree, _ = _hostile_tree(tmp_path)
+        exclude = tree / ".git" / "info" / "exclude"
+        before = exclude.read_text()
+        with _tree_build_lock(tree):
+            pass
+        assert exclude.read_text() == before
+
+    def test_build_lock_is_not_a_link(
+        self, tmp_path: Path, served: None
+    ) -> None:
+        from ltvm_pkg.lustre_build import _tree_build_lock
+
+        tree, _ = _hostile_tree(tmp_path)
+        outside = tmp_path / "outside"
+        (tree / ".ltvm-build-lock").symlink_to(outside)
+        with pytest.raises(OSError):
+            with _tree_build_lock(tree):
+                pass
+        assert not outside.exists()
+
+    @pytest.mark.parametrize("link", [".ltvm-staging", ".ltvm-staging/rocky9"])
+    def test_staging_under_a_link_is_refused(
+        self, tmp_path: Path, served: None, link: str
+    ) -> None:
+        from ltvm_pkg.lustre_build import staging_path
+
+        tree, _ = _hostile_tree(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (tree / link).parent.mkdir(parents=True, exist_ok=True)
+        (tree / link).symlink_to(outside)
+        with pytest.raises(RuntimeError, match="link"):
+            staging_path(tree, "rocky9", kernel="k")
+
+    def test_staging_link_out_of_the_staging_is_refused(
+        self, tmp_path: Path, served: None
+    ) -> None:
+        from ltvm_pkg.lustre_build import staging_path
+
+        tree, _ = _hostile_tree(tmp_path)
+        staging = staging_path(tree, "rocky9", kernel="k")
+        (staging / "usr" / "lib64").mkdir(parents=True)
+        (staging / "usr" / "lib64" / "liblustreapi.so").symlink_to(
+            "liblustreapi.so.1"
+        )
+        assert staging_path(tree, "rocky9", kernel="k") == staging
+        (staging / "etc").symlink_to(tmp_path)
+        with pytest.raises(RuntimeError, match="link"):
+            staging_path(tree, "rocky9", kernel="k")
+
+    def test_local_staging_may_be_a_link(self, tmp_path: Path) -> None:
+        """Negative control: a local tree keeps its staging link."""
+        from ltvm_pkg.lustre_build import staging_path
+
+        tree, _ = _hostile_tree(tmp_path)
+        outside = tmp_path / "outside"
+        outside.mkdir()
+        (tree / ".ltvm-staging").symlink_to(outside)
+        assert staging_path(
+            tree, "rocky9", kernel="k"
+        ).parent.parent.parent == (tree / ".ltvm-staging")
+
+    def test_tree_file_write_does_not_follow_a_link(
+        self, tmp_path: Path
+    ) -> None:
+        from ltvm_pkg.lustre_version import write_tree_file
+
+        outside = tmp_path / "outside"
+        outside.write_text("OUTSIDE\n")
+        link = tmp_path / ".ltvm-kernel-x"
+        link.symlink_to(outside)
+        with pytest.raises(OSError):
+            write_tree_file(link, "k\n")
+        assert outside.read_text() == "OUTSIDE\n"
+        write_tree_file(tmp_path / "new", "k\n")
+        assert (tmp_path / "new").read_text() == "k\n"
+
+    def test_local_build_still_uses_git(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Negative control: the same tree runs git when not served."""
+        from ltvm_pkg.lustre_version import pin_version
+
+        monkeypatch.delenv("LTVM_OWNER_ID", raising=False)
+        tree, sentinel = _hostile_tree(tmp_path)
+        subprocess.run(
+            [
+                "git",
+                "-C",
+                str(tree),
+                "-c",
+                "user.name=t",
+                "-c",
+                "user.email=t@t",
+                "commit",
+                "-q",
+                "--allow-empty",
+                "-m",
+                "x",
+            ],
+            check=True,
+        )
+        pin_version(tree)
+        assert sentinel.exists()
+
+
+def _forbid_tree_commands(real: Any, tree: Path) -> Any:
+    def run(cmd: Any, *a: Any, **kw: Any) -> Any:
+        assert str(tree) not in " ".join(map(str, cmd)), cmd
+        assert str(kw.get("cwd", "")) != str(tree), cmd
+        return real(cmd, *a, **kw)
+
+    return run
 
 
 def _send(argv: list[str]) -> Any:

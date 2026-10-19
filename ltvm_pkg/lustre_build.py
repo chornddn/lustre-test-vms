@@ -33,8 +33,12 @@ from . import build_timeout
 from .lustre_version import (
     check_configured,
     configure_is_stale,
+    link_out_of,
     pin_version,
+    read_tree_file,
+    tree_is_untrusted,
     undetermined_warning,
+    write_tree_file,
 )
 from .podman_run import run_podman_with_cleanup
 from .vm_state import DEFAULT_TARGET
@@ -55,11 +59,15 @@ def _show_configure_log(
     """
     log_path = lustre_tree / "config.log"
     try:
-        if log_path.stat().st_mtime < since:
+        if log_path.lstat().st_mtime < since:
             return False
-        lines = log_path.read_text(errors="replace").splitlines()
     except OSError:
         return False
+    # No link: the log goes to the controller of a remote request.
+    text = read_tree_file(log_path)
+    if text is None:
+        return False
+    lines = text.splitlines()
     status = next(
         (ln for ln in reversed(lines) if ln.startswith("configure: exit ")),
         None,
@@ -132,6 +140,10 @@ def _register_git_exclude(lustre_tree: Path) -> None:
     Best effort -- a read-only or non-git tree just keeps the files
     visible, which is how it behaved before.
     """
+    if tree_is_untrusted():
+        # A job tree has no git checkout of its own.  A .git in it came
+        # from the controller or from a build, so it can point anywhere.
+        return
     info_dir = _git_info_dir(lustre_tree)
     if info_dir is None:
         return
@@ -167,8 +179,9 @@ def _tree_build_lock(lustre_tree: Path) -> Iterator[None]:
     # behind with nothing excluding it.
     _register_git_exclude(lustre_tree)
     lock_path = lustre_tree / ".ltvm-build-lock"
-    lock_path.touch(exist_ok=True)
-    with lock_path.open("w") as fp:
+    # O_NOFOLLOW: a link at this name can point outside the tree.
+    fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_NOFOLLOW, 0o644)
+    with os.fdopen(fd, "w") as fp:
         try:
             fcntl.flock(fp, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:
@@ -345,9 +358,30 @@ def staging_path(
 
     base = Path(lustre_tree) / ".ltvm-staging" / target / arch / kernel
     variant = container_variant_for(target, variant, arch)
-    if variant == "base":
-        return base
-    return base.parent / f"{kernel}__{variant}"
+    staging = (
+        base if variant == "base" else base.parent / f"{kernel}__{variant}"
+    )
+    if tree_is_untrusted():
+        check_staging(Path(lustre_tree), staging)
+    return staging
+
+
+def check_staging(lustre_tree: Path, staging: Path) -> None:
+    """Refuse a staging directory that a link can move out of the tree.
+
+    The build container can write links into a job tree.  The host
+    then writes into the staging directory and copies files from it.
+    So no part of the staging path may be a link, and each link in the
+    staging directory must resolve to a path in it.  Raise RuntimeError.
+    """
+    part = lustre_tree
+    for name in staging.relative_to(lustre_tree).parts:
+        part = part / name
+        if part.is_symlink():
+            raise RuntimeError(f"the staging path {part} is a link")
+    bad = link_out_of(staging) if staging.is_dir() else None
+    if bad is not None:
+        raise RuntimeError(f"the staging link {bad} points outside {staging}")
 
 
 class BuildResult(TypedDict):
@@ -1520,17 +1554,20 @@ fi""")
     # subsequent build for the OTHER arch sees them as missing and
     # forces a fresh autogen+configure pass.
     suffix = _stamp_suffix(target, arch)
-    (lustre_tree / f".ltvm-kernel-{suffix}").write_text(kver + "\n")
-    (lustre_tree / f".ltvm-server-{suffix}").write_text(
-        str(enable_server) + "\n"
+    if tree_is_untrusted():
+        # The build container can put a link into the staging path.
+        check_staging(lustre_tree, host_staging)
+    write_tree_file(lustre_tree / f".ltvm-kernel-{suffix}", kver + "\n")
+    write_tree_file(
+        lustre_tree / f".ltvm-server-{suffix}", str(enable_server) + "\n"
     )
-    (lustre_tree / f".ltvm-configure-{suffix}").write_text(cfg_hash + "\n")
+    write_tree_file(lustre_tree / f".ltvm-configure-{suffix}", cfg_hash + "\n")
     # Drop a build stamp at the staging root.  cmd_deploy uses it as
     # the reference mtime for the source-tree freshness check, so an
     # in-place rewrite of an existing .ko file under
     # lib/modules/.../extra/ (which doesn't update the staging dir's
     # own mtime) still gets a fresh "newer than this" comparison.
-    (host_staging / ".ltvm-staging-stamp").write_text(kver + "\n")
+    write_tree_file(host_staging / ".ltvm-staging-stamp", kver + "\n")
     # Per-kernel meta so build-image --with-lustre can invalidate its
     # cache when a rebuilt Lustre lands new modules.  Two separate
     # signals, because they answer different questions:
@@ -1567,7 +1604,7 @@ fi""")
         },
         indent=2,
     )
-    (host_staging / ".ltvm-staging-meta.json").write_text(meta_text + "\n")
+    write_tree_file(host_staging / ".ltvm-staging-meta.json", meta_text + "\n")
     # Which source each verbatim-installed file came from, so deploy can
     # catch a script edited after this install (see staging_sources).
     from .staging_sources import write_manifest

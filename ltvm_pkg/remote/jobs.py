@@ -12,7 +12,8 @@ and each job directory have mode 0700.
 The unpack refuses a stream that can write outside the tree: an
 absolute name, a ".." component, a symbolic link whose target is outside
 the tree, a hard link or a device.  It also refuses to write through a
-symbolic link.  A refused stream leaves no job directory.
+symbolic link, and it refuses a ".git" entry.  A refused stream leaves
+no job directory.
 
 A link target can go through other links of the stream.  A later link
 can also change where an earlier link goes.  So after the unpack, the
@@ -85,6 +86,9 @@ def _member_path(name: str) -> str:
     parts = [p for p in name.split("/") if p not in ("", ".")]
     if not parts or ".." in parts:
         raise _refuse(f"{name!r} is outside the tree")
+    if ".git" in parts:
+        # git reads .git/config, which can name a program to run.
+        raise _refuse(f"{name!r} is a git directory")
     return "/".join(parts)
 
 
@@ -103,12 +107,12 @@ def _inside(tree: Path, path: Path) -> bool:
 
 def _check_links(tree: Path) -> None:
     """Refuse the tree if a link in it resolves to a path outside it."""
-    for top, dirs, files in os.walk(tree):
-        for name in dirs + files:
-            path = Path(top) / name
-            if path.is_symlink() and not _inside(tree, path):
-                rel = path.relative_to(tree)
-                raise _refuse(f"link {str(rel)!r} points outside the tree")
+    from ltvm_pkg.lustre_version import link_out_of
+
+    bad = link_out_of(tree)
+    if bad is not None:
+        rel = bad.relative_to(tree)
+        raise _refuse(f"link {str(rel)!r} points outside the tree")
 
 
 def _unpack(stream: IO[bytes], tree: Path) -> tuple[int, int]:

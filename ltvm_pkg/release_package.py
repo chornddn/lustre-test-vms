@@ -548,6 +548,31 @@ def export_build_container(
 # ---------------------------------------------------------------------------
 
 
+def _tree_commit(lustre_tree: Path) -> str:
+    try:
+        r = subprocess.run(
+            ["git", "-C", str(lustre_tree), "rev-parse", "HEAD"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError as e:
+        raise RuntimeError(
+            f"git not found; cannot record lustre_commit for {lustre_tree}"
+        ) from e
+    if r.returncode != 0:
+        raise RuntimeError(
+            f"git rev-parse HEAD failed for {lustre_tree} "
+            f"(rc={r.returncode}): {(r.stderr or '').strip()}"
+        )
+    lustre_commit = r.stdout.strip()
+    if not lustre_commit:
+        raise RuntimeError(
+            f"git rev-parse HEAD returned empty output for {lustre_tree}"
+        )
+    return lustre_commit
+
+
 def snapshot_lustre(
     lustre_tree: str | Path,
     output_dir: str | Path,
@@ -647,27 +672,13 @@ def snapshot_lustre(
         check=True,
     )
 
-    try:
-        r = subprocess.run(
-            ["git", "-C", str(lustre_tree), "rev-parse", "HEAD"],
-            capture_output=True,
-            text=True,
-            check=False,
-        )
-    except FileNotFoundError as e:
-        raise RuntimeError(
-            f"git not found; cannot record lustre_commit for {lustre_tree}"
-        ) from e
-    if r.returncode != 0:
-        raise RuntimeError(
-            f"git rev-parse HEAD failed for {lustre_tree} "
-            f"(rc={r.returncode}): {(r.stderr or '').strip()}"
-        )
-    lustre_commit = r.stdout.strip()
-    if not lustre_commit:
-        raise RuntimeError(
-            f"git rev-parse HEAD returned empty output for {lustre_tree}"
-        )
+    from .lustre_version import tree_is_untrusted
+
+    if tree_is_untrusted():
+        # A job tree of serve has no .git that the host may read.
+        lustre_commit = "unknown"
+    else:
+        lustre_commit = _tree_commit(lustre_tree)
 
     # Which ZFS this Lustre was built against, if any.  build_lustre
     # records it in the staging meta, which the rsync above copied in;
