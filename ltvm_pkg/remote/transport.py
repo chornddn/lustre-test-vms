@@ -1,0 +1,152 @@
+"""Send one request to `serve` and read the reply.
+
+A transport sends the argument vector of one ltvm command to `ltvm serve
+--stdio` on the host.  It returns the exit status, the stdout and the
+stderr of the verb, and a RemoteError when `serve` refused the request
+or the reply was bad.
+
+The request goes the way SSH sends it: the command is one string, which
+sshd gives to the forced command as SSH_ORIGINAL_COMMAND.  stdin carries
+the handshake line, and later changes put data after it.
+
+Only the exec:// transport is here now.  It is for tests: it starts
+`serve` as a local child process, with the environment that sshd gives
+to a forced command.
+"""
+
+from __future__ import annotations
+
+import getpass
+import shlex
+import subprocess
+import sys
+import tempfile
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import Any, Protocol
+
+from . import protocol
+from .hosts import Host
+from .protocol import RemoteError
+
+
+@dataclass
+class Response:
+    status: int
+    stdout: str
+    stderr: str
+    error: RemoteError | None = None
+    # The handshake reply from serve: its protocol and ltvm versions.
+    peer: dict[str, Any] = field(default_factory=dict)
+
+
+class Transport(Protocol):
+    def request(self, argv: list[str]) -> Response: ...
+
+
+def _ltvm_version() -> str:
+    from ltvm_pkg import __version__
+
+    return str(__version__)
+
+
+def parse_reply(status: int, stdout: str, stderr: str) -> Response:
+    """Split the handshake reply from the verb output.
+
+    Every transport uses this function, so they all read the reply the
+    same way.
+    """
+    first, _, rest = stdout.partition("\n")
+    try:
+        peer = protocol.parse_line(first)
+    except ValueError:
+        tail = stderr.strip().splitlines()[-1:] or ["no output"]
+        return Response(
+            status,
+            "",
+            stderr,
+            RemoteError(
+                "bad_reply",
+                "the host did not answer the version handshake",
+                hint=f"The host said: {tail[0]}",
+            ),
+        )
+    ours = protocol.PROTOCOL_VERSION
+    if peer["protocol"] != ours:
+        err = RemoteError(
+            "version_mismatch",
+            f"protocol version {ours} on this controller "
+            f"(ltvm {_ltvm_version()}), "
+            f"{peer['protocol']} on the host (ltvm {peer.get('ltvm')})",
+            details={
+                "host_protocol": peer["protocol"],
+                "host_ltvm": peer.get("ltvm"),
+            },
+        )
+        return Response(status, "", stderr, err, peer)
+    if peer.get("error"):
+        try:
+            err = RemoteError.from_json(peer["error"])
+        except ValueError as e:
+            err = RemoteError("bad_reply", f"bad error in the reply: {e}")
+        return Response(status, "", stderr, err, peer)
+    return Response(status, rest, stderr, None, peer)
+
+
+class ExecTransport:
+    """Run `ltvm serve --stdio` as a local child process (tests only)."""
+
+    def __init__(self, host: Host) -> None:
+        self.host = host
+        self.script = Path(host.url[len("exec://") :])
+        if not self.script.is_absolute():
+            raise ValueError(f"exec:// needs an absolute path: {host.url}")
+
+    def request(self, argv: list[str]) -> Response:
+        return self.send(shlex.join(argv))
+
+    def send(self, command: str) -> Response:
+        """Send one command string, as an SSH client sends it."""
+        with tempfile.TemporaryDirectory(prefix="ltvm-exec-") as tmp:
+            env = self._sshd_env(command, Path(tmp))
+            proc = subprocess.run(
+                [sys.executable, str(self.script), "serve", "--stdio"],
+                input=protocol.hello_line(_ltvm_version()) + "\n",
+                capture_output=True,
+                text=True,
+                env=env,
+                cwd=env["HOME"],
+                check=False,
+            )
+        return parse_reply(proc.returncode, proc.stdout, proc.stderr)
+
+    def _sshd_env(self, command: str, tmp: Path) -> dict[str, str]:
+        """The environment that sshd gives to a forced command."""
+        user = getpass.getuser()
+        env = {
+            "HOME": str(Path.home()),
+            "USER": user,
+            "LOGNAME": user,
+            "SHELL": "/bin/sh",
+            "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
+            "SSH_CONNECTION": "127.0.0.1 50000 127.0.0.1 22",
+            "SSH_ORIGINAL_COMMAND": command,
+        }
+        if self.host.pubkey:
+            # sshd with ExposeAuthInfo writes this file.  Each line is
+            # "publickey <type> <base64 key>".
+            key_type, blob = self.host.pubkey.split()[:2]
+            auth = tmp / "auth"
+            auth.write_text(f"publickey {key_type} {blob}\n")
+            env["SSH_USER_AUTH"] = str(auth)
+        env.update(self.host.env)
+        return env
+
+
+def for_host(host: Host) -> Transport:
+    if host.url.startswith("exec://"):
+        return ExecTransport(host)
+    raise RemoteError(
+        "unknown_host",
+        f"host {host.name!r} has an unsupported URL: {host.url}",
+    )

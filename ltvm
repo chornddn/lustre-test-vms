@@ -596,8 +596,28 @@ def build_parser() -> argparse.ArgumentParser:
         action="version",
         version=f"%(prog)s {LTVM_VERSION}",
     )
+    p.add_argument(
+        "--host",
+        default=None,
+        metavar="NAME",
+        help="Run the command on remote host NAME "
+        "(default: $LTVM_HOST).  See docs/REMOTE_HOSTS.md.",
+    )
 
     sub = p.add_subparsers(dest="command")
+
+    # -- serve (remote requests on this host) --
+    sp = sub.add_parser(
+        "serve",
+        parents=[common],
+        help="Run remote requests on this host (the forced SSH command)",
+    )
+    sp.add_argument(
+        "--stdio",
+        action="store_true",
+        help="Read one request from SSH_ORIGINAL_COMMAND and stdin",
+    )
+    sp.set_defaults(func=_cmd_serve)
 
     # -- install (host setup) --
     sp = sub.add_parser(
@@ -2895,6 +2915,21 @@ def parse_cli(
     return args
 
 
+def _cmd_serve(args: argparse.Namespace) -> int:
+    """`ltvm serve --stdio`: run one remote request (ltvm_pkg.remote)."""
+    from ltvm_pkg.cli.util import _error
+
+    if not args.stdio:
+        return _error(
+            "serve needs --stdio",
+            args.json,
+            hint="sshd runs `ltvm serve --stdio` for a remote request.",
+        )
+    from ltvm_pkg.remote.serve import serve_stdio
+
+    return serve_stdio(run)
+
+
 def main() -> int:
     parser = build_parser()
     # argcomplete hooks here when invoked via the bash completion shim
@@ -2916,6 +2951,7 @@ def run(
     update_check: bool = True,
     telemetry: bool = True,
     parser: argparse.ArgumentParser | None = None,
+    remote: bool = True,
 ) -> int:
     """Run one ltvm command in this process and return its exit status.
 
@@ -2923,6 +2959,10 @@ def run(
     remote request on the host.  Set update_check=False to skip the
     update check.  Set telemetry=False to skip telemetry: no record and
     no send.  A parse error raises SystemExit, as argparse does.
+
+    With --host or LTVM_HOST, the command goes to that host and does not
+    run here.  `serve` sets remote=False, so a request never goes on to
+    another host.
     """
     if parser is None:
         parser = build_parser()
@@ -2934,6 +2974,26 @@ def run(
     if not args.command:
         parser.print_help()
         return EXIT_ERROR
+
+    if remote:
+        from ltvm_pkg.remote.client import (
+            LOCAL_ONLY_VERBS,
+            run_remote,
+            strip_host_option,
+        )
+
+        # LTVM_HOST selects a host for a whole session, so the verbs
+        # that only make sense here ignore it.  An explicit --host never
+        # runs the verb here: serve refuses what it does not allow.
+        host = args.host
+        if not host and args.command not in LOCAL_ONLY_VERBS:
+            host = os.environ.get("LTVM_HOST")
+        if host:
+            return run_remote(
+                host,
+                strip_host_option(argv),
+                use_json=bool(getattr(args, "json", False)),
+            )
 
     # `ltvm vm create` is `ltvm create`.  Collapse it to the top-level
     # name so everything downstream -- telemetry counters included --
@@ -2955,7 +3015,10 @@ def run(
     # it runs once per new terminal.  A nag there would print into every
     # shell the user opens, and the check's state file would be written
     # by however many shells start at once.
-    if update_check and args.command not in ("install", "completion"):
+    #
+    # `serve` is skipped too.  The owner's code does the checks on a
+    # remote host, so a remote request never updates it.
+    if update_check and args.command not in ("install", "completion", "serve"):
         try:
             from ltvm_pkg.update_check import maybe_check_for_updates
 
@@ -2977,7 +3040,13 @@ def run(
     # `completion` is excluded for the same reason as above: it runs
     # from shell rc files, and counting one invocation per terminal
     # opened would drown out every command a human actually ran.
-    if telemetry and args.command not in ("install", "telemetry", "completion"):
+    # `serve` is skipped too: remote use sends nothing from the host.
+    if telemetry and args.command not in (
+        "install",
+        "telemetry",
+        "completion",
+        "serve",
+    ):
         try:
             from ltvm_pkg.telemetry import maybe_send, record
 
