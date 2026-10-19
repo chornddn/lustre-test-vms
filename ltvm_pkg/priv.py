@@ -44,6 +44,10 @@ _sudo_refused = False
 _sudo_forbidden = False
 _audit_hook_added = False
 
+# forbid_sudo() sets this variable, so that child ltvm processes forbid
+# sudo too (forbid_sudo_from_env).
+NO_SUDO_ENV = "LTVM_NO_SUDO"
+
 
 class SudoUnavailable(RuntimeError):
     """sudo would not grant root to this user."""
@@ -88,9 +92,16 @@ def forbid_sudo() -> None:
 
     global _sudo_forbidden, _audit_hook_added
     _sudo_forbidden = True
+    os.environ[NO_SUDO_ENV] = "1"
     if not _audit_hook_added:
         sys.addaudithook(_audit_hook)
         _audit_hook_added = True
+
+
+def forbid_sudo_from_env() -> None:
+    """Forbid sudo if a parent process forbade it (NO_SUDO_ENV)."""
+    if os.environ.get(NO_SUDO_ENV) == "1":
+        forbid_sudo()
 
 
 def _check_sudo_allowed() -> None:

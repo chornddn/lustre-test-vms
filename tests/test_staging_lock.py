@@ -271,7 +271,7 @@ class TestDeploy:
         seen: dict = {}
 
         def run(cmd, *a, **kw):
-            if cmd[:3] == ["ltvm", "build", "lustre"]:
+            if cmd[2:4] == ["build", "lustre"]:
                 seen["build"] = _lock_state(staging)
                 return MagicMock(returncode=0)
             return MagicMock(returncode=0, stdout="", stderr="")

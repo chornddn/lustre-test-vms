@@ -382,11 +382,12 @@ def cmd_cluster_failover(args: argparse.Namespace) -> None:
 
 def _unfault(vm: VMInfo, timeout: int) -> None:
     """Bring the primary back from any fault that failover left on it."""
-    from .vm_cluster import _ltvm, _sudo_prefix
+    from .paths import ltvm_command
+    from .vm_cluster import _sudo_prefix
 
     if not is_running(vm):
         r = subprocess.run(
-            [*_sudo_prefix(), *_ltvm(), "start", vm.name],
+            [*_sudo_prefix(), *ltvm_command(), "start", vm.name],
             capture_output=True,
             text=True,
         )

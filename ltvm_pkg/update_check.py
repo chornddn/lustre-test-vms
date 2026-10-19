@@ -67,6 +67,10 @@ log = logging.getLogger(__name__)
 
 REPO_SLUG = "lustre-tools/lustre-test-vms"
 
+# With the value "0", maybe_check_for_updates does nothing.  `serve` sets
+# it for the ltvm processes that a remote request starts.
+NO_CHECK_ENV = "LTVM_UPDATE_CHECK"
+
 # How often we ask GitHub anything.
 CHECK_INTERVAL = timedelta(days=7)
 # How often we mention a pending update to a non-interactive caller.
@@ -573,6 +577,10 @@ def maybe_check_for_updates(
     callers are scripts, and we never block a script on a prompt --
     but they still get the stderr notice.
     """
+    # `serve` sets LTVM_UPDATE_CHECK=0, so that the child ltvm processes
+    # of a remote request do no update check on the host.
+    if os.environ.get(NO_CHECK_ENV) == "0":
+        return
     cfg = _load_config()
     mode = cfg["update_check"].get("mode", "prompt")
     # "never" means never: not even a schema-mismatch force bypasses

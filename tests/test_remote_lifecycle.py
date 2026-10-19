@@ -438,6 +438,7 @@ class InProcTransport:
                 stdin=io.StringIO(protocol.hello_line("0") + "\n"),
                 stdout=out,
                 env=env,
+                script=str(_LTVM_PATH),
             )
         out.flush()
         raw = out.buffer.getvalue().decode()  # type: ignore[attr-defined]

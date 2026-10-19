@@ -96,6 +96,10 @@ def parse_reply(status: int, stdout: str, stderr: str) -> Response:
 class ExecTransport:
     """Run `ltvm serve --stdio` as a local child process (tests only)."""
 
+    # Seconds.  A request that takes longer fails with timed_out, so a
+    # broken test fails and does not hang.
+    timeout: float = 120.0
+
     def __init__(self, host: Host) -> None:
         self.host = host
         self.script = Path(host.url[len("exec://") :])
@@ -109,15 +113,27 @@ class ExecTransport:
         """Send one command string, as an SSH client sends it."""
         with tempfile.TemporaryDirectory(prefix="ltvm-exec-") as tmp:
             env = self._sshd_env(command, Path(tmp))
-            proc = subprocess.run(
-                [sys.executable, str(self.script), "serve", "--stdio"],
-                input=protocol.hello_line(_ltvm_version()) + "\n",
-                capture_output=True,
-                text=True,
-                env=env,
-                cwd=env["HOME"],
-                check=False,
-            )
+            try:
+                proc = subprocess.run(
+                    [sys.executable, str(self.script), "serve", "--stdio"],
+                    input=protocol.hello_line(_ltvm_version()) + "\n",
+                    capture_output=True,
+                    text=True,
+                    env=env,
+                    cwd=env["HOME"],
+                    check=False,
+                    timeout=self.timeout,
+                )
+            except subprocess.TimeoutExpired:
+                return Response(
+                    1,
+                    "",
+                    "",
+                    RemoteError(
+                        "timed_out",
+                        f"serve did not finish in {self.timeout:g} s",
+                    ),
+                )
         return parse_reply(proc.returncode, proc.stdout, proc.stderr)
 
     def _sshd_env(self, command: str, tmp: Path) -> dict[str, str]:

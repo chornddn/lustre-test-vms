@@ -135,6 +135,12 @@ def _isolate_user_state(
         "CLAUDE_PID",
     ):
         monkeypatch.delenv(var, raising=False)
+    # serve sets these for its children, and a developer can have
+    # LTVM_HOST set.  setenv first, so that the teardown removes a value
+    # that a test sets.
+    for var in ("LTVM_HOST", "LTVM_NO_SUDO", "LTVM_UPDATE_CHECK", "LTVM_SELF"):
+        monkeypatch.setenv(var, "")
+        monkeypatch.delenv(var)
     claims = root / "claims"
     claims.mkdir()
     claims.chmod(0o1777)

@@ -16,10 +16,31 @@ from __future__ import annotations
 import json
 import logging
 import os
+import sys
 from pathlib import Path
 from typing import Any
 
 log = logging.getLogger("ltvm")
+
+# The absolute path of the ltvm script that child ltvm processes run.
+# `serve` sets it: sshd gives a forced command a short PATH, and a child
+# of a remote request must run the same ltvm as serve.
+SELF_ENV = "LTVM_SELF"
+
+
+def ltvm_command() -> list[str]:
+    """The argv prefix that starts a child ltvm process.
+
+    The value is this Python and the script in SELF_ENV when that
+    variable is set, else this Python and this checkout's ltvm script.
+    A bare "ltvm" runs whichever install is first in PATH, and a
+    worktree's cluster then creates its nodes with another checkout's
+    code, which may not know a new flag ("unrecognized arguments").
+    """
+    script = os.environ.get(SELF_ENV) or str(
+        Path(__file__).resolve().parent.parent / "ltvm"
+    )
+    return [sys.executable, script]
 
 
 def load_meta_safe(meta_file: Path) -> dict[str, Any] | None:

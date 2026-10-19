@@ -2865,7 +2865,9 @@ class TestCmdClusterDeployServersOrClients:
 
 
 def test_child_ltvm_is_this_checkout() -> None:
-    argv = vm_cluster._ltvm()
+    from ltvm_pkg import paths
+
+    argv = paths.ltvm_command()
     assert argv[1] == str(
         Path(vm_cluster.__file__).resolve().parent.parent / "ltvm"
     )

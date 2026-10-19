@@ -25,6 +25,7 @@ from ltvm_pkg.cli.util import (
     _output,
 )
 from ltvm_pkg.lustre_build import read_staging_meta
+from ltvm_pkg.paths import ltvm_command
 
 
 def _cli_attr(name: str) -> Any:
@@ -553,7 +554,7 @@ def cmd_deploy(args: argparse.Namespace) -> int:
                 kernel=deploy_kernel,
             )
             build_cmd = [
-                "ltvm",
+                *ltvm_command(),
                 "build",
                 "lustre",
                 target,

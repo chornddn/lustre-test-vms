@@ -139,6 +139,29 @@ def _run_verb(run: RunFn, argv: list[str]) -> tuple[int, str]:
     return rc, "ok" if rc == 0 else f"exit {rc}"
 
 
+def _guard_children(script: str | None) -> None:
+    """Set the environment that the child ltvm processes of a verb get.
+
+    `cluster create` and `cluster deploy` start child ltvm processes.
+    The children read the environment, not the arguments of run():
+
+    - no telemetry and no update check on the host
+    - no LTVM_HOST, so a child never sends its command on to a host
+    - the same ltvm script as serve, not the ltvm on the PATH of sshd
+      (on macOS that PATH does not include /usr/local/bin)
+
+    priv.forbid_sudo() adds LTVM_NO_SUDO after the checks.
+    """
+    from ltvm_pkg import paths
+    from ltvm_pkg.update_check import NO_CHECK_ENV
+
+    os.environ["LTVM_TELEMETRY"] = "0"
+    os.environ[NO_CHECK_ENV] = "0"
+    os.environ.pop("LTVM_HOST", None)
+    if script:
+        os.environ[paths.SELF_ENV] = script
+
+
 def serve_stdio(
     run: RunFn,
     *,
@@ -146,10 +169,14 @@ def serve_stdio(
     stdin: IO[str] | None = None,
     stdout: IO[str] | None = None,
     env: Mapping[str, str] | None = None,
+    script: str | None = None,
 ) -> int:
-    # Remote use sends no telemetry from the host.  Children of the verb
-    # read the environment, not the arguments of run().
-    os.environ["LTVM_TELEMETRY"] = "0"
+    """Run one remote request.  Return its exit status.
+
+    script is the absolute path of the ltvm script that runs serve.
+    Child ltvm processes of the verb run that script.
+    """
+    _guard_children(script)
     stdin = stdin or sys.stdin
     stdout = stdout or sys.stdout
     env = os.environ if env is None else env

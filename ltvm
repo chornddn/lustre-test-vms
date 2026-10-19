@@ -2988,7 +2988,9 @@ def _cmd_serve(args: argparse.Namespace) -> int:
         )
     from ltvm_pkg.remote.serve import serve_stdio
 
-    return serve_stdio(run, parse=_parse_request)
+    return serve_stdio(
+        run, parse=_parse_request, script=str(Path(__file__).resolve())
+    )
 
 
 def _parse_request(argv: list[str]) -> argparse.Namespace:
@@ -3030,6 +3032,11 @@ def run(
     run here.  `serve` sets remote=False, so a request never goes on to
     another host.
     """
+    # `serve` forbids sudo in its own process and in the ltvm processes
+    # that a remote request starts.
+    from ltvm_pkg import priv
+
+    priv.forbid_sudo_from_env()
     if parser is None:
         parser = build_parser()
     args = parse_cli(parser, argv)

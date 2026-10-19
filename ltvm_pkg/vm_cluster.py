@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from . import vm_claim
+from .paths import ltvm_command
 from .qemu_run import die, is_running, run
 from .vm_net import (
     SSH_KEEPALIVE_OPTS,
@@ -62,19 +63,6 @@ def _sudo_prefix() -> list[str]:
     from . import rootless
 
     return [] if os.geteuid() == 0 or rootless.ready() else ["sudo"]
-
-
-def _ltvm() -> list[str]:
-    """The argv that runs this checkout's ltvm, for a child command.
-
-    A bare "ltvm" runs whichever install is first in PATH, and a
-    worktree's cluster then creates its nodes with another checkout's
-    code, which may not know a new flag ("unrecognized arguments").
-    """
-    return [
-        sys.executable,
-        str(Path(__file__).resolve().parent.parent / "ltvm"),
-    ]
 
 
 def parse_node_spec(spec: str) -> ClusterNode:
@@ -602,7 +590,7 @@ def _create_one_node(
     # invoking user's.  (On macOS that is a hard failure -- root's home is
     # /var/root and /root is on the read-only system volume.)
     cmd = _sudo_prefix() + [
-        *_ltvm(),
+        *ltvm_command(),
         "create",
         node.name,
         "--vcpus",
@@ -1165,7 +1153,7 @@ def cmd_cluster_create(args: argparse.Namespace) -> None:
         # goes first: destroy refuses a primary whose partner stays.
         for node in sorted(node_specs, key=lambda n: not n.failover_for):
             r = subprocess.run(
-                _sudo_prefix() + [*_ltvm(), "destroy", node.name],
+                _sudo_prefix() + [*ltvm_command(), "destroy", node.name],
                 capture_output=True,
             )
             if r.returncode != 0:
@@ -1821,7 +1809,7 @@ def cmd_cluster_deploy(args: argparse.Namespace) -> None:
             continue
 
         build_cmd = [
-            *_ltvm(),
+            *ltvm_command(),
             "build",
             "lustre",
             target,

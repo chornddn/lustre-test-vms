@@ -959,7 +959,7 @@ class TestCmdDeployPerKernelStaging:
         # unrelated reason -- which is what makes the assertion above
         # evidence that legacy modules are not shipped.
         assert any(
-            call.args[0][:3] == ["ltvm", "build", "lustre"]
+            call.args[0][2:4] == ["build", "lustre"]
             for call in run_mock.call_args_list
         )
 
@@ -1607,8 +1607,8 @@ class TestCmdDeployKernelMismatch:
             c
             for c in run_calls
             if isinstance(c, list)
-            and len(c) >= 3
-            and c[0:3] == ["ltvm", "build", "lustre"]
+            and len(c) >= 4
+            and c[2:4] == ["build", "lustre"]
         ]
         # Could also be sudo-prefixed
         if not build_calls:
