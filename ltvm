@@ -665,6 +665,29 @@ def build_parser() -> argparse.ArgumentParser:
     )
     srp.set_defaults(func=_cmd_serve_reap)
 
+    # -- lease (remote VMs and clusters) --
+    lp = sub.add_parser(
+        "lease",
+        parents=[common],
+        help="Change the lease of a remote VM or cluster (with --host)",
+    )
+    lease_sub = lp.add_subparsers(dest="lease_action", required=True)
+    lrp = lease_sub.add_parser(
+        "renew",
+        parents=[common],
+        help="Make a lease end TIME from now, so the host keeps the VM",
+    )
+    lrp.add_argument("name", help="A remote VM, cluster or cluster node")
+    lrp.add_argument(
+        "--for",
+        dest="for_time",
+        default=None,
+        metavar="TIME",
+        help="e.g. 30m, 4h or 2d (default: lease_hours in the serve.toml "
+        "of the host)",
+    )
+    lrp.set_defaults(func=_cmd_lease_renew)
+
     # -- host (remote hosts that this controller uses) --
     hp = sub.add_parser(
         "host",
@@ -3020,6 +3043,12 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return serve_stdio(
         run, parse=_parse_request, script=str(Path(__file__).resolve())
     )
+
+
+def _cmd_lease_renew(args: argparse.Namespace) -> int:
+    from ltvm_pkg.remote import leases
+
+    return leases.cmd_renew(args)
 
 
 def _cmd_serve_reap(args: argparse.Namespace) -> int:

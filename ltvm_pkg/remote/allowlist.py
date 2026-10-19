@@ -57,6 +57,7 @@ ALLOW_LIST: frozenset[tuple[str, ...]] = frozenset(
         ("cluster", "llumount"),
         ("suite", "run"),
         ("suite", "status"),
+        ("lease", "renew"),
     }
 )
 

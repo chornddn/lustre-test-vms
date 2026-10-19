@@ -123,6 +123,9 @@ def grant(
     lease = Lease(kind, name, owner, since=now, expires=now + seconds)
     with _locked(env) as path:
         leases = _read(path)
+        prev = leases.get(lease.key)
+        if prev is not None and not prev.expired(now):
+            lease.since = prev.since
         leases[lease.key] = lease
         _write(path, leases)
     return lease
@@ -152,6 +155,66 @@ def parse_length(text: str) -> float:
         return parse_ttl(text)
     except ValueError as e:
         raise RemoteError("bad_request", str(e)) from None
+
+
+# ── lease renew ──────────────────────────────────────────
+
+
+def _target(env: Mapping[str, str], name: str) -> tuple[str, str, str]:
+    """(kind, name, owner) of the lease that `lease renew <name>` changes.
+
+    A cluster node has no lease of its own: its name renews the lease
+    of its cluster.  Raise VMNotFound when nothing has the name.
+    """
+    from ltvm_pkg.vm_state import ClusterInfo, ClusterNotFound, VMInfo
+
+    unreadable = (RuntimeError, ValueError, KeyError, TypeError, OSError)
+    try:
+        cluster = ClusterInfo.load(name)
+        return CLUSTER, name, cluster.owner_id or "-"
+    except (ClusterNotFound, *unreadable):
+        pass
+    for lease in load_all(env).values():
+        if lease.kind != CLUSTER:
+            continue
+        try:
+            nodes = [n.name for n in ClusterInfo.load(lease.name).get_nodes()]
+        except (ClusterNotFound, *unreadable):
+            continue
+        if name in nodes:
+            return CLUSTER, lease.name, lease.owner
+    vm = VMInfo.load(name)
+    return VM, name, vm.owner_id or "-"
+
+
+def cmd_renew(args: argparse.Namespace) -> int:
+    """`ltvm lease renew <vm|cluster> [--for TIME]`."""
+    from ltvm_pkg.cli.util import _emit_error
+    from ltvm_pkg.vm_state import VMNotFound
+
+    env = os.environ
+    try:
+        seconds = (
+            parse_length(args.for_time)
+            if args.for_time
+            else default_seconds(env)
+        )
+        kind, name, owner = _target(env, args.name)
+    except RemoteError as e:
+        return _emit_error(e.message, args.json, error_code=e.code)
+    except VMNotFound:
+        return _emit_error(
+            f"no VM or cluster named {args.name!r}",
+            args.json,
+            error_code="vm_not_found",
+        )
+    lease = grant(env, kind, name, owner, seconds)
+    if args.json:
+        print(json.dumps(asdict(lease), indent=2))
+    else:
+        until = time.strftime("%F %T %Z", time.localtime(lease.expires))
+        print(f"{kind} {name}: the lease ends at {until}")
+    return 0
 
 
 # ── serve ────────────────────────────────────────────────

@@ -283,6 +283,18 @@ def _check_suite(args: argparse.Namespace) -> None:
         raise _refuse_path("--results-dir")
 
 
+def _check_lease(args: argparse.Namespace) -> None:
+    """`lease renew` names a remote cluster, or a remote VM."""
+    from . import leases
+
+    if _cluster_owner(args.name)[0]:
+        _check_clusters([args.name], lifecycle=False)
+    else:
+        _require_remote_vm(args.name)
+    if args.for_time:
+        leases.parse_length(args.for_time)
+
+
 def check(
     argv: list[str], args: argparse.Namespace, *, home: Path | None = None
 ) -> list[str]:
@@ -309,6 +321,8 @@ def check(
         _check_existing([args.vm])
     elif verb == "suite":
         _check_suite(args)
+    elif verb == "lease":
+        _check_lease(args)
     elif verb == "vm":
         action = getattr(args, "vm_action", None)
         _check_existing([args.name])

@@ -8,7 +8,6 @@ The clock of the lease code is fixed: each test sets `leases.clock`.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 from unittest.mock import patch
@@ -23,7 +22,6 @@ from tests.test_remote_lifecycle import (
     REMOTE_VM,
     _audit,
     _err,
-    _save_vm,
 )
 
 inproc = _lifecycle.inproc
@@ -79,9 +77,7 @@ class TestCreateGivesALease:
     ) -> None:
         rc = ltvm.run(["--host", "t", "create", "new-l1"])
         assert rc == 0
-        assert _leases(inproc) == {
-            "vm:new-l1": (REMOTE_OWNER, T0 + 8 * HOUR)
-        }
+        assert _leases(inproc) == {"vm:new-l1": (REMOTE_OWNER, T0 + 8 * HOUR)}
 
     def test_serve_toml_sets_the_default_length(
         self,
@@ -102,7 +98,9 @@ class TestCreateGivesALease:
         ltvm: Any,
     ) -> None:
         _serve_toml(inproc, "lease_hours = 2.5\n")
-        assert ltvm.run(["--host", "t", "create", "new-l1", "--lease", "30m"]) == 0
+        assert (
+            ltvm.run(["--host", "t", "create", "new-l1", "--lease", "30m"]) == 0
+        )
         assert _leases(inproc)["vm:new-l1"][1] == T0 + 1800
 
     def test_bad_lease_is_refused_and_makes_nothing(
@@ -142,7 +140,11 @@ class TestCreateGivesALease:
         assert not qemu["launch"].called
 
     def test_cluster_create_gives_the_cluster_a_lease(
-        self, icl: SimpleNamespace, clock: SimpleNamespace, ltvm: Any, capsys: Any
+        self,
+        icl: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
     ) -> None:
         import subprocess
 
@@ -162,9 +164,7 @@ class TestCreateGivesALease:
             )
         capsys.readouterr()
         assert rc == 0
-        assert _leases(icl) == {
-            "cluster:new-cl": (REMOTE_OWNER, T0 + HOUR)
-        }
+        assert _leases(icl) == {"cluster:new-cl": (REMOTE_OWNER, T0 + HOUR)}
 
 
 # ── serve reap ───────────────────────────────────────────
@@ -195,7 +195,10 @@ def _grant(inproc: SimpleNamespace, kind: str, name: str, hours: float) -> None:
 
 class TestReap:
     def test_a_live_lease_keeps_the_vm(
-        self, reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any,
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
         capsys: Any,
     ) -> None:
         _grant(reaper, "vm", REMOTE_VM, 8)
@@ -206,7 +209,10 @@ class TestReap:
         assert "vm:" + REMOTE_VM in _leases(reaper)
 
     def test_an_expired_lease_destroys_the_vm_and_logs_it(
-        self, reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any,
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
         capsys: Any,
     ) -> None:
         from tests.test_remote_serve import TEST_KEY_FP
@@ -226,8 +232,12 @@ class TestReap:
         assert entry["result"] == "reaped"
 
     def test_an_expired_lease_destroys_the_cluster(
-        self, icl: SimpleNamespace, reaper: SimpleNamespace,
-        clock: SimpleNamespace, ltvm: Any, capsys: Any,
+        self,
+        icl: SimpleNamespace,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
     ) -> None:
         from tests.test_remote_clusters import (
             REMOTE_CL,
@@ -248,7 +258,10 @@ class TestReap:
         assert entry["args"] == ["destroy", REMOTE_CL]
 
     def test_never_destroys_an_owner_vm(
-        self, reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any,
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
         capsys: Any,
     ) -> None:
         from tests.test_remote_lifecycle import OWNER_VM
@@ -262,7 +275,10 @@ class TestReap:
         assert _audit(reaper.home)[-1]["result"] == "vm_not_found"
 
     def test_a_vm_that_is_gone_drops_its_lease(
-        self, reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any,
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
         capsys: Any,
     ) -> None:
         _grant(reaper, "vm", "gone-sentinel-c7", 1)
@@ -272,7 +288,10 @@ class TestReap:
         assert _leases(reaper) == {}
 
     def test_a_failed_destroy_keeps_the_lease_for_the_next_reap(
-        self, reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any,
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
         capsys: Any,
     ) -> None:
         _grant(reaper, "vm", REMOTE_VM, 1)
@@ -285,10 +304,142 @@ class TestReap:
         assert _audit(reaper.home)[-1]["result"] == "exit 1"
 
     def test_reap_never_uses_sudo(
-        self, reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any,
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
         capsys: Any,
     ) -> None:
         from ltvm_pkg import priv
 
         _reap(ltvm, capsys)
         assert priv._sudo_forbidden
+
+
+# ── lease renew ──────────────────────────────────────────
+
+
+class TestRenew:
+    def test_renew_extends_by_the_default_length(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _grant(reaper, "vm", REMOTE_VM, 1)
+        clock.now = T0 + 0.5 * HOUR
+        rc = ltvm.run(["--host", "t", "lease", "renew", f"t/{REMOTE_VM}"])
+        assert rc == 0
+        assert REMOTE_VM in capsys.readouterr().out
+        assert _leases(reaper)["vm:" + REMOTE_VM] == (
+            REMOTE_OWNER,
+            T0 + 8.5 * HOUR,
+        )
+
+    def test_for_sets_the_length(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _grant(reaper, "vm", REMOTE_VM, 1)
+        rc = ltvm.run(
+            [
+                "--host",
+                "t",
+                "lease",
+                "renew",
+                REMOTE_VM,
+                "--for",
+                "2d",
+                "--json",
+            ]
+        )
+        assert rc == 0
+        out = json.loads(capsys.readouterr().out)
+        assert (out["kind"], out["name"]) == ("vm", REMOTE_VM)
+        assert out["expires"] == T0 + 48 * HOUR
+
+    def test_a_renewed_lease_is_not_reaped(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _grant(reaper, "vm", REMOTE_VM, 1)
+        clock.now = T0 + 0.5 * HOUR
+        ltvm.run(["--host", "t", "lease", "renew", REMOTE_VM, "--for", "2h"])
+        clock.now = T0 + 2 * HOUR
+        assert _reap(ltvm, capsys) == (0, [])
+        assert (reaper.sockets / f"{REMOTE_VM}.info").exists()
+
+    def test_a_remote_vm_with_no_lease_gets_one(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        assert ltvm.run(["--host", "t", "lease", "renew", REMOTE_VM]) == 0
+        assert _leases(reaper) == {
+            "vm:" + REMOTE_VM: (REMOTE_OWNER, T0 + 8 * HOUR)
+        }
+
+    def test_a_cluster_or_its_node_renews_the_cluster_lease(
+        self,
+        icl: SimpleNamespace,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        from tests.test_remote_clusters import (
+            REMOTE_CL,
+            REMOTE_NODE,
+            _save_cluster,
+        )
+
+        _save_cluster(icl.sockets, REMOTE_CL, REMOTE_NODE, REMOTE_OWNER)
+        _grant(icl, "cluster", REMOTE_CL, 1)
+        assert ltvm.run(["--host", "t", "lease", "renew", REMOTE_CL]) == 0
+        assert _leases(icl) == {
+            "cluster:" + REMOTE_CL: (REMOTE_OWNER, T0 + 8 * HOUR)
+        }
+        rc = ltvm.run(
+            ["--host", "t", "lease", "renew", REMOTE_NODE, "--for", "9h"]
+        )
+        assert rc == 0
+        assert _leases(icl) == {
+            "cluster:" + REMOTE_CL: (REMOTE_OWNER, T0 + 9 * HOUR)
+        }
+
+    @pytest.mark.parametrize("name", ["owner-sentinel-f6", "gone-sentinel-c7"])
+    def test_an_owner_or_absent_vm_is_not_found(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+        name: str,
+    ) -> None:
+        rc = ltvm.run(["--host", "t", "lease", "renew", name, "--json"])
+        assert rc == 1
+        assert _err(capsys.readouterr().err)["code"] == "vm_not_found"
+        assert _leases(reaper) == {}
+
+    def test_bad_length_is_refused(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _grant(reaper, "vm", REMOTE_VM, 1)
+        rc = ltvm.run(
+            ["--host", "t", "lease", "renew", REMOTE_VM, "--for", "x", "--json"]
+        )
+        assert rc == 1
+        assert _leases(reaper)["vm:" + REMOTE_VM][1] == T0 + HOUR
