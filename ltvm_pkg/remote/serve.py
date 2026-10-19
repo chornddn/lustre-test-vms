@@ -53,6 +53,7 @@ from . import (
     jobs,
     leases,
     podman,
+    power,
     protocol,
     scope,
 )
@@ -312,6 +313,9 @@ def serve_stdio(
     scope.apply(key)
     stdout.write(protocol.reply_line(_ltvm_version(), None) + "\n")
     stdout.flush()
+    if power.makes_vm(to_run):
+        power.sync(env, busy=True)
     rc, result = _run_verb(run, to_run)
+    power.sync(env)
     audit.append(log, key=key, argv=argv, result=result)
     return rc

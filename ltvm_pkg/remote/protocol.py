@@ -50,6 +50,8 @@ ERROR_CODES: dict[str, str] = {
     "controller pinned",
     "over_cap": "the request goes above a cap that the host owner set",
     "bad_config": "serve cannot read its settings in serve.toml",
+    "on_battery": "the host runs on battery, and its owner allows new VMs "
+    "only on AC power",
     "podman_unsafe": "podman on the host is not rootless and not in a VM",
 }
 

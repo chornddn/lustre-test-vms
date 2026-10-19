@@ -330,7 +330,7 @@ def reap(
     """
     from ltvm_pkg import priv
 
-    from . import audit, serve
+    from . import audit, power, serve
 
     serve._guard_children(script)
     priv.forbid_sudo()
@@ -349,4 +349,5 @@ def reap(
             result=result,
         )
         out.append({**asdict(lease), "result": result})
+    power.sync(env)
     return out

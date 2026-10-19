@@ -363,6 +363,20 @@ def make_fake_ko(modinfo: dict[str, str]) -> bytes:
 
 
 @pytest.fixture(autouse=True)
+def _no_real_power_control() -> object:
+    """Keep caffeinate, systemd-inhibit and pmset out of the tests.
+
+    The power guard of serve starts a holder process while a lease is
+    active, and the AC-only cap reads the power source.  A host of the
+    "other" kind has neither.  tests/test_remote_power.py opts back in.
+    """
+    from ltvm_pkg.remote import power
+
+    with patch.object(power, "system", return_value=power.OTHER):
+        yield
+
+
+@pytest.fixture(autouse=True)
 def _neutralize_deployed_fstype() -> object:
     """Keep cluster deploy from reading a node's cfg/local.sh over ssh.
 

@@ -33,7 +33,7 @@ from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from . import scope, serve_config
+from . import power, scope, serve_config
 from .protocol import RemoteError
 
 if TYPE_CHECKING:
@@ -234,6 +234,13 @@ def check(
             f"serve cannot read its caps: {e}",
             hint="The host owner corrects serve.toml.",
         ) from None
+    if cfg.ac_only and power.on_battery():
+        raise RemoteError(
+            "on_battery",
+            "this host runs on battery, and its owner allows new VMs only "
+            "on AC power",
+            hint="Wait until the host is on AC power, or use local VMs.",
+        )
     limits = {
         "vcpus": cfg.max_vcpus,
         "ram_gb": cfg.max_ram_gb,
