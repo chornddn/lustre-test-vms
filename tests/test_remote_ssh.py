@@ -120,7 +120,21 @@ class TestServeAuthorize:
         assert not (host_home / ".ssh" / "authorized_keys").exists()
 
     @pytest.mark.parametrize(
-        "addr", ['1.2.3.4" ssh-ed25519', "1.2.3.4 5.6.7.8", "", "a,,b"]
+        "addr",
+        [
+            '1.2.3.4" ssh-ed25519',
+            "1.2.3.4 5.6.7.8",
+            "",
+            "a,,b",
+            "*",
+            "192.0.2.*",
+            "?.?.?.?",
+            "!192.0.2.7",
+            "192.0.2.7,198.51.100.4",
+            "ctl.example.com",
+            "192.0.2.0/33",
+            "192.0.2.7/24",
+        ],
     )
     def test_refuses_a_bad_address(
         self, ltvm: Any, host_home: Path, capsys: Any, addr: str
@@ -128,6 +142,15 @@ class TestServeAuthorize:
         rc = ltvm.run(["serve", "authorize", TEST_PUBKEY, "--from", addr])
         assert rc == 1
         assert not (host_home / ".ssh" / "authorized_keys").exists()
+
+    @pytest.mark.parametrize("addr", ["192.0.2.7", "192.0.2.0/24", "::1"])
+    def test_takes_one_address_or_cidr(
+        self, ltvm: Any, host_home: Path, capsys: Any, addr: str
+    ) -> None:
+        rc = ltvm.run(["serve", "authorize", TEST_PUBKEY, "--from", addr])
+        assert rc == 0
+        line = (host_home / ".ssh" / "authorized_keys").read_text()
+        assert f'from="{addr}"' in line
 
     def test_needs_an_address(
         self, ltvm: Any, host_home: Path, capsys: Any

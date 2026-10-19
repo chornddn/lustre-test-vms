@@ -21,6 +21,7 @@ from __future__ import annotations
 import base64
 import binascii
 import hashlib
+import ipaddress
 import os
 import re
 import shlex
@@ -72,9 +73,6 @@ _KEY_TYPES = frozenset(
 # A comment has no quote, no space and no control character, so it
 # cannot change the meaning of the line.
 _COMMENT_RE = re.compile(r"^[A-Za-z0-9._:@+=/-]*$")
-# One from= pattern: an address, a CIDR range or a host name, with the
-# ? and * wildcards and an optional ! in front.
-_FROM_RE = re.compile(r"^!?[A-Za-z0-9.:/*?_-]+$")
 _URL_PART_RE = re.compile(r"^[A-Za-z0-9._:%-]+$")
 
 
@@ -151,12 +149,21 @@ def parse_public_key(text: str) -> PublicKey:
 
 
 def check_from(addr: str) -> str:
-    """Check a from= value: one or more patterns, with commas between."""
-    if not addr or not all(_FROM_RE.match(p) for p in addr.split(",")):
+    """Check a from= value: one IP address or one CIDR range.
+
+    A wildcard, a host name or a list can let in more controllers than
+    the owner intends, so they are refused.
+    """
+    try:
+        if "/" in addr:
+            ipaddress.ip_network(addr, strict=True)
+        else:
+            ipaddress.ip_address(addr)
+    except ValueError:
         raise ValueError(
-            f"bad address {addr!r}: use addresses, CIDR ranges or host "
-            "names, with commas between and no spaces"
-        )
+            f"bad address {addr!r}: give one IP address or one CIDR "
+            "range, such as 192.0.2.7 or 192.0.2.0/24"
+        ) from None
     return addr
 
 

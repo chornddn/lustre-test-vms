@@ -656,8 +656,8 @@ def build_parser() -> argparse.ArgumentParser:
         dest="from_addr",
         required=True,
         metavar="ADDR",
-        help="The address that this host sees for the controller "
-        "(sshd from= patterns, with commas between)",
+        help="The address that this host sees for the controller: one "
+        "IP address or one CIDR range (no wildcards)",
     )
     ssp.set_defaults(func=cmd_serve_authorize)
     ssp = serve_sub.add_parser(
