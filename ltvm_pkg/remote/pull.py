@@ -44,6 +44,7 @@ from typing import IO
 
 from . import jobs, scope
 from .protocol import RemoteError
+from .transport import Response
 
 VERB = "pull"
 TYPES = ("suite", "crash", "dk", "console")
@@ -249,20 +250,28 @@ def _inside(top: str, path: str) -> bool:
     return real == top or real.startswith(top + os.sep)
 
 
-def unpack(data: bytes, dest: Path) -> tuple[list[str], int]:
+@dataclass
+class Saved:
+    """The files that a pull wrote on the controller."""
+
+    dest: Path
+    files: list[str]
+    size: int
+
+
+def unpack(stream: IO[bytes], dest: Path) -> tuple[list[str], int]:
     """Unpack a pull stream into dest.  Return (files, bytes).
 
-    Accept only directories and regular files with relative names and no
-    "..".  Write no file through a symbolic link.
+    Read the stream as it arrives: no full copy is in memory.  Accept
+    only directories and regular files with relative names and no "..".
+    Write no file through a symbolic link.
     """
-    import io
-
     dest.mkdir(parents=True, exist_ok=True)
     top = os.path.realpath(dest)
     files: list[str] = []
     size = 0
     try:
-        with tarfile.open(fileobj=io.BytesIO(data), mode="r|") as tar:
+        with tarfile.open(fileobj=stream, mode="r|") as tar:
             for m in tar:
                 parts = m.name.split("/")
                 if (
@@ -303,21 +312,34 @@ def unpack(data: bytes, dest: Path) -> tuple[list[str], int]:
     return files, size
 
 
-def save(
-    host: str, args: argparse.Namespace, body: bytes, use_json: bool
-) -> int:
-    """Unpack the reply of a pull and report it.  Return the exit status."""
-    from ltvm_pkg.cli.util import EXIT_ERROR, EXIT_OK, _emit_error
+def fetch(
+    host: str, argv: list[str], args: argparse.Namespace
+) -> tuple[Response, Saved | None]:
+    """Send a pull request, and unpack the reply while it arrives.
+
+    Return the response and what was saved (None if serve refused the
+    request).  Raise RemoteError for a stream that unpack refuses.
+    """
+    from . import hosts
 
     if args.dest:
         dest = Path(os.path.abspath(os.path.expanduser(args.dest)))
     else:
         dest = Path.cwd() / DEFAULT_ROOT / host / args.what
-    try:
-        files, size = unpack(body, dest)
-    except RemoteError as e:
-        _emit_error(e.message, use_json, hint=e.hint, error_code=e.code)
-        return EXIT_ERROR
+    saved: list[Saved] = []
+
+    def consume(stream: IO[bytes]) -> None:
+        files, size = unpack(stream, dest)
+        saved.append(Saved(dest, files, size))
+
+    response = hosts.transport_for(host).stream(argv, consume)
+    return response, (saved[0] if saved else None)
+
+
+def report(
+    host: str, args: argparse.Namespace, saved: Saved, use_json: bool
+) -> None:
+    """Print what a pull saved."""
     if use_json:
         print(
             json.dumps(
@@ -325,15 +347,17 @@ def save(
                     "host": host,
                     "name": args.name,
                     "what": args.what,
-                    "dest": str(dest),
-                    "files": files,
-                    "bytes": size,
+                    "dest": str(saved.dest),
+                    "files": saved.files,
+                    "bytes": saved.size,
                 },
                 indent=2,
             )
         )
-    elif files:
-        print(f"pulled {len(files)} files ({size} bytes) to {dest}")
+    elif saved.files:
+        print(
+            f"pulled {len(saved.files)} files ({saved.size} bytes) "
+            f"to {saved.dest}"
+        )
     else:
         print(f"no {args.what} results for {args.name} on host {host}")
-    return EXIT_OK

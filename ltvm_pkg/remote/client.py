@@ -57,7 +57,11 @@ def run_remote(
             argv = names.to_host(name, argv, args)
             argv = tree.attach(name, argv, args)
             argv = pull.request_argv(argv, args)
-        response = hosts.transport_for(name).request(argv)
+        saved = None
+        if args is not None and argv[:1] == [pull.VERB]:
+            response, saved = pull.fetch(name, argv, args)
+        else:
+            response = hosts.transport_for(name).request(argv)
     except RemoteError as e:
         return _emit_error(
             e.message, use_json, hint=_hint(name, e), error_code=e.code
@@ -73,9 +77,11 @@ def run_remote(
             details=err.details,
         )
         return EXIT_ERROR
-    if argv[:1] == [pull.VERB] and args is not None and response.status == 0:
+    if saved is not None and args is not None:
         sys.stderr.write(response.stderr)
-        return pull.save(name, args, response.body, use_json)
+        if response.status == 0:
+            pull.report(name, args, saved, use_json)
+        return response.status
     if not names.show(name, argv, response.status, response.stdout, use_json):
         sys.stdout.write(response.stdout)
     sys.stderr.write(response.stderr)

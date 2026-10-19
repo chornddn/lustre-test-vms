@@ -22,9 +22,11 @@ import shlex
 import subprocess
 import sys
 import tempfile
+import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Protocol
+from typing import IO, Any, Protocol
 
 from . import protocol
 from .hosts import Host
@@ -39,12 +41,96 @@ class Response:
     error: RemoteError | None = None
     # The handshake reply from serve: its protocol and ltvm versions.
     peer: dict[str, Any] = field(default_factory=dict)
-    # The verb stdout as bytes, for a reply that is not text (pull).
-    body: bytes = b""
+
+
+# Reads the verb stdout of a reply, while serve writes it.
+Consume = Callable[[IO[bytes]], None]
 
 
 class Transport(Protocol):
     def request(self, argv: list[str], data: bytes = b"") -> Response: ...
+
+    def stream(self, argv: list[str], consume: Consume) -> Response:
+        """Send argv.  Give the verb stdout to consume, as a stream.
+
+        consume runs only when serve accepted the request.  The
+        Response then has an empty stdout.  An exception in consume
+        stops the request and goes to the caller.
+        """
+        ...
+
+
+@dataclass
+class Streamed:
+    """What run_streamed saw: the status, the reply line and stderr."""
+
+    status: int
+    first: str
+    stderr: str
+    timed_out: bool = False
+
+
+_CHUNK = 1 << 20
+
+
+def run_streamed(
+    cmd: list[str],
+    consume: Consume,
+    *,
+    timeout: float | None,
+    env: dict[str, str] | None = None,
+    cwd: str | None = None,
+) -> Streamed:
+    """Run a child that answers one request, and stream its stdout.
+
+    The child gets the handshake line on stdin.  This function reads the
+    reply line.  If the reply has no error, consume reads the rest of
+    stdout while the child writes it, so no full copy is in memory.
+    stderr goes to a temporary file, so a full pipe cannot stop the
+    child.
+    """
+    with tempfile.TemporaryFile() as err:
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=err,
+            env=env,
+            cwd=cwd,
+        )
+        assert proc.stdin is not None and proc.stdout is not None
+        expired = threading.Event()
+
+        def stop() -> None:
+            expired.set()
+            proc.kill()
+
+        timer = threading.Timer(timeout, stop) if timeout else None
+        if timer:
+            timer.start()
+        try:
+            try:
+                proc.stdin.write(stdin_bytes(b""))
+                proc.stdin.close()
+            except BrokenPipeError:
+                pass
+            first = text(proc.stdout.readline())
+            if parse_reply(0, first, "").error is None:
+                consume(proc.stdout)
+            # Read what consume left, so the child can finish.
+            while proc.stdout.read(_CHUNK):
+                pass
+            status = proc.wait()
+        except BaseException:
+            proc.kill()
+            proc.wait()
+            raise
+        finally:
+            if timer:
+                timer.cancel()
+            proc.stdout.close()
+        err.seek(0)
+        return Streamed(status, first, text(err.read()), expired.is_set())
 
 
 def stdin_bytes(data: bytes) -> bytes:
@@ -65,14 +151,11 @@ def _ltvm_version() -> str:
     return str(__version__)
 
 
-def parse_reply(
-    status: int, stdout: str, stderr: str, raw: bytes | None = None
-) -> Response:
+def parse_reply(status: int, stdout: str, stderr: str) -> Response:
     """Split the handshake reply from the verb output.
 
     Every transport uses this function, so they all read the reply the
-    same way.  raw is the stdout before it was decoded.  The verb part
-    of it goes in Response.body.
+    same way.
     """
     first, _, rest = stdout.partition("\n")
     try:
@@ -108,8 +191,7 @@ def parse_reply(
         except ValueError as e:
             err = RemoteError("bad_reply", f"bad error in the reply: {e}")
         return Response(status, "", stderr, err, peer)
-    body = rest.encode() if raw is None else raw.partition(b"\n")[2]
-    return Response(status, rest, stderr, None, peer, body)
+    return Response(status, rest, stderr, None, peer)
 
 
 class ExecTransport:
@@ -156,8 +238,30 @@ class ExecTransport:
                     ),
                 )
         return parse_reply(
-            proc.returncode, text(proc.stdout), text(proc.stderr), proc.stdout
+            proc.returncode, text(proc.stdout), text(proc.stderr)
         )
+
+    def stream(self, argv: list[str], consume: Consume) -> Response:
+        command = shlex.join(argv)
+        with tempfile.TemporaryDirectory(prefix="ltvm-exec-") as tmp:
+            env = self._sshd_env(command, Path(tmp))
+            got = run_streamed(
+                [sys.executable, str(self.script), "serve", "--stdio"],
+                consume,
+                timeout=self.timeout,
+                env=env,
+                cwd=env["HOME"],
+            )
+        if got.timed_out:
+            return Response(
+                1,
+                "",
+                "",
+                RemoteError(
+                    "timed_out", f"serve did not finish in {self.timeout:g} s"
+                ),
+            )
+        return parse_reply(got.status, got.first, got.stderr)
 
     def _sshd_env(self, command: str, tmp: Path) -> dict[str, str]:
         """The environment that sshd gives to a forced command."""

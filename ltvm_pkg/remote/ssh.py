@@ -33,7 +33,14 @@ from urllib.parse import urlsplit
 
 from .hosts import Host, registry_path
 from .protocol import RemoteError
-from .transport import Response, parse_reply, stdin_bytes, text
+from .transport import (
+    Consume,
+    Response,
+    parse_reply,
+    run_streamed,
+    stdin_bytes,
+    text,
+)
 
 SERVE_COMMAND = "ltvm serve --stdio"
 AUTHORIZED_PREFIX = f'restrict,command="{SERVE_COMMAND}",from='
@@ -405,6 +412,22 @@ class SshTransport:
     def request(self, argv: list[str], data: bytes = b"") -> Response:
         return self.send(shlex.join(argv), data)
 
+    def stream(self, argv: list[str], consume: Consume) -> Response:
+        if not known_hosts_path(self.host.key).exists():
+            pin_host_key(self.host)
+        limit = request_timeout()
+        try:
+            got = run_streamed(
+                self.ssh_argv(shlex.join(argv)), consume, timeout=limit
+            )
+        except FileNotFoundError:
+            raise RemoteError("unreachable", "ssh is not installed") from None
+        if got.timed_out:
+            return _timed_out(limit)
+        if got.status == 255 and not got.first:
+            return Response(255, "", "", _ssh_error(got.stderr))
+        return parse_reply(got.status, got.first, got.stderr)
+
     def send(self, command: str, data: bytes = b"") -> Response:
         if not known_hosts_path(self.host.key).exists():
             pin_host_key(self.host)
@@ -420,29 +443,27 @@ class SshTransport:
         except FileNotFoundError:
             raise RemoteError("unreachable", "ssh is not installed") from None
         except subprocess.TimeoutExpired:
-            return Response(
-                1,
-                "",
-                "",
-                RemoteError(
-                    "timed_out",
-                    f"the host did not finish the request in {limit:g} s",
-                    hint=f"Set {TIMEOUT_ENV} to a longer time in seconds "
-                    "(0 for no limit).",
-                ),
-            )
+            return _timed_out(limit)
         out, err = text(proc.stdout), text(proc.stderr)
         if proc.returncode == 255 and not out:
             # The hint holds the ssh message, so stderr stays clean
             # for --json.
             return Response(255, "", "", _ssh_error(err))
-        raw: object = proc.stdout  # bytes: run() got text=False
-        return parse_reply(
-            proc.returncode,
-            out,
-            err,
-            raw if isinstance(raw, bytes) else None,
-        )
+        return parse_reply(proc.returncode, out, err)
+
+
+def _timed_out(limit: float | None) -> Response:
+    return Response(
+        1,
+        "",
+        "",
+        RemoteError(
+            "timed_out",
+            f"the host did not finish the request in {limit:g} s",
+            hint=f"Set {TIMEOUT_ENV} to a longer time in seconds "
+            "(0 for no limit).",
+        ),
+    )
 
 
 def _ssh_error(stderr: str) -> RemoteError:

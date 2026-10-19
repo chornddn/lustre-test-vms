@@ -8,6 +8,7 @@ the VM directory of the host.
 
 from __future__ import annotations
 
+import io
 import json
 import os
 from pathlib import Path
@@ -231,7 +232,7 @@ class TestPullRefusals:
         resp = _send(command)
         assert resp.error is not None
         assert resp.error.code == "bad_request"
-        assert resp.body == b""
+        assert resp.stdout == ""
         assert _audit(results.home)[-1]["result"] == "bad_request"
 
     def test_controller_refuses_other_types(
@@ -250,7 +251,7 @@ class TestPullRefusals:
         resp = _send(f"pull {name} console")
         assert resp.error is not None
         assert resp.error.code in ("vm_not_found", "cluster_not_found")
-        assert resp.body == b""
+        assert resp.stdout == ""
 
     def test_pull_with_no_host_is_an_error(
         self, local: Path, ltvm: Any, capsys: Any
@@ -270,7 +271,7 @@ class TestPullSymlinks:
         resp = _send(command)
         assert resp.error is not None
         assert resp.error.code == "path_refused"
-        assert b"sentinel-c3" not in resp.body
+        assert "sentinel-c3" not in resp.stdout
 
     def test_console_log_that_is_a_link(self, results: SimpleNamespace) -> None:
         secret = self._secret(results)
@@ -353,7 +354,7 @@ class TestUnpack:
 
         dest = tmp_path / "d"
         with pytest.raises(RemoteError):
-            pull.unpack(self._tar(*members), dest)
+            pull.unpack(io.BytesIO(self._tar(*members)), dest)
         assert not (tmp_path / "escape").exists()
         assert not (tmp_path / "abs").exists()
 
@@ -367,11 +368,11 @@ class TestUnpack:
         dest.mkdir()
         (dest / "vm").symlink_to(outside)
         with pytest.raises(RemoteError):
-            pull.unpack(self._tar(("vm/f", "file")), dest)
+            pull.unpack(io.BytesIO(self._tar(("vm/f", "file"))), dest)
         assert list(outside.iterdir()) == []
         (dest / "f").symlink_to(outside / "g")
         with pytest.raises(RemoteError):
-            pull.unpack(self._tar(("f", "file")), dest)
+            pull.unpack(io.BytesIO(self._tar(("f", "file"))), dest)
         assert list(outside.iterdir()) == []
 
 
@@ -497,3 +498,148 @@ class TestSuiteCollect:
         resp = _send(f"suite collect {OWNER_VM} r-1")
         assert resp.error is not None
         assert resp.error.code == "vm_not_found"
+
+
+BIG = 64 << 20  # bytes in the large vmcore
+BOUND = 16 << 20  # peak Python memory allowed for one pull
+
+
+class _CountingSink(io.RawIOBase):
+    """A binary stdout that counts the bytes and keeps none of them."""
+
+    def __init__(self) -> None:
+        self.count = 0
+
+    def writable(self) -> bool:
+        return True
+
+    def write(self, b: Any) -> int:
+        self.count += len(b)
+        return len(b)
+
+
+def _big_crash(vm_dir: Path) -> None:
+    crash = vm_dir / "crashes" / REMOTE_VM / f"crash-{REMOTE_VM}-big"
+    crash.mkdir(parents=True)
+    with open(crash / "vmcore", "wb") as f:
+        f.truncate(BIG)  # sparse: no disk use
+
+
+class TestLargeBody:
+    """A vmcore is several GB, so no side holds the whole body."""
+
+    def test_controller_peak_memory_stays_under_the_bound(
+        self, child: SimpleNamespace, local: Path, ltvm: Any, capsys: Any
+    ) -> None:
+        import tracemalloc
+
+        _big_crash(child.vm_dir)
+        tracemalloc.start()
+        try:
+            rc = ltvm.run(["--host", "t", "pull", REMOTE_VM, "crash"])
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        assert rc == 0, capsys.readouterr()
+        got = local / "ltvm-pull" / "t" / "crash" / REMOTE_VM
+        assert (got / f"crash-{REMOTE_VM}-big" / "vmcore").stat().st_size == BIG
+        assert peak < BOUND, f"peak {peak} bytes"
+
+    def test_serve_peak_memory_stays_under_the_bound(
+        self, child: SimpleNamespace, ltvm: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        import tracemalloc
+
+        from ltvm_pkg import vm_state
+        from ltvm_pkg.remote import protocol, serve
+
+        _big_crash(child.vm_dir)
+        monkeypatch.setattr(vm_state, "VM_DIR", child.vm_dir)
+        monkeypatch.setattr(vm_state, "SOCKETS", child.sockets)
+        sink = _CountingSink()
+        out = io.TextIOWrapper(io.BufferedWriter(sink), encoding="utf-8")
+        env = {
+            **child.env,
+            "SSH_ORIGINAL_COMMAND": f"pull {REMOTE_VM} crash",
+        }
+        tracemalloc.start()
+        try:
+            rc = serve.serve_stdio(
+                ltvm.run,
+                parse=ltvm._parse_request,
+                stdin=io.BytesIO((protocol.hello_line("0") + "\n").encode()),
+                stdout=out,
+                env=env,
+            )
+            peak = tracemalloc.get_traced_memory()[1]
+        finally:
+            tracemalloc.stop()
+        out.flush()
+        assert rc == 0
+        assert sink.count > BIG
+        assert peak < BOUND, f"peak {peak} bytes"
+
+
+class TestSshStream:
+    """ssh:// streams a pull reply.  A local shell stands in for ssh."""
+
+    @pytest.fixture
+    def ssh_host(self, tmp_path: Path) -> Any:
+        from ltvm_pkg.remote.hosts import Host
+        from ltvm_pkg.remote.ssh import SshTransport
+
+        key = tmp_path / "k"
+        Path(str(key) + ".known_hosts").write_text("pinned\n")
+        return SshTransport(
+            Host(
+                name="s",
+                url="ssh://ltvm@192.0.2.9",
+                key=str(key),
+                hostkey="SHA256:" + "A" * 43,
+            )
+        )
+
+    def _run(self, ssh_host: Any, script: str) -> tuple[Any, list[bytes]]:
+        got: list[bytes] = []
+        ssh_host.ssh_argv = lambda command: ["/bin/sh", "-c", script]
+        resp = ssh_host.stream(
+            ["pull", REMOTE_VM, "crash"], lambda f: got.append(f.read())
+        )
+        return resp, got
+
+    def test_body_goes_to_consume(self, ssh_host: Any) -> None:
+        from ltvm_pkg.remote import protocol
+
+        line = protocol.reply_line("0", None)
+        resp, got = self._run(
+            ssh_host, f"cat >/dev/null; printf '%s\\nBODY' '{line}'"
+        )
+        assert resp.error is None
+        assert resp.status == 0
+        assert got == [b"BODY"]
+
+    def test_refusal_does_not_reach_consume(self, ssh_host: Any) -> None:
+        from ltvm_pkg.remote import protocol
+        from ltvm_pkg.remote.protocol import RemoteError
+
+        line = protocol.reply_line("0", RemoteError("vm_not_found", "no"))
+        resp, got = self._run(ssh_host, f"printf '%s\\n' '{line}'; exit 1")
+        assert resp.error is not None
+        assert resp.error.code == "vm_not_found"
+        assert got == []
+
+    def test_ssh_failure(self, ssh_host: Any) -> None:
+        resp, got = self._run(
+            ssh_host, "echo 'Connection refused' >&2; exit 255"
+        )
+        assert resp.error is not None
+        assert resp.error.code == "unreachable"
+        assert got == []
+
+    def test_hung_request_times_out(
+        self, ssh_host: Any, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LTVM_REMOTE_TIMEOUT", "0.5")
+        resp, got = self._run(ssh_host, "exec sleep 30")
+        assert resp.error is not None
+        assert resp.error.code == "timed_out"

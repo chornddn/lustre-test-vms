@@ -422,7 +422,21 @@ class InProcTransport:
     def request(self, argv: list[str], data: bytes = b"") -> Any:
         return self.send(shlex.join(argv), data)
 
+    def stream(self, argv: list[str], consume: Any) -> Any:
+        """The whole reply is in memory here.  Tests only."""
+        from ltvm_pkg.remote import transport
+
+        raw = self._serve(shlex.join(argv), b"")[1]
+        first, _, rest = raw.partition(b"\n")
+        resp = self._serve_reply
+        if resp.error is None:
+            consume(io.BytesIO(rest))
+        return transport.parse_reply(resp.status, first.decode(), resp.stderr)
+
     def send(self, command: str, data: bytes = b"") -> Any:
+        return self._serve(command, data)[0]
+
+    def _serve(self, command: str, data: bytes) -> Any:
         from ltvm_pkg.remote import serve, transport
 
         env = {**self.env, "SSH_ORIGINAL_COMMAND": command}
@@ -441,9 +455,10 @@ class InProcTransport:
             )
         out.flush()
         raw = out.buffer.getvalue()  # type: ignore[attr-defined]
-        return transport.parse_reply(
-            rc, transport.text(raw), err.getvalue(), raw
+        self._serve_reply = transport.parse_reply(
+            rc, transport.text(raw), err.getvalue()
         )
+        return self._serve_reply, raw
 
 
 @pytest.fixture
