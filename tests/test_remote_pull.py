@@ -18,7 +18,6 @@ from typing import Any
 import pytest
 
 from tests import test_remote_lifecycle as _lifecycle
-from tests.test_ltvm_cli import _load_ltvm
 from tests.test_remote_clusters import REMOTE_CL, REMOTE_NODE, _save_cluster
 from tests.test_remote_lifecycle import (
     OWNER_VM,
@@ -31,11 +30,6 @@ child = _lifecycle.child
 
 # Bytes that are not UTF-8, so a text transport would change them.
 BINARY = bytes(range(256)) * 4
-
-
-@pytest.fixture(scope="module")
-def ltvm() -> Any:
-    return _load_ltvm()
 
 
 @pytest.fixture

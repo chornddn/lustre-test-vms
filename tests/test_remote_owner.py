@@ -17,7 +17,6 @@ import pytest
 from tests import test_remote_clusters as _clusters
 from tests import test_remote_leases as _leases_t
 from tests import test_remote_lifecycle as _lifecycle
-from tests.test_ltvm_cli import _load_ltvm
 from tests.test_remote_lifecycle import (
     OWNER_VM,
     REMOTE_VM,
@@ -30,11 +29,6 @@ qemu = _lifecycle.qemu
 icl = _clusters.icl
 reaper = _leases_t.reaper
 clock = _leases_t.clock
-
-
-@pytest.fixture(scope="module")
-def ltvm() -> Any:
-    return _load_ltvm()
 
 
 def _serve(ltvm: Any, capsys: Any, *argv: str) -> tuple[int, Any]:

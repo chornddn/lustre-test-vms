@@ -470,13 +470,6 @@ inproc = _lifecycle.inproc
 qemu = _lifecycle.qemu
 
 
-@pytest.fixture(scope="module")
-def ltvm() -> Any:
-    from tests.test_ltvm_cli import _load_ltvm
-
-    return _load_ltvm()
-
-
 @pytest.fixture
 def served(
     inproc: SimpleNamespace,

@@ -7,6 +7,7 @@ The suite also runs on macOS on Apple Silicon, where guest-side shell
 from __future__ import annotations
 
 import platform
+import shutil
 import subprocess
 import sys
 
@@ -23,6 +24,9 @@ def _gnu_sed() -> bool:
 
 needs_gnu_sed = pytest.mark.skipif(
     not _gnu_sed(), reason="runs guest shell that needs GNU sed"
+)
+needs_git = pytest.mark.skipif(
+    shutil.which("git") is None, reason="needs git on PATH"
 )
 needs_proc = pytest.mark.skipif(
     not sys.platform.startswith("linux"), reason="reads /proc"

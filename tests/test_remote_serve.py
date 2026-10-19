@@ -20,7 +20,7 @@ from unittest.mock import patch
 import pytest
 
 from tests.remote_helpers import write_serve_toml
-from tests.test_ltvm_cli import _LTVM_PATH, _load_ltvm
+from tests.test_ltvm_cli import _LTVM_PATH
 
 # A fixed controller key.  The fingerprint is the value that
 # `ssh-keygen -lf` gave for this key.
@@ -32,11 +32,6 @@ TEST_KEY_FP = "SHA256:EkIy9dZjzIZwWP1yIP/T771kMSUM9hzVq+TI2IZNItw"
 
 REMOTE_VM = "remote-sentinel-b2"
 LOCAL_VM = "local-sentinel-a1"
-
-
-@pytest.fixture(scope="module")
-def ltvm() -> Any:
-    return _load_ltvm()
 
 
 def _save_vm(sockets: Path, name: str, owner_id: str | None = None) -> None:

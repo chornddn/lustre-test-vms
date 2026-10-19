@@ -15,7 +15,6 @@ from unittest.mock import patch
 import pytest
 
 from tests.remote_helpers import write_serve_toml
-from tests.test_ltvm_cli import _load_ltvm
 
 # ── serve.toml ───────────────────────────────────────────
 
@@ -115,11 +114,6 @@ class TestServeConfig:
 
 REMOTE = "remote:SHA256:sentinel-key-c9"
 GIB = 1 << 30
-
-
-@pytest.fixture(scope="module")
-def ltvm() -> Any:
-    return _load_ltvm()
 
 
 @pytest.fixture

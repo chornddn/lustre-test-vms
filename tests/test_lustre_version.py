@@ -7,7 +7,6 @@ LUSTRE-VERSION-GEN's DEFAULT_VERSION and skip every version-gated test.
 
 from __future__ import annotations
 
-import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -21,6 +20,7 @@ from ltvm_pkg.lustre_version import (
     check_configured,
     pin_version,
 )
+from tests.host_marks import needs_git
 
 # The part of Lustre's LUSTRE-VERSION-GEN that picks the version,
 # unchanged from 2.12 through master.
@@ -49,10 +49,6 @@ else
 fi
 echo $VN
 """
-
-needs_git = pytest.mark.skipif(
-    shutil.which("git") is None, reason="needs git on PATH"
-)
 
 
 @pytest.fixture

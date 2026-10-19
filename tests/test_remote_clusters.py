@@ -23,17 +23,12 @@ import pytest
 # The real function: conftest replaces the module attribute in each test.
 from ltvm_pkg.update_check import maybe_check_for_updates as _real_update_check
 from tests import test_remote_lifecycle as _lifecycle
-from tests.test_ltvm_cli import _LTVM_PATH, _load_ltvm
+from tests.test_ltvm_cli import _LTVM_PATH
 from tests.test_remote_lifecycle import REMOTE_OWNER, _audit, _err, _save_vm
 
 # The host fixtures of test_remote_lifecycle.
 child = _lifecycle.child
 inproc = _lifecycle.inproc
-
-
-@pytest.fixture(scope="module")
-def ltvm() -> Any:
-    return _load_ltvm()
 
 
 # ── guards that child ltvm processes inherit ─────────────

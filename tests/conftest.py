@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import textwrap
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any
 from unittest.mock import patch
 
 import pytest
@@ -473,3 +473,11 @@ def _neutralize_host_clean_state() -> object:
         patch("ltvm_pkg.image_build.prune_superseded", return_value=0),
     ):
         yield
+
+
+@pytest.fixture(scope="module")
+def ltvm() -> Any:
+    """The ltvm script, loaded as a module.  Its run() runs a command."""
+    from tests.test_ltvm_cli import _load_ltvm
+
+    return _load_ltvm()

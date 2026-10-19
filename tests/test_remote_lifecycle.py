@@ -31,18 +31,13 @@ from unittest.mock import patch
 import pytest
 
 from tests.remote_helpers import write_serve_toml
-from tests.test_ltvm_cli import _LTVM_PATH, _load_ltvm
+from tests.test_ltvm_cli import _LTVM_PATH
 from tests.test_remote_serve import TEST_KEY_FP, TEST_PUBKEY
 
 REMOTE_OWNER = f"remote:{TEST_KEY_FP}"
 REMOTE_VM = "rvm-sentinel-e5"
 OWNER_VM = "owner-sentinel-f6"
 LAYOUT_SWITCH = {"LTVM_SERVE_TEST_LAYOUT": "ready"}
-
-
-@pytest.fixture(scope="module")
-def ltvm() -> Any:
-    return _load_ltvm()
 
 
 def _save_vm(sockets: Path, name: str, owner_id: str | None) -> None:

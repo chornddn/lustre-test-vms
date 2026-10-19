@@ -17,6 +17,7 @@ from unittest.mock import patch
 import pytest
 
 from ltvm_pkg import staging_sources as ss
+from tests.host_marks import needs_git
 from tests.test_deploy import (
     _deploy_args,
     _make_vm,
@@ -273,9 +274,6 @@ class TestDeployRefreshes:
         text = err.out + err.err
         assert "is not writable by" in text
         assert "ltvm build lustre" in text
-
-
-needs_git = pytest.mark.skipif(shutil.which("git") is None, reason="no git")
 
 
 def _git_init(tree: Path) -> None:

@@ -24,7 +24,7 @@ from unittest.mock import patch
 import pytest
 
 from tests.remote_helpers import write_serve_toml
-from tests.test_ltvm_cli import _LTVM_PATH, _load_ltvm
+from tests.test_ltvm_cli import _LTVM_PATH
 from tests.test_remote_serve import TEST_KEY_FP, TEST_PUBKEY
 
 # A fixed host key.  The fingerprint is the value that `ssh-keygen -lf`
@@ -35,11 +35,6 @@ HOST_PUBKEY = (
 )
 HOST_FP = "SHA256:zhmIc4w8p7p5k/fiaN1VlKFXSqIv/J7+DRBnJoOBkk0"
 PREFIX = 'restrict,command="ltvm serve --stdio",from='
-
-
-@pytest.fixture(scope="module")
-def ltvm() -> Any:
-    return _load_ltvm()
 
 
 @pytest.fixture

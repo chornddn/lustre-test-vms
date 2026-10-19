@@ -13,7 +13,6 @@ from __future__ import annotations
 
 import json
 import os
-import shutil
 import subprocess
 from pathlib import Path
 from types import SimpleNamespace
@@ -22,7 +21,7 @@ from typing import Any
 import pytest
 
 from tests import test_remote_lifecycle as _lifecycle
-from tests.test_ltvm_cli import _load_ltvm
+from tests.host_marks import needs_git
 from tests.test_lustre_version import VERSION_GEN
 from tests.test_remote_lifecycle import (
     OWNER_VM,
@@ -34,15 +33,6 @@ from tests.test_remote_lifecycle import (
 
 child = _lifecycle.child
 inproc = _lifecycle.inproc
-
-needs_git = pytest.mark.skipif(
-    shutil.which("git") is None, reason="needs git on PATH"
-)
-
-
-@pytest.fixture(scope="module")
-def ltvm() -> Any:
-    return _load_ltvm()
 
 
 def _git(tree: Path, *args: str) -> str:

@@ -17,7 +17,6 @@ import pytest
 
 from tests import test_remote_clusters as _clusters
 from tests import test_remote_lifecycle as _lifecycle
-from tests.test_ltvm_cli import _load_ltvm
 from tests.test_remote_lifecycle import (
     OWNER_VM,
     REMOTE_OWNER,
@@ -32,11 +31,6 @@ icl = _clusters.icl
 
 T0 = 1_800_000_000.0
 HOUR = 3600.0
-
-
-@pytest.fixture(scope="module")
-def ltvm() -> Any:
-    return _load_ltvm()
 
 
 @pytest.fixture
