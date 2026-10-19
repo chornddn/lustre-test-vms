@@ -217,6 +217,7 @@ try:
         cmd_delete,
         cmd_deploy,
         cmd_destroy,
+        cmd_dk_collect,
         cmd_doctor,
         cmd_exec,
         cmd_fetch,
@@ -688,6 +689,27 @@ def build_parser() -> argparse.ArgumentParser:
         "of the host)",
     )
     lrp.set_defaults(func=_cmd_lease_renew)
+
+    # -- pull (results of a remote VM, cluster or job) --
+    pp = sub.add_parser(
+        "pull",
+        parents=[common],
+        help="Copy suite results, crash dumps, debug logs or the console "
+        "log of a remote VM, cluster or job to this machine (with --host)",
+    )
+    pp.add_argument("name", help="A remote VM, cluster or job (j-...)")
+    pp.add_argument(
+        "what",
+        choices=["suite", "crash", "dk", "console"],
+        help="The result type",
+    )
+    pp.add_argument(
+        "--dest",
+        default=None,
+        metavar="DIR",
+        help="Where to put the files (default: ./ltvm-pull/<host>/<what>)",
+    )
+    pp.set_defaults(func=_cmd_pull)
 
     # -- host (remote hosts that this controller uses) --
     hp = sub.add_parser(
@@ -1726,6 +1748,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="Lustre build tree for triage (enables auto-triage)",
     )
     vccp.set_defaults(func=cmd_crash_collect)
+
+    vdkp = vm_sub.add_parser(
+        "dk-collect",
+        parents=[common],
+        help="Save the Lustre debug log of a VM (`lctl dk`) to a file",
+    )
+    _vdkp_name = vdkp.add_argument("name", help="VM name")
+    _vdkp_name.completer = complete_vms  # type: ignore[attr-defined]
+    vdkp.add_argument(
+        "--outdir",
+        default=None,
+        help="Local directory for the log (default: ~/ltvm-dk)",
+    )
+    vdkp.add_argument(
+        "--timeout",
+        type=int,
+        default=300,
+        help="Seconds to wait for `lctl dk` (default: 300)",
+    )
+    vdkp.set_defaults(func=cmd_dk_collect)
 
     vxp = vm_sub.add_parser(
         "exec",
@@ -3056,6 +3098,17 @@ def _cmd_lease_renew(args: argparse.Namespace) -> int:
     from ltvm_pkg.remote import leases
 
     return leases.cmd_renew(args)
+
+
+def _cmd_pull(args: argparse.Namespace) -> int:
+    """`pull` with no host: there is nothing to copy."""
+    from ltvm_pkg.cli.util import _error
+
+    return _error(
+        "pull copies results from a remote host",
+        args.json,
+        hint="Give --host NAME, or a <host>/<name> name.",
+    )
 
 
 def _cmd_serve_reap(args: argparse.Namespace) -> int:

@@ -5,7 +5,7 @@ from __future__ import annotations
 import argparse
 import sys
 
-from . import hosts, names, protocol, tree
+from . import hosts, names, protocol, pull, tree
 from .protocol import RemoteError
 
 # Verbs that ignore LTVM_HOST and run on this machine.  An explicit
@@ -56,6 +56,7 @@ def run_remote(
         if args is not None:
             argv = names.to_host(name, argv, args)
             argv = tree.attach(name, argv, args)
+            argv = pull.request_argv(argv, args)
         response = hosts.transport_for(name).request(argv)
     except RemoteError as e:
         return _emit_error(
@@ -72,6 +73,9 @@ def run_remote(
             details=err.details,
         )
         return EXIT_ERROR
+    if argv[:1] == [pull.VERB] and args is not None and response.status == 0:
+        sys.stderr.write(response.stderr)
+        return pull.save(name, args, response.body, use_json)
     if not names.show(name, argv, response.status, response.stdout, use_json):
         sys.stdout.write(response.stdout)
     sys.stderr.write(response.stderr)

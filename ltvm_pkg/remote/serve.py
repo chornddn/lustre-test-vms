@@ -20,7 +20,8 @@ reply, so `host list` gets the versions with no verb.
 
 `receive-tree` is not an ltvm verb.  After check 3, serve unpacks the
 tar stream that follows the handshake line into a new job directory,
-and prints the job (jobs.py).
+and prints the job (jobs.py).  serve also answers `pull` itself after
+check 3: it sends the results as a tar stream (pull.py).
 
 A later change adds this check: the host is enabled (before 1).
 
@@ -196,6 +197,32 @@ def _run_in_cwd(run: RunFn, argv: list[str]) -> tuple[int, str]:
     return rc, "ok" if rc == 0 else f"exit {rc}"
 
 
+def _pull(
+    argv: list[str],
+    stdout: IO[str],
+    env: Mapping[str, str],
+    log: Path,
+    key: str,
+) -> int:
+    """Send the results that a pull request names, as a tar stream."""
+    from . import pull
+
+    out = getattr(stdout, "buffer", None)
+    if out is None:
+        raise RemoteError("bad_request", "stdout cannot carry a pull stream")
+    sources = pull.plan(argv, Path(env["HOME"]))
+    stdout.write(protocol.reply_line(_ltvm_version(), None) + "\n")
+    stdout.flush()
+    try:
+        pull.write(sources, out)
+    except OSError:
+        traceback.print_exc(file=sys.stderr)
+        audit.append(log, key=key, argv=argv, result="exception")
+        return EXIT_ERROR
+    audit.append(log, key=key, argv=argv, result="ok")
+    return EXIT_OK
+
+
 def _guard_children(script: str | None) -> None:
     """Set the environment that the child ltvm processes of a verb get.
 
@@ -270,6 +297,8 @@ def serve_stdio(
             stdout.flush()
             audit.append(log, key=key, argv=argv, result="ok")
             return EXIT_OK
+        if argv[0] == "pull":
+            return _pull(argv, stdout, env, log, key)
         to_run = _check_scope(parse, argv, env)
         podman.check(to_run)
         leases.on_request(to_run, parse, env, scope.owner_id(key))

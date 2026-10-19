@@ -60,6 +60,13 @@ def crash_dir(name: str) -> Path:
     return Path(vm_state.VM_DIR) / "crashes" / name
 
 
+def dk_dir(name: str) -> Path:
+    """Where `vm dk-collect` writes for a remote request."""
+    from ltvm_pkg import vm_state
+
+    return Path(vm_state.VM_DIR) / "dk" / name
+
+
 def _owner(name: str) -> tuple[bool, str | None]:
     """(the VM exists, its owner ID)."""
     from ltvm_pkg.vm_state import VMInfo, VMNotFound
@@ -227,6 +234,7 @@ def _check_cluster(args: argparse.Namespace, home: Path) -> None:
     elif action == "deploy":
         _check_clusters([args.name], lifecycle=False)
         _check_build_paths(args, home, tree=args.lustre_source)
+        jobs.add_target(args.lustre_source, args.name)
 
 
 def _check_build_paths(
@@ -283,6 +291,19 @@ def _check_suite(args: argparse.Namespace) -> None:
         raise _refuse_path("--results-dir")
 
 
+def target_nodes(name: str) -> list[str]:
+    """The VMs of a remote cluster, or [name] for a remote VM.
+
+    Raise cluster_not_found or vm_not_found as the other verbs do.
+    """
+    exists, _, nodes = _cluster_owner(name)
+    if exists:
+        _check_clusters([name], lifecycle=False)
+        return nodes
+    _require_remote_vm(name)
+    return [name]
+
+
 def _check_lease(args: argparse.Namespace) -> None:
     """`lease renew` names a remote cluster, or a remote VM."""
     from . import leases
@@ -317,6 +338,7 @@ def check(
     elif verb == "deploy-lustre":
         _check_existing([args.vm])
         _check_build_paths(args, home, tree=args.lustre_tree or "")
+        jobs.add_target(args.lustre_tree, args.vm)
     elif verb in ("llmount", "llumount"):
         _check_existing([args.vm])
     elif verb == "suite":
@@ -338,4 +360,8 @@ def check(
             if args.mod_dir is not None:
                 raise _refuse_path("--mod-dir")
             return [*argv[:2], "--outdir", str(crash_dir(args.name)), *argv[2:]]
+        if action == "dk-collect":
+            if args.outdir is not None:
+                raise _refuse_path("--outdir")
+            return [*argv[:2], "--outdir", str(dk_dir(args.name)), *argv[2:]]
     return argv

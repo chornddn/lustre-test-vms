@@ -100,6 +100,13 @@ def cmd_crash_collect(args: argparse.Namespace) -> int:
     return _vm_call(_crash_collect, args, use_json)
 
 
+def cmd_dk_collect(args: argparse.Namespace) -> int:
+    use_json = args.json
+    from ltvm_pkg.vm_commands import cmd_dk_collect as _dk_collect
+
+    return _vm_call(_dk_collect, args, use_json)
+
+
 def cmd_exec(args: argparse.Namespace) -> int:
     use_json = args.json
     from ltvm_pkg.vm_commands import cmd_exec as _exec

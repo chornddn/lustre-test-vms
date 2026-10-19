@@ -2473,6 +2473,46 @@ def cmd_exec(args: argparse.Namespace) -> int:
     return r.returncode
 
 
+def cmd_dk_collect(args: argparse.Namespace) -> int:
+    """Save the Lustre debug log of a VM (`lctl dk`) to a new file.
+
+    `lctl dk` empties the debug buffer of the guest, so each file holds
+    the log since the collect before it.
+    """
+    vm_claim.require(args.name, "collect the debug log from")
+    vm = VMInfo.load(args.name)
+    if not is_running(vm):
+        return _handler_error(
+            args, f"VM '{args.name}' not running", EXIT_UNREACHABLE
+        )
+    raw_outdir = getattr(args, "outdir", None)
+    outdir = Path(raw_outdir) if raw_outdir else Path.home() / "ltvm-dk"
+    outdir.mkdir(parents=True, exist_ok=True)
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    path = outdir / f"dk-{args.name}-{stamp}.log"
+    n = 1
+    while path.exists():
+        n += 1
+        path = outdir / f"dk-{args.name}-{stamp}-{n}.log"
+    try:
+        with open(path, "x") as f:
+            r = run_ssh(vm.ip, "lctl dk", timeout=args.timeout, stream=f)
+    except subprocess.TimeoutExpired as e:
+        path.unlink(missing_ok=True)
+        return _handler_error(args, str(e), EXIT_TIMEOUT)
+    if r.returncode != 0:
+        path.unlink(missing_ok=True)
+        return _handler_error(
+            args, f"`lctl dk` failed on '{args.name}' (rc={r.returncode})"
+        )
+    size = path.stat().st_size
+    if getattr(args, "json", False):
+        print(json.dumps({"name": args.name, "path": str(path), "bytes": size}))
+    else:
+        print(f"debug log: {path} ({size} bytes)")
+    return EXIT_OK
+
+
 def cmd_nmi(args: argparse.Namespace) -> int:
     vm_claim.require(args.name, "NMI")
     vm = VMInfo.load(args.name)

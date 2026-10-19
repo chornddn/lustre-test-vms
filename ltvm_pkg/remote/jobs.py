@@ -189,3 +189,34 @@ def job_tree(home: Path, value: str, option: str) -> Path:
     ):
         raise refused
     return real
+
+
+def add_target(tree: str, name: str) -> None:
+    """Record that a deploy of a job tree names a VM or a cluster.
+
+    `pull <job>` reads the results of these targets.  Call it after
+    job_tree accepted the tree.
+    """
+    path = Path(tree).parent / JOB_FILE
+    info = json.loads(path.read_text())
+    found = info.setdefault("targets", [])
+    if name not in found:
+        found.append(name)
+        path.write_text(json.dumps(info, indent=2) + "\n")
+
+
+def targets(home: Path, job: str) -> list[str] | None:
+    """The targets of a job, or None if the job does not exist."""
+    if not is_job_name(job):
+        return None
+    try:
+        fd = os.open(root(home) / job / JOB_FILE, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(fd) as f:
+        try:
+            info = json.load(f)
+        except ValueError:
+            return None
+    found = info.get("targets", []) if isinstance(info, dict) else []
+    return [t for t in found if isinstance(t, str)]
