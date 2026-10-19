@@ -12,4 +12,6 @@ Modules:
 - serve: the `ltvm serve --stdio` entry point on the host.
 - allowlist: the one table of verbs that `serve` runs.
 - audit: the append-only request log on the host.
+- scope: keep a request to the VMs that remote requests made.
+- names: the `<host>/<vm>` names on the controller.
 """

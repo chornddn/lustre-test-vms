@@ -35,6 +35,12 @@ ERROR_CODES: dict[str, str] = {
     "bad_request": "serve cannot read the request",
     "bad_reply": "the controller cannot read the reply from serve",
     "unknown_host": "the controller has no host with that name",
+    "layout_unsupported": "the host does not have the shared layout, or "
+    "serve runs as root",
+    "needs_root": "the request needs root on the host",
+    "path_refused": "a path argument is not allowed on a remote host",
+    "vm_not_found": "no VM that a remote request made has that name",
+    "name_in_use": "a VM that the host owner made has that name",
 }
 
 

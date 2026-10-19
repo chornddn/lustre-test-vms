@@ -1,0 +1,165 @@
+"""Keep each remote request to the VMs that remote requests made.
+
+The VMs of the host owner and the remote VMs are in one VM directory.
+`serve` sets the owner ID of each VM that a remote request makes to
+``remote:<key fingerprint>``.  A remote request can see and change only
+the VMs with that prefix.  To a remote request, a VM of the owner looks
+the same as a VM that does not exist.
+
+`check` reads the parsed command, because argparse accepts option
+abbreviations (`--fol` for `--follow`) that a token check can miss.
+"""
+
+from __future__ import annotations
+
+import argparse
+import os
+import re
+from pathlib import Path
+
+from .protocol import RemoteError
+
+REMOTE_OWNER_PREFIX = "remote:"
+
+# The VM name rule of vm_commands.  serve reads no state file for a name
+# that does not match it, so "../x" cannot reach a file outside the VM
+# directory.
+_VM_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
+
+# The verbs whose `names` are existing VMs.
+_NAMES_VERBS = frozenset({"destroy", "start", "stop"})
+
+
+def owner_id(key: str) -> str:
+    """The owner ID that serve gives to a VM that a remote request makes."""
+    return REMOTE_OWNER_PREFIX + key
+
+
+def is_remote(owner: str | None) -> bool:
+    return bool(owner) and str(owner).startswith(REMOTE_OWNER_PREFIX)
+
+
+def apply(key: str) -> None:
+    """Set the scope of remote requests for this process.
+
+    New VMs get the remote owner ID through LTVM_OWNER_ID, which child
+    ltvm processes also read.  `list` shows only remote VMs.
+    """
+    from ltvm_pkg import vm_commands
+
+    os.environ["LTVM_OWNER_ID"] = owner_id(key)
+    vm_commands.list_filter = is_remote
+
+
+def crash_dir(name: str) -> Path:
+    """Where `vm crash-collect` writes for a remote request."""
+    from ltvm_pkg import vm_state
+
+    return Path(vm_state.VM_DIR) / "crashes" / name
+
+
+def _owner(name: str) -> tuple[bool, str | None]:
+    """(the VM exists, its owner ID)."""
+    from ltvm_pkg.vm_state import VMInfo, VMNotFound
+
+    if not _VM_NAME_RE.fullmatch(name):
+        return False, None
+    try:
+        return True, VMInfo.load(name).owner_id
+    except VMNotFound:
+        return False, None
+    except (ValueError, OSError):
+        # Unreadable state: it exists, but it is not a remote VM.
+        return True, None
+
+
+def _require_remote_vm(name: str) -> None:
+    exists, owner = _owner(name)
+    if not (exists and is_remote(owner)):
+        raise RemoteError(
+            "vm_not_found",
+            f"this host has no remote VM named {name!r}",
+            hint="`list` with --host shows the remote VMs.",
+        )
+
+
+def _has_passthrough(nics: list[str] | None) -> bool:
+    return any(str(n).split(":", 1)[0] == "passthrough" for n in nics or [])
+
+
+def _refuse_root(what: str) -> RemoteError:
+    return RemoteError(
+        "needs_root",
+        f"{what} needs root on the host, and serve never uses root",
+        hint="Use a VM with no passthrough NIC, or run it on the host.",
+    )
+
+
+def _refuse_path(option: str) -> RemoteError:
+    return RemoteError(
+        "path_refused",
+        f"{option} is not allowed on a remote host",
+        hint="serve chooses the paths on the host.",
+    )
+
+
+def _check_create(args: argparse.Namespace) -> None:
+    if getattr(args, "owner_id", None) is not None:
+        raise RemoteError(
+            "bad_request",
+            "a remote request cannot set the owner of a VM",
+            hint="Remove --owner.  serve sets the owner of remote VMs.",
+        )
+    if _has_passthrough(getattr(args, "nic", None)):
+        raise _refuse_root("a passthrough NIC")
+    if getattr(args, "image", None):
+        raise _refuse_path("--image")
+    if getattr(args, "disks_from", None):
+        # A failover partner attaches the data disks of that VM.
+        _require_remote_vm(args.disks_from)
+    exists, owner = _owner(args.name)
+    if exists and not is_remote(owner):
+        raise RemoteError(
+            "name_in_use",
+            f"the name {args.name!r} is in use on this host",
+            hint="Choose a different VM name.",
+        )
+
+
+def _check_existing(names: list[str]) -> None:
+    from ltvm_pkg.vm_state import VMInfo
+
+    for name in names:
+        _require_remote_vm(name)
+    for name in names:
+        if _has_passthrough(VMInfo.load(name).nics):
+            raise _refuse_root(f"VM {name!r} has a passthrough NIC, so it")
+
+
+def check(argv: list[str], args: argparse.Namespace) -> list[str]:
+    """Refuse a request outside the remote VMs.  Return the argv to run.
+
+    Call it after the allow-list check.  The argv that comes back can
+    have options that serve adds, such as the crash directory.
+    """
+    verb = argv[0]
+    if verb == "create":
+        _check_create(args)
+    elif verb in _NAMES_VERBS:
+        _check_existing(list(args.names))
+    elif verb == "vm":
+        action = getattr(args, "vm_action", None)
+        _check_existing([args.name])
+        if action == "console-log" and getattr(args, "follow", False):
+            raise RemoteError(
+                "verb_refused",
+                "`vm console-log --follow` is not allowed on a remote host",
+                hint="Run `vm console-log` again to see new lines.",
+            )
+        if action == "crash-collect":
+            if args.outdir is not None:
+                raise _refuse_path("--outdir")
+            if args.mod_dir is not None:
+                raise _refuse_path("--mod-dir")
+            return [*argv[:2], "--outdir", str(crash_dir(args.name)), *argv[2:]]
+    return argv

@@ -5,27 +5,36 @@ The request is in SSH_ORIGINAL_COMMAND.  `serve` splits it into an
 argument vector with shlex and gives it to no shell.  Then it does these
 checks, in this order:
 
-1. the protocol version from the handshake matches
-2. the verb is on the allow-list
+1. the host has the shared layout, and serve does not run as root
+2. the protocol version from the handshake matches
+3. the verb is on the allow-list
+4. the request stays in its scope: it names only VMs that remote
+   requests made, it needs no root, and it gives no host paths
+   (scope.py)
 
 Later changes add these checks: the host is enabled (before 1), path
 arguments stay inside the job or the VM state, and admission control.
 
 Then `serve` runs the verb in this process, with the update check and
-telemetry off.  It writes one audit line for each request, refused
-requests too.
+telemetry off, and with sudo forbidden.  It writes one audit line for
+each request, refused requests too.
 """
 
 from __future__ import annotations
 
+import argparse
+import io
 import os
 import shlex
 import sys
 import traceback
 from collections.abc import Callable, Mapping
+from contextlib import redirect_stderr, redirect_stdout
 from typing import IO
 
-from . import allowlist, audit, protocol
+from ltvm_pkg import priv
+
+from . import allowlist, audit, protocol, scope
 from .protocol import RemoteError
 
 EXIT_OK = 0
@@ -33,6 +42,13 @@ EXIT_ERROR = 1
 
 # ltvm.run(argv, *, update_check, telemetry, remote) -> exit status.
 RunFn = Callable[..., int]
+# Parse argv as ltvm does.  Raises SystemExit for a bad command.
+ParseFn = Callable[[list[str]], argparse.Namespace]
+
+# Tests only.  With the value "ready", serve does not check the layout of
+# the host.  sshd does not let a client set the environment of a forced
+# command, so a controller cannot set it.
+TEST_LAYOUT_ENV = "LTVM_SERVE_TEST_LAYOUT"
 
 
 def _ltvm_version() -> str:
@@ -66,6 +82,42 @@ def _check_hello(line: str) -> None:
         )
 
 
+def _check_layout(env: Mapping[str, str]) -> None:
+    """Refuse to run on a host where a VM can need root."""
+    if os.geteuid() == 0:
+        raise RemoteError(
+            "layout_unsupported",
+            "serve does not run as root",
+            hint="Run serve as the dedicated ltvm user.",
+        )
+    if env.get(TEST_LAYOUT_ENV) == "ready":
+        return
+    from ltvm_pkg import rootless
+
+    ready = rootless.readiness()
+    if not ready.ok:
+        raise RemoteError(
+            "layout_unsupported",
+            "this host does not have the shared layout: "
+            + "; ".join(ready.problems),
+            hint="The host owner runs `ltvm install` for the shared layout.",
+        )
+
+
+def _check_scope(parse: ParseFn, argv: list[str]) -> list[str]:
+    """Parse argv and check its scope.  Return the argv to run."""
+    sink = io.StringIO()
+    try:
+        # --help prints during the parse.  The verb prints it again
+        # after the reply line.
+        with redirect_stdout(sink), redirect_stderr(sink):
+            args = parse(argv)
+    except SystemExit:
+        # The verb gets the same parse error and runs nothing.
+        return argv
+    return scope.check(argv, args)
+
+
 def _run_verb(run: RunFn, argv: list[str]) -> tuple[int, str]:
     """Run the verb.  Return the exit status and the audit result."""
     try:
@@ -86,6 +138,7 @@ def _run_verb(run: RunFn, argv: list[str]) -> tuple[int, str]:
 def serve_stdio(
     run: RunFn,
     *,
+    parse: ParseFn,
     stdin: IO[str] | None = None,
     stdout: IO[str] | None = None,
     env: Mapping[str, str] | None = None,
@@ -107,19 +160,24 @@ def serve_stdio(
     except RemoteError as e:
         split_error = e
 
+    hello = stdin.readline()
     try:
-        _check_hello(stdin.readline())
+        _check_layout(env)
+        _check_hello(hello)
         if split_error:
             raise split_error
         allowlist.check(argv)
+        to_run = _check_scope(parse, argv)
     except RemoteError as e:
         stdout.write(protocol.reply_line(_ltvm_version(), e) + "\n")
         stdout.flush()
         audit.append(log, key=key, argv=argv or [command], result=e.code)
         return EXIT_ERROR
 
+    priv.forbid_sudo()
+    scope.apply(key)
     stdout.write(protocol.reply_line(_ltvm_version(), None) + "\n")
     stdout.flush()
-    rc, result = _run_verb(run, argv)
+    rc, result = _run_verb(run, to_run)
     audit.append(log, key=key, argv=argv, result=result)
     return rc

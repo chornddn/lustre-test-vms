@@ -2,9 +2,10 @@
 
 from __future__ import annotations
 
+import argparse
 import sys
 
-from . import hosts, protocol
+from . import hosts, names, protocol
 from .protocol import RemoteError
 
 # Verbs that ignore LTVM_HOST and run on this machine.  An explicit
@@ -37,11 +38,23 @@ def _hint(name: str, err: RemoteError) -> str | None:
     )
 
 
-def run_remote(name: str, argv: list[str], *, use_json: bool) -> int:
-    """Send argv to host `name`.  Return the exit status of the verb."""
+def run_remote(
+    name: str,
+    argv: list[str],
+    *,
+    use_json: bool,
+    args: argparse.Namespace | None = None,
+) -> int:
+    """Send argv to host `name`.  Return the exit status of the verb.
+
+    args is the parsed argv.  With it, `<host>/<vm>` names become bare
+    names, and `list` shows the `<host>/` prefix.
+    """
     from ltvm_pkg.cli.util import EXIT_ERROR, _emit_error
 
     try:
+        if args is not None:
+            argv = names.to_host(name, argv, args)
         response = hosts.transport_for(name).request(argv)
     except RemoteError as e:
         return _emit_error(
@@ -57,6 +70,9 @@ def run_remote(name: str, argv: list[str], *, use_json: bool) -> int:
             error_code=err.code,
         )
         return EXIT_ERROR
-    sys.stdout.write(response.stdout)
+    if argv[:1] == ["list"] and response.status == 0:
+        names.show_list(name, response.stdout, use_json)
+    else:
+        sys.stdout.write(response.stdout)
     sys.stderr.write(response.stderr)
     return response.status

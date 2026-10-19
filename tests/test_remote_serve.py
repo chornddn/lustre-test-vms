@@ -38,11 +38,11 @@ def ltvm() -> Any:
     return _load_ltvm()
 
 
-def _save_vm(sockets: Path, name: str) -> None:
+def _save_vm(sockets: Path, name: str, owner_id: str | None = None) -> None:
     from ltvm_pkg.vm_state import VMInfo
 
     with patch("ltvm_pkg.vm_state.SOCKETS", sockets):
-        VMInfo(name=name, ip="192.168.100.77").save()
+        VMInfo(name=name, ip="192.168.100.77", owner_id=owner_id).save()
 
 
 @pytest.fixture
@@ -60,7 +60,8 @@ def host_t(tmp_path: Path) -> SimpleNamespace:
     vm_dir = tmp_path / "host-vms"
     sockets = vm_dir / "sockets"
     sockets.mkdir(parents=True)
-    _save_vm(sockets, REMOTE_VM)
+    # A remote request made this VM (serve gives it this owner ID).
+    _save_vm(sockets, REMOTE_VM, f"remote:{TEST_KEY_FP}")
     _save_vm(vm_state.SOCKETS, LOCAL_VM)
 
     hosts.add(
@@ -72,6 +73,8 @@ def host_t(tmp_path: Path) -> SimpleNamespace:
                 "LTVM_VM_DIR": str(vm_dir),
                 "LTVM_ARTIFACTS_DIR": str(tmp_path / "host-artifacts"),
                 "LTVM_SITE_CONFIG": str(tmp_path / "no-such-ltvm.conf"),
+                # This machine need not have the shared layout.
+                "LTVM_SERVE_TEST_LAYOUT": "ready",
             },
             pubkey=TEST_PUBKEY,
         )
@@ -91,7 +94,7 @@ class TestRemoteList:
         out = capsys.readouterr().out
         assert rc == 0
         names = [vm["name"] for vm in json.loads(out)["vms"]]
-        assert names == [REMOTE_VM]
+        assert names == [f"t/{REMOTE_VM}"]
 
     def test_ltvm_host_env_lists_the_host_vms(
         self,
@@ -104,7 +107,9 @@ class TestRemoteList:
         rc = ltvm.run(["list", "--json"])
         out = capsys.readouterr().out
         assert rc == 0
-        assert [vm["name"] for vm in json.loads(out)["vms"]] == [REMOTE_VM]
+        assert [vm["name"] for vm in json.loads(out)["vms"]] == [
+            f"t/{REMOTE_VM}"
+        ]
 
     def test_text_output_comes_back(
         self, ltvm: Any, host_t: SimpleNamespace, capsys: Any
@@ -121,7 +126,9 @@ class TestRemoteList:
         rc = ltvm.run(["--ho", "t", "list", "--json"])
         out = capsys.readouterr().out
         assert rc == 0
-        assert [vm["name"] for vm in json.loads(out)["vms"]] == [REMOTE_VM]
+        assert [vm["name"] for vm in json.loads(out)["vms"]] == [
+            f"t/{REMOTE_VM}"
+        ]
 
     def test_ltvm_host_env_does_not_take_serve(
         self,
@@ -161,7 +168,7 @@ class TestRefusals:
     @pytest.mark.parametrize(
         "argv",
         [
-            ["destroy", REMOTE_VM],
+            ["vm", "set", REMOTE_VM, "--vcpus", "4"],
             ["clean"],
             ["install"],
             ["telemetry", "off"],
@@ -186,11 +193,13 @@ class TestRefusals:
         assert entry["result"] == "verb_refused"
         assert entry["key"] == TEST_KEY_FP
 
-    def test_refused_destroy_leaves_the_vm(
+    def test_refused_vm_set_leaves_the_vm(
         self, ltvm: Any, host_t: SimpleNamespace, capsys: Any
     ) -> None:
-        ltvm.run(["--host", "t", "destroy", REMOTE_VM])
-        assert (host_t.sockets / f"{REMOTE_VM}.info").exists()
+        info = host_t.sockets / f"{REMOTE_VM}.info"
+        before = info.read_text()
+        ltvm.run(["--host", "t", "vm", "set", REMOTE_VM, "--vcpus", "4"])
+        assert info.read_text() == before
 
     def test_refusal_without_json_is_text(
         self, ltvm: Any, host_t: SimpleNamespace, capsys: Any

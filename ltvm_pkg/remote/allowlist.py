@@ -21,6 +21,15 @@ from .protocol import RemoteError
 ALLOW_LIST: frozenset[tuple[str, ...]] = frozenset(
     {
         ("list",),
+        ("create",),
+        ("destroy",),
+        ("start",),
+        ("stop",),
+        ("vm", "console-log"),
+        ("vm", "crash-collect"),
+        ("vm", "nmi"),
+        ("vm", "snapshot"),
+        ("vm", "restore"),
     }
 )
 
