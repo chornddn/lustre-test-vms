@@ -9,9 +9,9 @@ The request goes the way SSH sends it: the command is one string, which
 sshd gives to the forced command as SSH_ORIGINAL_COMMAND.  stdin carries
 the handshake line, and later changes put data after it.
 
-Only the exec:// transport is here now.  It is for tests: it starts
-`serve` as a local child process, with the environment that sshd gives
-to a forced command.
+The exec:// transport is for tests: it starts `serve` as a local child
+process, with the environment that sshd gives to a forced command.  The
+ssh:// transport is in ssh.py.
 """
 
 from __future__ import annotations
@@ -146,6 +146,10 @@ class ExecTransport:
 def for_host(host: Host) -> Transport:
     if host.url.startswith("exec://"):
         return ExecTransport(host)
+    if host.url.startswith("ssh://"):
+        from .ssh import SshTransport
+
+        return SshTransport(host)
     raise RemoteError(
         "unknown_host",
         f"host {host.name!r} has an unsupported URL: {host.url}",

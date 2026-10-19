@@ -212,6 +212,7 @@ try:
         cmd_doctor,
         cmd_exec,
         cmd_fetch,
+        cmd_host,
         cmd_list,
         cmd_llmount,
         cmd_make_install,
@@ -222,6 +223,7 @@ try:
         cmd_publish,
         cmd_release,
         cmd_restore,
+        cmd_serve_authorize,
         cmd_setup,
         cmd_skills,
         cmd_snapshot,
@@ -618,6 +620,65 @@ def build_parser() -> argparse.ArgumentParser:
         help="Read one request from SSH_ORIGINAL_COMMAND and stdin",
     )
     sp.set_defaults(func=_cmd_serve)
+    serve_sub = sp.add_subparsers(dest="serve_action")
+    ssp = serve_sub.add_parser(
+        "authorize",
+        parents=[common],
+        help="Let a controller key run serve: add a restricted line to "
+        "~/.ssh/authorized_keys",
+    )
+    ssp.add_argument("pubkey", help="The controller public key (one line)")
+    ssp.add_argument(
+        "--from",
+        dest="from_addr",
+        required=True,
+        metavar="ADDR",
+        help="The address that this host sees for the controller "
+        "(sshd from= patterns, with commas between)",
+    )
+    ssp.set_defaults(func=cmd_serve_authorize)
+
+    # -- host (remote hosts that this controller uses) --
+    hp = sub.add_parser(
+        "host",
+        parents=[common],
+        help="Add, list or remove the remote hosts that --host uses",
+    )
+    host_sub = hp.add_subparsers(dest="host_action")
+    hsp = host_sub.add_parser(
+        "add",
+        parents=[common],
+        help="Make a key for a host, pin its host key, and print the "
+        "`serve authorize` command for its owner",
+    )
+    hsp.add_argument("name", help="A short name for the host")
+    hsp.add_argument("url", help="ssh://ltvm@ADDR[:PORT]")
+    hsp.add_argument(
+        "--hostkey",
+        required=True,
+        metavar="FP",
+        help="The SHA256 fingerprint of the host ed25519 key, from the owner",
+    )
+    hsp.add_argument(
+        "--from",
+        dest="from_addr",
+        metavar="ADDR",
+        help="The address that the host sees for this machine "
+        "(default: the local address of the route to the host)",
+    )
+    host_sub.add_parser(
+        "list",
+        parents=[common],
+        help="Show each host, if it is reachable, and its versions",
+    )
+    hsp = host_sub.add_parser(
+        "remove",
+        parents=[common],
+        help="Delete a host and its key, and print the line its owner "
+        "must delete",
+    )
+    hsp.add_argument("name", help="The host name")
+    hp.set_defaults(func=cmd_host)
 
     # -- install (host setup) --
     sp = sub.add_parser(

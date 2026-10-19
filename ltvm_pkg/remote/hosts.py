@@ -7,7 +7,8 @@ Each entry has a name and a URL.  The URL scheme selects the transport:
 
 - ``exec://<path to the ltvm script>`` starts `serve` as a local child
   process.  It is for tests only.
-- ``ssh://`` comes in a later change.
+- ``ssh://[user@]addr[:port]`` connects with the key in ``key`` and
+  trusts only the host key with the fingerprint in ``hostkey``.
 """
 
 from __future__ import annotations
@@ -38,6 +39,12 @@ class Host:
     # exec:// only: the public key that the child gets as its client
     # key, as sshd gives it with ExposeAuthInfo.
     pubkey: str = ""
+    # ssh:// only: the private key for this host, the SHA256 fingerprint
+    # of the pinned host key, and the from= address that `host add` gave
+    # to the owner.
+    key: str = ""
+    hostkey: str = ""
+    from_addr: str = ""
 
 
 def registry_path() -> Path:
@@ -66,13 +73,18 @@ def _save(entries: dict[str, Host]) -> None:
     os.replace(tmp, path)
 
 
+def check_new_name(name: str, entries: dict[str, Host] | None = None) -> None:
+    """Raise ValueError for a bad name or a name that is in use."""
+    if not _NAME_RE.match(name):
+        raise ValueError(f"bad host name {name!r}")
+    if name in (_load() if entries is None else entries):
+        raise ValueError(f"host {name!r} already exists")
+
+
 def add(host: Host) -> None:
     """Add a host.  Raise ValueError for a bad or a duplicate name."""
-    if not _NAME_RE.match(host.name):
-        raise ValueError(f"bad host name {host.name!r}")
     entries = _load()
-    if host.name in entries:
-        raise ValueError(f"host {host.name!r} already exists")
+    check_new_name(host.name, entries)
     entries[host.name] = host
     _save(entries)
 

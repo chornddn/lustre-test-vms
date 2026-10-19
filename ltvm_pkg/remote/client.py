@@ -10,7 +10,7 @@ from .protocol import RemoteError
 
 # Verbs that ignore LTVM_HOST and run on this machine.  An explicit
 # --host still sends them to the host.
-LOCAL_ONLY_VERBS = frozenset({"serve"})
+LOCAL_ONLY_VERBS = frozenset({"serve", "host"})
 
 
 def strip_host_option(argv: list[str]) -> list[str]:

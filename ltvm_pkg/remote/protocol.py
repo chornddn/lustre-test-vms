@@ -41,6 +41,9 @@ ERROR_CODES: dict[str, str] = {
     "path_refused": "a path argument is not allowed on a remote host",
     "vm_not_found": "no VM that a remote request made has that name",
     "name_in_use": "a VM that the host owner made has that name",
+    "unreachable": "the controller cannot connect to the host",
+    "host_key_mismatch": "the host key is not the key that the "
+    "controller pinned",
 }
 
 

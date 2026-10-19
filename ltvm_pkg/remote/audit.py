@@ -16,14 +16,13 @@ is "-".
 
 from __future__ import annotations
 
-import base64
-import binascii
-import hashlib
 import json
 import os
 import time
 from collections.abc import Mapping
 from pathlib import Path
+
+from .ssh import fingerprint
 
 NO_KEY = "-"
 
@@ -48,11 +47,9 @@ def key_fingerprint(env: Mapping[str, str]) -> str:
         parts = line.split()
         if len(parts) >= 3 and parts[0] == "publickey":
             try:
-                blob = base64.b64decode(parts[2], validate=True)
-            except (binascii.Error, ValueError):
+                return fingerprint(parts[2])
+            except ValueError:
                 return NO_KEY
-            digest = base64.b64encode(hashlib.sha256(blob).digest())
-            return "SHA256:" + digest.decode().rstrip("=")
     return NO_KEY
 
 

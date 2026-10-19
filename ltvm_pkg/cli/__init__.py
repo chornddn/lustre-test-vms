@@ -127,6 +127,7 @@ from ltvm_pkg.cli.fetch import (  # noqa: E402
     cmd_fetch,
     cmd_publish,
 )
+from ltvm_pkg.cli.host import cmd_host, cmd_serve_authorize  # noqa: E402
 from ltvm_pkg.cli.make import (  # noqa: E402
     cmd_make_install,
     cmd_make_reinstall,
@@ -277,6 +278,8 @@ __all__ = [
     "cmd_target_export",
     "cmd_target_show",
     "cmd_telemetry",
+    "cmd_host",
+    "cmd_serve_authorize",
     "cmd_targets",
     "cmd_update",
     "cmd_validate",
