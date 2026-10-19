@@ -47,6 +47,16 @@ ALLOW_LIST: frozenset[tuple[str, ...]] = frozenset(
         ("build", "zfs"),
         ("build", "mofed-kmods"),
         ("build", "status"),
+        ("receive-tree",),
+        ("deploy-lustre",),
+        ("llmount",),
+        ("llumount",),
+        ("vm", "exec"),
+        ("cluster", "deploy"),
+        ("cluster", "llmount"),
+        ("cluster", "llumount"),
+        ("suite", "run"),
+        ("suite", "status"),
     }
 )
 

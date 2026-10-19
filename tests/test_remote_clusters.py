@@ -243,7 +243,6 @@ class TestClusterScope:
             ["cluster", "failback", REMOTE_CL, REMOTE_NODE],
             ["cluster", "ssh", REMOTE_CL, "mds"],
             ["cluster", "krb5", REMOTE_CL],
-            ["cluster", "deploy", REMOTE_CL],
         ],
     )
     def test_other_cluster_actions_are_refused(

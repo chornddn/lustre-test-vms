@@ -18,6 +18,7 @@ import os
 import re
 from pathlib import Path
 
+from . import jobs
 from .protocol import RemoteError
 
 REMOTE_OWNER_PREFIX = "remote:"
@@ -215,46 +216,99 @@ def _check_cluster_create(args: argparse.Namespace) -> None:
         )
 
 
-def _check_cluster(args: argparse.Namespace) -> None:
+def _check_cluster(args: argparse.Namespace, home: Path) -> None:
     action = getattr(args, "cluster_action", None)
     if action == "create":
         _check_cluster_create(args)
     elif action in ("destroy", "start", "stop"):
         _check_clusters(list(args.names), lifecycle=True)
-    elif action in ("status", "exec"):
+    elif action in ("status", "exec", "llmount", "llumount"):
         _check_clusters([args.name], lifecycle=False)
+    elif action == "deploy":
+        _check_clusters([args.name], lifecycle=False)
+        _check_build_paths(args, home, tree=args.lustre_source)
 
 
-def _check_artifacts(args: argparse.Namespace) -> None:
-    """Refuse host paths and free URLs in `build` and `target fetch`.
-
-    A remote build has no Lustre tree yet, so --lustre-tree is refused.
-    The verbs write only into the artifacts directory of serve.
-    """
-    for dest, option in (
-        ("lustre_tree", "--lustre-tree"),
-        ("zfs_source", "--zfs-source"),
-        ("url", "--url"),
-    ):
+def _check_build_paths(
+    args: argparse.Namespace, home: Path, *, tree: str | None
+) -> None:
+    """A Lustre tree must be a job tree.  Refuse other host paths."""
+    for dest, option in (("zfs_source", "--zfs-source"), ("url", "--url")):
         if getattr(args, dest, None):
             raise _refuse_path(option)
+    if tree is not None:
+        jobs.job_tree(home, tree, "--lustre-tree")
 
 
-def check(argv: list[str], args: argparse.Namespace) -> list[str]:
+def _check_artifacts(args: argparse.Namespace, home: Path) -> None:
+    """Refuse host paths and free URLs in `build` and `target fetch`.
+
+    --lustre-tree is optional for the build verbs, but when it is given
+    it must be a job tree.  The verbs write only into the artifacts
+    directory of serve.
+    """
+    tree = getattr(args, "lustre_tree", None)
+    _check_build_paths(args, home, tree=tree if isinstance(tree, str) else None)
+
+
+def suite_dir() -> Path:
+    """The working directory of the suite verbs for a remote request.
+
+    `suite run --wait` collects into ./ltvm-suite/<target>/<run-id>, so
+    the results of remote runs are under SUITES_DIR in the VM directory.
+    """
+    from ltvm_pkg import vm_state
+
+    return Path(vm_state.VM_DIR) / "suites"
+
+
+def _check_suite(args: argparse.Namespace) -> None:
+    from ltvm_pkg.vm_state import ClusterInfo, ClusterNotFound
+
+    name = args.target
+    is_cluster = False
+    if _VM_NAME_RE.fullmatch(name):
+        try:
+            ClusterInfo.load(name)
+            is_cluster = True
+        except ClusterNotFound:
+            pass
+        except (RuntimeError, ValueError, KeyError, TypeError, OSError):
+            is_cluster = True
+    if is_cluster:
+        _check_clusters([name], lifecycle=False)
+    else:
+        _require_remote_vm(name)
+    if getattr(args, "results_dir", None):
+        raise _refuse_path("--results-dir")
+
+
+def check(
+    argv: list[str], args: argparse.Namespace, *, home: Path | None = None
+) -> list[str]:
     """Refuse a request outside the remote VMs.  Return the argv to run.
 
     Call it after the allow-list check.  The argv that comes back can
-    have options that serve adds, such as the crash directory.
+    have options that serve adds, such as the crash directory.  home is
+    the home of serve, which holds the job directories.
     """
+    home = Path.home() if home is None else home
     verb = argv[0]
     if verb == "create":
         _check_create(args)
     elif verb in _NAMES_VERBS:
         _check_existing(list(args.names))
     elif verb == "cluster":
-        _check_cluster(args)
+        _check_cluster(args, home)
     elif verb in ("build", "target"):
-        _check_artifacts(args)
+        _check_artifacts(args, home)
+    elif verb == "deploy-lustre":
+        _check_existing([args.vm])
+        _check_build_paths(args, home, tree=args.lustre_tree or "")
+    elif verb in ("llmount", "llumount"):
+        _check_existing([args.vm])
+    elif verb == "suite":
+        _check_suite(args)
     elif verb == "vm":
         action = getattr(args, "vm_action", None)
         _check_existing([args.name])

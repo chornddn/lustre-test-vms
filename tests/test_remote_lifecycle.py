@@ -116,7 +116,6 @@ class TestRefusedVerbs:
             ["target", "publish", "rocky9"],
             ["telemetry", "off"],
             ["vm", "create", "co1"],
-            ["vm", "exec", REMOTE_VM, "true"],
             ["vm", "set", REMOTE_VM, "--vcpus", "4"],
             ["claim", REMOTE_VM],
         ],
@@ -420,11 +419,11 @@ class InProcTransport:
         self.ltvm = ltvm
         self.env = env
 
-    def request(self, argv: list[str]) -> Any:
-        return self.send(shlex.join(argv))
+    def request(self, argv: list[str], data: bytes = b"") -> Any:
+        return self.send(shlex.join(argv), data)
 
-    def send(self, command: str) -> Any:
-        from ltvm_pkg.remote import protocol, serve, transport
+    def send(self, command: str, data: bytes = b"") -> Any:
+        from ltvm_pkg.remote import serve, transport
 
         env = {**self.env, "SSH_ORIGINAL_COMMAND": command}
         out = io.TextIOWrapper(
@@ -435,7 +434,7 @@ class InProcTransport:
             rc = serve.serve_stdio(
                 self.ltvm.run,
                 parse=self.ltvm._parse_request,
-                stdin=io.StringIO(protocol.hello_line("0") + "\n"),
+                stdin=io.BytesIO(transport.stdin_bytes(data)),
                 stdout=out,
                 env=env,
                 script=str(_LTVM_PATH),

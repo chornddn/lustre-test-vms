@@ -46,6 +46,7 @@ ERROR_CODES: dict[str, str] = {
     "timed_out": "the host did not finish the request in time",
     "host_key_mismatch": "the host key is not the key that the "
     "controller pinned",
+    "podman_unsafe": "podman on the host is not rootless and not in a VM",
 }
 
 

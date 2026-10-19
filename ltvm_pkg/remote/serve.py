@@ -10,14 +10,16 @@ checks, in this order:
    A probe (no command) skips this check and the checks after it.
 3. the verb is on the allow-list
 4. the request stays in its scope: it names only VMs that remote
-   requests made, it needs no root, and it gives no host paths
-   (scope.py)
+   requests made, it needs no root, and a Lustre tree is a job tree
+   that `receive-tree` made (scope.py, jobs.py)
+5. a request that builds has a rootless or VM-backed podman (podman.py)
 
 A request with no command is a probe.  `serve` sends only the handshake
 reply, so `host list` gets the versions with no verb.
 
-Later changes add these checks: the host is enabled (before 1), path
-arguments stay inside the job or the VM state, and admission control.
+`receive-tree` is not an ltvm verb.  After check 3, serve unpacks the
+tar stream that follows the handshake line into a new job directory,
+and prints the job (jobs.py).
 
 Then `serve` runs the verb in this process, with the update check and
 telemetry off, and with sudo forbidden.  It writes one audit line for
@@ -28,18 +30,21 @@ from __future__ import annotations
 
 import argparse
 import io
+import json
 import os
 import shlex
 import sys
 import traceback
 from collections.abc import Callable, Mapping
 from contextlib import redirect_stderr, redirect_stdout
-from typing import IO
+from pathlib import Path
+from typing import IO, Any
 
 from ltvm_pkg import priv
 
-from . import allowlist, audit, protocol, scope
+from . import allowlist, audit, jobs, podman, protocol, scope
 from .protocol import RemoteError
+from .tree import RECEIVE_TREE
 
 EXIT_OK = 0
 EXIT_ERROR = 1
@@ -68,6 +73,25 @@ def _split(command: str) -> list[str]:
         raise RemoteError(
             "bad_request", f"cannot split the command: {e}"
         ) from None
+
+
+def _read_hello(stdin: IO[Any]) -> str:
+    """Read the handshake line.  The rest of stdin is the request data."""
+    line = stdin.readline()
+    if isinstance(line, bytes):
+        return line.decode("utf-8", "replace")
+    return str(line)
+
+
+def _receive_tree(argv: list[str], stdin: IO[Any], home: Path, key: str) -> str:
+    """Unpack the tree stream into a new job.  Return the verb stdout."""
+    if len(argv) != 1:
+        raise RemoteError("bad_request", f"{RECEIVE_TREE} takes no arguments")
+    stream: object = stdin
+    if isinstance(stream, io.TextIOBase):
+        raise RemoteError("bad_request", "stdin cannot carry a tree stream")
+    info = jobs.receive(stdin, home, key)
+    return json.dumps({k: info[k] for k in ("job", "tree", "files", "bytes")})
 
 
 def _check_hello(line: str) -> None:
@@ -108,7 +132,7 @@ def _check_layout(env: Mapping[str, str]) -> None:
         )
 
 
-def _check_scope(parse: ParseFn, argv: list[str]) -> list[str]:
+def _check_scope(parse: ParseFn, argv: list[str], home: Path) -> list[str]:
     """Parse argv and check its scope.  Return the argv to run."""
     sink = io.StringIO()
     try:
@@ -119,11 +143,28 @@ def _check_scope(parse: ParseFn, argv: list[str]) -> list[str]:
     except SystemExit:
         # The verb gets the same parse error and runs nothing.
         return argv
-    return scope.check(argv, args)
+    return scope.check(argv, args, home=home)
 
 
 def _run_verb(run: RunFn, argv: list[str]) -> tuple[int, str]:
-    """Run the verb.  Return the exit status and the audit result."""
+    """Run the verb.  Return the exit status and the audit result.
+
+    The suite verbs run in scope.suite_dir(), because `suite run --wait`
+    collects the results under the working directory.
+    """
+    if argv[0] != "suite":
+        return _run_in_cwd(run, argv)
+    here = os.getcwd()
+    work = scope.suite_dir()
+    work.mkdir(parents=True, exist_ok=True)
+    os.chdir(work)
+    try:
+        return _run_in_cwd(run, argv)
+    finally:
+        os.chdir(here)
+
+
+def _run_in_cwd(run: RunFn, argv: list[str]) -> tuple[int, str]:
     try:
         rc = run(argv, update_check=False, telemetry=False, remote=False)
     except SystemExit as e:
@@ -166,7 +207,7 @@ def serve_stdio(
     run: RunFn,
     *,
     parse: ParseFn,
-    stdin: IO[str] | None = None,
+    stdin: IO[Any] | None = None,
     stdout: IO[str] | None = None,
     env: Mapping[str, str] | None = None,
     script: str | None = None,
@@ -177,7 +218,8 @@ def serve_stdio(
     Child ltvm processes of the verb run that script.
     """
     _guard_children(script)
-    stdin = stdin or sys.stdin
+    # Binary: a receive-tree request has a tar stream after the line.
+    stdin = stdin or sys.stdin.buffer
     stdout = stdout or sys.stdout
     env = os.environ if env is None else env
     key = audit.key_fingerprint(env)
@@ -191,7 +233,7 @@ def serve_stdio(
     except RemoteError as e:
         split_error = e
 
-    hello = stdin.readline()
+    hello = _read_hello(stdin)
     try:
         _check_hello(hello)
         if split_error:
@@ -205,7 +247,15 @@ def serve_stdio(
             return EXIT_OK
         _check_layout(env)
         allowlist.check(argv)
-        to_run = _check_scope(parse, argv)
+        if argv[0] == RECEIVE_TREE:
+            out = _receive_tree(argv, stdin, Path(env["HOME"]), key)
+            stdout.write(protocol.reply_line(_ltvm_version(), None) + "\n")
+            stdout.write(out + "\n")
+            stdout.flush()
+            audit.append(log, key=key, argv=argv, result="ok")
+            return EXIT_OK
+        to_run = _check_scope(parse, argv, Path(env["HOME"]))
+        podman.check(to_run)
     except RemoteError as e:
         stdout.write(protocol.reply_line(_ltvm_version(), e) + "\n")
         stdout.flush()
