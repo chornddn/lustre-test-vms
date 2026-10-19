@@ -165,3 +165,130 @@ class TestCreateGivesALease:
         assert _leases(icl) == {
             "cluster:new-cl": (REMOTE_OWNER, T0 + HOUR)
         }
+
+
+# ── serve reap ───────────────────────────────────────────
+
+
+@pytest.fixture
+def reaper(
+    inproc: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+) -> SimpleNamespace:
+    """`ltvm serve reap` in this process, as the user of host `t`."""
+    monkeypatch.setenv("XDG_STATE_HOME", str(inproc.home / ".local" / "state"))
+    monkeypatch.setenv("XDG_CONFIG_HOME", str(inproc.home / ".config"))
+    return inproc
+
+
+def _reap(ltvm: Any, capsys: Any) -> tuple[int, list[dict[str, Any]]]:
+    capsys.readouterr()
+    with patch("ltvm_pkg.vm_commands.unregister_vm_dns", create=True):
+        rc = ltvm.run(["serve", "reap", "--json"])
+    return rc, json.loads(capsys.readouterr().out)["reaped"]
+
+
+def _grant(inproc: SimpleNamespace, kind: str, name: str, hours: float) -> None:
+    from ltvm_pkg.remote import leases
+
+    leases.grant(_host_env(inproc), kind, name, REMOTE_OWNER, hours * HOUR)
+
+
+class TestReap:
+    def test_a_live_lease_keeps_the_vm(
+        self, reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _grant(reaper, "vm", REMOTE_VM, 8)
+        clock.now = T0 + 8 * HOUR - 1
+        rc, reaped = _reap(ltvm, capsys)
+        assert (rc, reaped) == (0, [])
+        assert (reaper.sockets / f"{REMOTE_VM}.info").exists()
+        assert "vm:" + REMOTE_VM in _leases(reaper)
+
+    def test_an_expired_lease_destroys_the_vm_and_logs_it(
+        self, reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        from tests.test_remote_serve import TEST_KEY_FP
+
+        _grant(reaper, "vm", REMOTE_VM, 8)
+        clock.now = T0 + 8 * HOUR
+        rc, reaped = _reap(ltvm, capsys)
+        assert rc == 0
+        assert [(r["kind"], r["name"], r["result"]) for r in reaped] == [
+            ("vm", REMOTE_VM, "reaped")
+        ]
+        assert not (reaper.sockets / f"{REMOTE_VM}.info").exists()
+        assert _leases(reaper) == {}
+        entry = _audit(reaper.home)[-1]
+        assert entry["key"] == TEST_KEY_FP
+        assert (entry["verb"], entry["args"]) == ("destroy", [REMOTE_VM])
+        assert entry["result"] == "reaped"
+
+    def test_an_expired_lease_destroys_the_cluster(
+        self, icl: SimpleNamespace, reaper: SimpleNamespace,
+        clock: SimpleNamespace, ltvm: Any, capsys: Any,
+    ) -> None:
+        from tests.test_remote_clusters import (
+            REMOTE_CL,
+            REMOTE_NODE,
+            _save_cluster,
+        )
+
+        _save_cluster(icl.sockets, REMOTE_CL, REMOTE_NODE, REMOTE_OWNER)
+        _grant(icl, "cluster", REMOTE_CL, 1)
+        clock.now = T0 + 2 * HOUR
+        rc, reaped = _reap(ltvm, capsys)
+        assert rc == 0
+        assert [r["result"] for r in reaped] == ["reaped"]
+        assert not (icl.sockets / f"{REMOTE_CL}.cluster").exists()
+        assert not (icl.sockets / f"{REMOTE_NODE}.info").exists()
+        entry = _audit(icl.home)[-1]
+        assert entry["verb"] == "cluster"
+        assert entry["args"] == ["destroy", REMOTE_CL]
+
+    def test_never_destroys_an_owner_vm(
+        self, reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        from tests.test_remote_lifecycle import OWNER_VM
+
+        _grant(reaper, "vm", OWNER_VM, 1)
+        clock.now = T0 + 2 * HOUR
+        rc, reaped = _reap(ltvm, capsys)
+        assert [r["result"] for r in reaped] == ["vm_not_found"]
+        assert (reaper.sockets / f"{OWNER_VM}.info").exists()
+        assert _leases(reaper) == {}
+        assert _audit(reaper.home)[-1]["result"] == "vm_not_found"
+
+    def test_a_vm_that_is_gone_drops_its_lease(
+        self, reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _grant(reaper, "vm", "gone-sentinel-c7", 1)
+        clock.now = T0 + 2 * HOUR
+        rc, reaped = _reap(ltvm, capsys)
+        assert [r["result"] for r in reaped] == ["vm_not_found"]
+        assert _leases(reaper) == {}
+
+    def test_a_failed_destroy_keeps_the_lease_for_the_next_reap(
+        self, reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _grant(reaper, "vm", REMOTE_VM, 1)
+        clock.now = T0 + 2 * HOUR
+        with patch("ltvm_pkg.cli.setup._vm_call", return_value=1):
+            rc, reaped = _reap(ltvm, capsys)
+        assert rc == 1
+        assert [r["result"] for r in reaped] == ["exit 1"]
+        assert "vm:" + REMOTE_VM in _leases(reaper)
+        assert _audit(reaper.home)[-1]["result"] == "exit 1"
+
+    def test_reap_never_uses_sudo(
+        self, reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        from ltvm_pkg import priv
+
+        _reap(ltvm, capsys)
+        assert priv._sudo_forbidden

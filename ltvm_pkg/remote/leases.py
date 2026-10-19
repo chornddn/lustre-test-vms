@@ -21,6 +21,7 @@ import fcntl
 import io
 import json
 import os
+import sys
 import tempfile
 import time
 from collections.abc import Callable, Iterator, Mapping
@@ -188,3 +189,96 @@ def on_request(
     seconds = parse_length(text) if text else default_seconds(env)
     if not getattr(args, "dry_run", False):
         grant(env, kind, args.name, owner, seconds)
+
+
+# ── reap ─────────────────────────────────────────────────
+
+
+def _destroy_argv(lease: Lease) -> list[str]:
+    if lease.kind == CLUSTER:
+        return ["cluster", "destroy", lease.name]
+    return ["destroy", lease.name]
+
+
+def _check_in_scope(lease: Lease) -> None:
+    """Raise RemoteError unless serve may destroy what the lease names."""
+    from . import scope
+
+    if lease.kind == CLUSTER:
+        scope._check_clusters([lease.name], lifecycle=True)
+    else:
+        scope._check_existing([lease.name])
+
+
+def _still_expired(env: Mapping[str, str], key: str, now: float) -> bool:
+    """A `lease renew` can come between the scan and the destroy."""
+    lease = load_all(env).get(key)
+    return lease is not None and lease.expired(now)
+
+
+def _audit_key(owner: str) -> str:
+    from . import audit, scope
+
+    if owner.startswith(scope.REMOTE_OWNER_PREFIX):
+        return owner[len(scope.REMOTE_OWNER_PREFIX) :]
+    return audit.NO_KEY
+
+
+def _reap_one(
+    run: Callable[..., int], env: Mapping[str, str], lease: Lease
+) -> str:
+    """Destroy what an expired lease names.  Return the audit result."""
+    from . import serve
+
+    try:
+        _check_in_scope(lease)
+    except RemoteError as e:
+        # Absent, or not a remote VM: never destroy it.
+        drop(env, lease.key)
+        return e.code
+    # The destroy acts as the owner of the lease, so that a claim that
+    # the remote controller holds does not stop it.
+    os.environ["LTVM_OWNER_ID"] = lease.owner
+    with redirect_stdout(sys.stderr):
+        rc, result = serve._run_verb(run, _destroy_argv(lease))
+    if rc != 0:
+        # Keep the lease: the next reap tries again.
+        return result
+    drop(env, lease.key)
+    return "reaped"
+
+
+def reap(
+    run: Callable[..., int],
+    env: Mapping[str, str],
+    *,
+    script: str | None = None,
+) -> list[dict[str, object]]:
+    """Destroy each VM and cluster whose lease has expired.
+
+    run is ltvm.run.  Each destroy runs in this process, with sudo
+    forbidden, as a remote request does.  Return one entry for each
+    expired lease, with its audit result: "reaped", "exit <N>", or the
+    error code of a lease whose VM serve may not destroy.
+    """
+    from ltvm_pkg import priv
+
+    from . import audit, serve
+
+    serve._guard_children(script)
+    priv.forbid_sudo()
+    now = clock()
+    log = audit.log_path(env)
+    out: list[dict[str, object]] = []
+    for key, lease in sorted(load_all(env).items()):
+        if not lease.expired(now) or not _still_expired(env, key, now):
+            continue
+        result = _reap_one(run, env, lease)
+        audit.append(
+            log,
+            key=_audit_key(lease.owner),
+            argv=_destroy_argv(lease),
+            result=result,
+        )
+        out.append({**asdict(lease), "result": result})
+    return out

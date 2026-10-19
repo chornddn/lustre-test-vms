@@ -657,6 +657,13 @@ def build_parser() -> argparse.ArgumentParser:
         "(sshd from= patterns, with commas between)",
     )
     ssp.set_defaults(func=cmd_serve_authorize)
+    srp = serve_sub.add_parser(
+        "reap",
+        parents=[common],
+        help="Destroy the remote VMs and clusters whose lease has expired "
+        "(a launchd job or systemd timer runs it)",
+    )
+    srp.set_defaults(func=_cmd_serve_reap)
 
     # -- host (remote hosts that this controller uses) --
     hp = sub.add_parser(
@@ -3013,6 +3020,22 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return serve_stdio(
         run, parse=_parse_request, script=str(Path(__file__).resolve())
     )
+
+
+def _cmd_serve_reap(args: argparse.Namespace) -> int:
+    """`ltvm serve reap`: destroy what each expired lease names."""
+    import json
+
+    from ltvm_pkg.remote import leases
+
+    reaped = leases.reap(run, os.environ, script=str(Path(__file__).resolve()))
+    if args.json:
+        print(json.dumps({"reaped": reaped}, indent=2))
+    else:
+        for r in reaped:
+            print(f"{r['kind']} {r['name']}: {r['result']}")
+    failed = any(str(r["result"]).startswith("exit") for r in reaped)
+    return EXIT_ERROR if failed else 0
 
 
 def _parse_request(argv: list[str]) -> argparse.Namespace:
