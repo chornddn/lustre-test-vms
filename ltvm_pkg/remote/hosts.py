@@ -27,7 +27,7 @@ from .protocol import RemoteError
 if TYPE_CHECKING:
     from .transport import Transport
 
-# A host name goes into `<host>/<vm>` on the controller, so it has no "/".
+# A host name goes into `<host>/<vm>` on the controller.  So it has no "/".
 _NAME_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 
 
@@ -41,9 +41,9 @@ class Host:
     # exec:// only: the public key that the child gets as its client
     # key, as sshd gives it with ExposeAuthInfo.
     pubkey: str = ""
-    # ssh:// only: the private key for this host, the SHA256 fingerprint
-    # of the pinned host key, and the from= address that `host add` gave
-    # to the owner.
+    # ssh:// only: the private key for this host and the SHA256
+    # fingerprint of the pinned host key.  from_addr is the from= address
+    # that `host add` gave to the owner.
     key: str = ""
     hostkey: str = ""
     from_addr: str = ""

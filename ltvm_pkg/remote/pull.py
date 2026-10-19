@@ -17,8 +17,8 @@ serve finds the results only in fixed places in the VM state:
 The request has no path.  serve opens each component below the base
 directory with O_NOFOLLOW, so a symbolic link in a place refuses the
 request.  In a result directory, serve sends only directories and
-regular files, and it does not follow a symbolic link: a guest can put
-links in the suite results.
+regular files.  It does not follow a symbolic link, because a guest can
+put links in the suite results.
 
 After the reply line, serve writes an uncompressed tar stream.  Each
 member name starts with the VM or the cluster: `<vm>/crash-<vm>-<ts>/vmcore`,

@@ -39,8 +39,8 @@ log = logging.getLogger(__name__)
 # rather than prompted again for each host operation.
 _sudo_refused = False
 
-# Set by forbid_sudo().  `serve` sets it: a remote request never runs
-# sudo on the host.
+# forbid_sudo() sets this flag.  `serve` calls forbid_sudo(), so a
+# remote request never runs sudo on the host.
 _sudo_forbidden = False
 _audit_hook_added = False
 

@@ -10,9 +10,9 @@ checks, in this order:
 3. the host has the shared layout, and serve does not run as root.
    A probe (no command) skips this check and the checks after it.
 4. the verb is on the allow-list
-5. the request stays in its scope: it names only VMs that remote
-   requests made, it needs no root, and a Lustre tree is a job tree
-   that `receive-tree` made (scope.py, jobs.py)
+5. the request stays in its scope (scope.py, jobs.py).  It names only
+   VMs that remote requests made.  It needs no root.  Its Lustre tree
+   is a job tree that `receive-tree` made.
 6. the request stays inside the caps of serve.toml (admission.py)
 7. a request that builds has a rootless or VM-backed podman (podman.py)
 
@@ -20,8 +20,8 @@ A request with no command is a probe.  `serve` sends only the handshake
 reply, so `host list` gets the versions with no verb.
 
 `receive-tree` is not an ltvm verb.  After check 4, serve unpacks the
-tar stream that follows the handshake line into a new job directory,
-and prints the job (jobs.py).  serve also answers `pull` itself after
+tar stream that follows the handshake line into a new job directory.
+Then it prints the job (jobs.py).  serve also answers `pull` itself after
 check 3: it sends the results as a tar stream (pull.py).
 
 Then `serve` runs the verb in this process, with the update check and

@@ -1985,7 +1985,8 @@ def cmd_list(args: argparse.Namespace) -> None:
             # healthy VM behind a traceback.  Report the casualty in
             # place instead.  (Named `exc`, not `e`: the render loop
             # below binds `e`, and Python deletes an except-name at
-            # block exit.)  A filtered list cannot tell whose it is.
+            # block exit.)  With list_filter set, skip the file: serve
+            # cannot tell the owner of a broken file.
             if list_filter is not None:
                 continue
             print(
@@ -2075,8 +2076,8 @@ def cmd_list(args: argparse.Namespace) -> None:
             "vcpus_available": host_cpus,
             "mem_used_mb": total_mem,
             "mem_rss_mb": total_rss,
-            # The running VMs may commit this much in all;
-            # mem_free_mb of it is left for new ones.
+            # The VMs can use this much memory in total.  mem_free_mb
+            # of it stays free for new VMs.
             "mem_available_mb": mem_limit_mb,
             "mem_free_mb": max(0, mem_limit_mb - total_mem),
             "mem_per_vm_max_mb": (budget.budget_mb if budget else host_mem_mb),

@@ -152,7 +152,7 @@ def check_from(addr: str) -> str:
     """Check a from= value: one IP address or one CIDR range.
 
     A wildcard, a host name or a list can let in more controllers than
-    the owner intends, so they are refused.
+    the owner intends.  So check_from refuses them.
     """
     try:
         if "/" in addr:

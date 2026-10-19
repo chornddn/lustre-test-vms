@@ -33,8 +33,8 @@ from ltvm_pkg import paths
 
 from .protocol import RemoteError
 
-# The lease code reads the time only through this name, so that the
-# tests can fix the clock.
+# The lease code reads the time only through this name.  So the tests
+# can fix the clock.
 clock: Callable[[], float] = time.time
 
 VM = "vm"
@@ -342,8 +342,8 @@ def _reap_one(
         # Absent, or not a remote VM: never destroy it.
         drop(env, lease.key)
         return e.code
-    # The destroy acts as the owner of the lease, so that a claim that
-    # the remote controller holds does not stop it.
+    # The destroy acts as the owner of the lease.  Then a claim that the
+    # remote controller holds does not stop it.
     os.environ["LTVM_OWNER_ID"] = lease.owner
     with redirect_stdout(sys.stderr):
         rc, result = serve._run_verb(run, _destroy_argv(lease))
@@ -443,13 +443,15 @@ def reap(
     than lease_hours.  One with no known age stays.
 
     With everything, destroy each VM and cluster that remote requests
-    made: what each lease names, expired or not, and then each remote
-    cluster and VM with no lease.  `serve disable --destroy` uses it.
+    made.  That is each one that a lease names, expired or not.  Then it
+    is each remote cluster and VM with no lease.  `serve disable
+    --destroy` uses this mode.
 
     run is ltvm.run.  Each destroy runs in this process, with sudo
     forbidden, as a remote request does.  Return one entry for each
-    destroy, with its audit result: "reaped", "exit <N>", or the error
-    code of a lease whose VM serve may not destroy.  An entry with no
+    destroy, with its audit result.  The result is "reaped" or
+    "exit <N>".  For a lease whose VM serve may not destroy, it is the
+    error code.  An entry with no
     lease has the times 0.
     """
     from ltvm_pkg import priv

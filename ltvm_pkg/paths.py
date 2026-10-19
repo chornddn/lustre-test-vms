@@ -42,8 +42,8 @@ def state_dir(env: Mapping[str, str]) -> Path:
 
 
 # The absolute path of the ltvm script that child ltvm processes run.
-# `serve` sets it: sshd gives a forced command a short PATH, and a child
-# of a remote request must run the same ltvm as serve.
+# `serve` sets it.  sshd gives a forced command a short PATH.  A child of
+# a remote request must run the same ltvm as serve.
 SELF_ENV = "LTVM_SELF"
 
 

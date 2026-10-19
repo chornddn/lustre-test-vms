@@ -176,7 +176,7 @@ def attach(host: str, argv: list[str], args: argparse.Namespace) -> list[str]:
     """Send the local tree of argv, if it has one.  Return the new argv.
 
     The new argv names the job tree on the host.  argparse uses the last
-    value of an option, so an abbreviated local option that stays in
+    value of an option.  So an abbreviated local option that stays in
     argv has no effect.
     """
     local = local_tree(argv, args)

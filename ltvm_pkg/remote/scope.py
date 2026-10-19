@@ -24,7 +24,7 @@ from .protocol import RemoteError
 REMOTE_OWNER_PREFIX = "remote:"
 
 # The VM name rule of vm_commands.  serve reads no state file for a name
-# that does not match it, so "../x" cannot reach a file outside the VM
+# that does not match it.  So "../x" cannot reach a file outside the VM
 # directory.
 _VM_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
 
@@ -353,7 +353,7 @@ def check(
 
     Call it after the allow-list check.  The argv that comes back can
     have options that serve adds, such as the crash directory.  home is
-    the home of serve, which holds the job directories.
+    the home of serve.  It holds the job directories.
     """
     home = Path.home() if home is None else home
     verb = argv[0]

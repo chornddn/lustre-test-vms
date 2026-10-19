@@ -75,8 +75,8 @@ def _replace(out: list[str], old: str, new: str) -> None:
         out[out.index(old)] = new
 
 
-# The commands whose output the controller makes from the --json reply,
-# so that it can add the `<host>/` prefix to the names.
+# The controller makes the output of these commands from the --json
+# reply.  Then it can add the `<host>/` prefix to the names.
 _JSON_VIEWS = (
     ["list"],
     ["cluster", "list"],

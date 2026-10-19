@@ -1,8 +1,8 @@
 """The power guard and the AC-only cap of a remote host.
 
 While at least one lease is active, the host must not go to sleep.  A
-lease is active when it has not expired and its VM or cluster still
-exists.  serve is not a daemon: each request is a short process.  So
+lease is active when it has not expired.  Its VM or cluster must also
+exist.  serve is not a daemon: each request is a short process.  So
 the guard is a detached holder process that serve starts, and that
 serve or `serve reap` stops when no lease is active.  A JSON file of
 the dedicated user, next to the lease file, records the pid of the

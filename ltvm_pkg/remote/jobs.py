@@ -9,10 +9,10 @@ into a new job directory:
 ~ is the home of the dedicated user that runs serve.  The jobs directory
 and each job directory have mode 0700.
 
-The unpack refuses a stream that can write outside the tree: an
-absolute name, a ".." component, a symbolic link whose target is outside
-the tree, a hard link or a device.  It also refuses to write through a
-symbolic link, and it refuses a ".git" entry.  A refused stream leaves
+The unpack refuses a stream that can write outside the tree.  So it
+refuses an absolute name, a ".." component, a hard link and a device.
+It also refuses a symbolic link whose target is outside the tree, and
+a write through a symbolic link.  It refuses a ".git" entry too.  A refused stream leaves
 no job directory.
 
 A link target can go through other links of the stream.  A later link
@@ -208,8 +208,9 @@ def receive(
 def job_tree(home: Path, value: str, option: str) -> Path:
     """The job tree that a path argument names.  Raise path_refused.
 
-    The value must be the canonical path of the tree of a job: absolute,
-    with no "..", no ".", no "/" at the end and no symbolic link.
+    The value must be the canonical path of the tree of a job.  That
+    path is absolute.  It has no "..", no ".", no "/" at the end and no
+    symbolic link.
     """
     refused = RemoteError(
         "path_refused",

@@ -13,10 +13,10 @@ How serve counts each resource:
   A stopped VM can start at any time, so it keeps its share.  Thus
   `start` needs no check, and `create` of a remote VM that exists asks
   for nothing.  The VMs of the host owner do not count.
-- disk_gb: the bytes on disk (allocated blocks, not the file size) of
-  the remote VM disks, the job directories, the artifacts (images,
-  kernels, containers) of the dedicated user, and the crash, dk and
-  suite results of remote VMs.  A new VM asks for NEW_VM_DISK_GB, an
+- disk_gb: the bytes on disk (allocated blocks, not the file size).
+  serve counts the remote VM disks and the job directories.  It also
+  counts the artifacts (images, kernels, containers) of the dedicated
+  user, and the crash, dk and suite results of remote VMs.  A new VM asks for NEW_VM_DISK_GB, an
   estimate of what its overlay and scratch disks write first.  The
   disk files are sparse, so the full disk size would stop a host long
   before its disk is full.

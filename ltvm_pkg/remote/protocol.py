@@ -1,8 +1,8 @@
 """Protocol version, error codes and the version handshake.
 
 The protocol version is separate from the ltvm version.  Increase
-PROTOCOL_VERSION only for a change that an older peer cannot use, such
-as a new request format or a new meaning for a reply field.  A new verb
+PROTOCOL_VERSION only for a change that an older peer cannot use.  An
+example is a new request format, or a new meaning for a reply field.  A new verb
 on the allow-list does not change the protocol: an older host refuses
 the verb with verb_refused.
 
@@ -12,8 +12,8 @@ The handshake is one JSON line in each direction:
   stdin of `serve`.
 - `serve` writes ``{"protocol": N, "ltvm": "<version>", "error": E}`` as
   the first line of its stdout.  E is null, or an object with "code",
-  "message" and "hint", and "details" when the error has data, such as
-  the requested, used and cap values of over_cap.  The verb output
+  "message" and "hint".  E also has "details" when the error has data,
+  such as the requested, used and cap values of over_cap.  The verb output
   follows that line.
 
 Do not change the shape of these two lines.  Peers with different

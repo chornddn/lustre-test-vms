@@ -67,8 +67,8 @@ log = logging.getLogger(__name__)
 
 REPO_SLUG = "lustre-tools/lustre-test-vms"
 
-# With the value "0", maybe_check_for_updates does nothing.  `serve` sets
-# it for the ltvm processes that a remote request starts.
+# With the value "0", maybe_check_for_updates does nothing.  `serve`
+# sets this variable for the ltvm processes of a remote request.
 NO_CHECK_ENV = "LTVM_UPDATE_CHECK"
 
 # How often we ask GitHub anything.

@@ -2321,8 +2321,9 @@ def cmd_cluster_list(args: argparse.Namespace) -> None:
     from . import vm_commands
 
     use_json = bool(getattr(args, "json", False))
-    # serve sets list_filter, so that a remote request sees only remote
-    # clusters.  A filtered list cannot tell whose a broken file is.
+    # serve sets list_filter, so a remote request sees only remote
+    # clusters.  A filtered list skips a broken file: it cannot tell the
+    # owner of the file.
     keep = vm_commands.list_filter
     clusters: list[dict[str, Any]] = []
     for cname in ClusterInfo.all_names():

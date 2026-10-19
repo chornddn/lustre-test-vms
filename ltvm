@@ -3310,8 +3310,8 @@ def run(
     # shell the user opens, and the check's state file would be written
     # by however many shells start at once.
     #
-    # `serve` is skipped too.  The owner's code does the checks on a
-    # remote host, so a remote request never updates it.
+    # `serve` gets no check either.  The host owner updates ltvm on a
+    # remote host.  A remote request never does.
     if update_check and args.command not in ("install", "completion", "serve"):
         try:
             from ltvm_pkg.update_check import maybe_check_for_updates

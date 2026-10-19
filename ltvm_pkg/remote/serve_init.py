@@ -96,7 +96,7 @@ def probe(disk_paths: Iterable[Path], *, laptop: bool) -> HostFacts:
     """Find the CPUs, the RAM and the free disk of this host.
 
     The free disk is the smallest free space of the disk_paths that
-    exist: remote VMs use the VM directory and the home of the
+    exist.  Remote VMs use the VM directory and the home of the
     dedicated user.
     """
     free = [

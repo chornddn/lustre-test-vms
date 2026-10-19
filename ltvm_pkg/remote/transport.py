@@ -5,8 +5,8 @@ A transport sends the argument vector of one ltvm command to `ltvm serve
 stderr of the verb, and a RemoteError when `serve` refused the request
 or the reply was bad.
 
-The request goes the way SSH sends it: the command is one string, which
-sshd gives to the forced command as SSH_ORIGINAL_COMMAND.  stdin carries
+The request goes the way SSH sends it.  The command is one string.
+sshd gives it to the forced command as SSH_ORIGINAL_COMMAND.  stdin carries
 the handshake line, then the request data (the tar stream of
 `receive-tree`).
 
@@ -93,7 +93,7 @@ def run_streamed(
 
     The child gets the handshake line on stdin.  This function reads the
     reply line.  If the reply has no error, consume reads the rest of
-    stdout while the child writes it, so no full copy is in memory.
+    stdout while the child writes it.  So no full copy is in memory.
     stderr goes to a temporary file, so a full pipe cannot stop the
     child.
     """

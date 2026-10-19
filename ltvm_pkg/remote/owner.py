@@ -1,9 +1,9 @@
 """The commands of the host owner: `serve enable`, `disable`, `status`.
 
-The owner runs them as the dedicated user (for example
-``sudo -u ltvm -H ltvm serve disable``), because serve.toml, the leases
-and the audit log are in the home directory of that user, and because
-only that user can destroy the remote VMs without sudo.
+The owner runs them as the dedicated user, for example
+``sudo -u ltvm -H ltvm serve disable``.  serve.toml, the leases and the
+audit log are in the home directory of that user.  Only that user can
+destroy the remote VMs without sudo.
 
 - `serve disable` sets ``enabled = false`` in serve.toml.  serve then
   refuses each request with `disabled`, before all other checks.
@@ -187,8 +187,8 @@ def status(env: Mapping[str, str], recent: int) -> dict[str, object]:
     """The status document of `serve status --json`.
 
     "used" and "cap" have the keys of the over_cap error.  serve counts
-    the disk only when a disk cap is set, so with no disk cap the used
-    disk is null.
+    the disk only when serve.toml has a disk cap.  With no disk cap, the
+    used disk is null.
     """
 
     from . import admission, jobs
