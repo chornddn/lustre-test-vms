@@ -671,7 +671,8 @@ def build_parser() -> argparse.ArgumentParser:
         parents=[common],
         help="Change the lease of a remote VM or cluster (with --host)",
     )
-    lease_sub = lp.add_subparsers(dest="lease_action", required=True)
+    lp.set_defaults(func=_cmd_lease)
+    lease_sub = lp.add_subparsers(dest="lease_action")
     lrp = lease_sub.add_parser(
         "renew",
         parents=[common],
@@ -3043,6 +3044,12 @@ def _cmd_serve(args: argparse.Namespace) -> int:
     return serve_stdio(
         run, parse=_parse_request, script=str(Path(__file__).resolve())
     )
+
+
+def _cmd_lease(args: argparse.Namespace) -> int:
+    from ltvm_pkg.cli.util import _error
+
+    return _error("lease needs a subcommand: renew", args.json)
 
 
 def _cmd_lease_renew(args: argparse.Namespace) -> int:
