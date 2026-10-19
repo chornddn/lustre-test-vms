@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import subprocess
+from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
@@ -124,3 +125,59 @@ class TestLifecycleWithoutSudo:
             rc = cli_vm.cmd_vm_start(_ns(names=["co1-x"]))
         start.assert_not_called()
         assert rc == EXIT_ERROR
+
+
+class TestForbidSudo:
+    """priv.forbid_sudo() also stops code that runs ["sudo", ...] itself."""
+
+    @pytest.fixture
+    def fake_sudo(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> Path:
+        from ltvm_pkg import priv
+
+        monkeypatch.setattr(priv, "_sudo_forbidden", False)
+        sentinel = tmp_path / "sudo-ran-h4"
+        sudo = tmp_path / "sudo"
+        sudo.write_text(f"#!/bin/sh\ntouch {sentinel}\n")
+        sudo.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+        return sentinel
+
+    @pytest.mark.parametrize(
+        "argv",
+        [["sudo", "true"], ["sudo", "-n", "-u", "root", "true"]],
+    )
+    def test_direct_sudo_is_stopped(
+        self, fake_sudo: Path, argv: list[str]
+    ) -> None:
+        import subprocess
+
+        from ltvm_pkg import priv
+
+        priv.forbid_sudo()
+        with pytest.raises(priv.SudoForbidden):
+            subprocess.run(argv, check=False)
+        with pytest.raises(priv.SudoForbidden):
+            subprocess.run(
+                argv, executable=str(fake_sudo.parent / "sudo"), check=False
+            )
+        assert not fake_sudo.exists()
+
+    def test_other_commands_still_run(self, fake_sudo: Path) -> None:
+        import subprocess
+
+        from ltvm_pkg import priv
+
+        priv.forbid_sudo()
+        assert subprocess.run(["true"], check=False).returncode == 0
+
+    def test_sudo_runs_when_not_forbidden(self, fake_sudo: Path) -> None:
+        import subprocess
+
+        from ltvm_pkg import priv
+
+        priv.forbid_sudo()
+        priv._sudo_forbidden = False
+        subprocess.run(["sudo"], check=False)
+        assert fake_sudo.exists()

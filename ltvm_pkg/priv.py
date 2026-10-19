@@ -39,9 +39,63 @@ log = logging.getLogger(__name__)
 # rather than prompted again for each host operation.
 _sudo_refused = False
 
+# Set by forbid_sudo().  `serve` sets it: a remote request never runs
+# sudo on the host.
+_sudo_forbidden = False
+_audit_hook_added = False
+
 
 class SudoUnavailable(RuntimeError):
     """sudo would not grant root to this user."""
+
+
+class SudoForbidden(SudoUnavailable):
+    """This process must not run sudo."""
+
+
+def _sudo_argv(event: str, args: tuple[object, ...]) -> bool:
+    """Does this audit event start a sudo process?"""
+    if event == "os.system":
+        words = str(args[0]).split()
+        return bool(words) and os.path.basename(words[0]) == "sudo"
+    if event not in ("subprocess.Popen", "os.exec", "os.posix_spawn"):
+        return False
+    # (executable or path, argv, ...)
+    exe, argv = args[0], args[1]
+    if isinstance(argv, (str, bytes)):
+        argv = [argv]
+    first = next(iter(argv), None) if argv is not None else None  # type: ignore[call-overload]
+    return any(
+        os.path.basename(os.fsdecode(x)).split()[:1] == ["sudo"]
+        for x in (exe, first)
+        if isinstance(x, (str, bytes, os.PathLike))
+    )
+
+
+def _audit_hook(event: str, args: tuple[object, ...]) -> None:
+    if _sudo_forbidden and _sudo_argv(event, args):
+        raise SudoForbidden("this process must not run sudo")
+
+
+def forbid_sudo() -> None:
+    """Make every later start of a sudo process in this process fail.
+
+    The sudo helpers refuse at once, and an audit hook stops the code
+    that runs ["sudo", ...] directly.  An audit hook cannot be removed,
+    so it does nothing while _sudo_forbidden is false.
+    """
+    import sys
+
+    global _sudo_forbidden, _audit_hook_added
+    _sudo_forbidden = True
+    if not _audit_hook_added:
+        sys.addaudithook(_audit_hook)
+        _audit_hook_added = True
+
+
+def _check_sudo_allowed() -> None:
+    if _sudo_forbidden:
+        raise SudoForbidden("this process must not run sudo")
 
 
 def _run(
@@ -85,6 +139,7 @@ def sudo_run(
     """
     if os.geteuid() == 0:
         return _run(cmd, check=check, quiet=quiet)
+    _check_sudo_allowed()
     if noninteractive or _sudo_refused:
         return _run(["sudo", "-n", *cmd], check=check, quiet=quiet)
     return _run(["sudo", *cmd], check=check, quiet=quiet)
@@ -98,6 +153,8 @@ def sudo_ready() -> bool:
     """
     if os.geteuid() == 0:
         return True
+    if _sudo_forbidden:
+        return False
     return _run(["sudo", "-n", "true"], check=False, quiet=True).returncode == 0
 
 
@@ -114,6 +171,7 @@ def sudo_prime(reason: str) -> None:
     Raises ``SudoUnavailable`` when sudo refuses.
     """
     global _sudo_refused
+    _check_sudo_allowed()
     if sudo_ready():
         return
     log.info("%s -- prompting for sudo credentials now.", reason)
