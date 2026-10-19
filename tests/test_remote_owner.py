@@ -203,3 +203,73 @@ class TestDisableDestroy:
         assert rc == 1
         assert [r["result"] for r in out["destroyed"]] == ["exit 1"]
         assert out["enabled"] is False
+
+
+class TestStatus:
+    @pytest.fixture
+    def busy(
+        self, reaper: SimpleNamespace, clock: SimpleNamespace, ltvm: Any
+    ) -> SimpleNamespace:
+        """One remote VM (3 vCPUs, 2 GiB) with a lease, and two requests."""
+        from ltvm_pkg.vm_state import VMInfo
+        from tests.test_remote_lifecycle import REMOTE_OWNER
+
+        (reaper.sockets / f"{REMOTE_VM}.info").unlink()
+        with patch("ltvm_pkg.vm_state.SOCKETS", reaper.sockets):
+            VMInfo(
+                name="rvm-big-c3",
+                ip="192.168.100.79",
+                owner_id=REMOTE_OWNER,
+                vcpus=3,
+                mem=2048,
+            ).save()
+        _leases_t._grant(reaper, "vm", "rvm-big-c3", 2)
+        _leases_t._grant(reaper, "vm", "gone-sentinel-c7", 1)
+        _leases_t._serve_toml(reaper, "max_vcpus = 8\nmax_ram_gb = 16\n")
+        ltvm.run(["--host", "t", "list", "--json"])
+        ltvm.run(["--host", "t", "vm", "set", "rvm-big-c3", "--vcpus", "1"])
+        clock.now = _leases_t.T0 + 1.5 * _leases_t.HOUR
+        return reaper
+
+    def test_json_shows_leases_usage_caps_and_recent_requests(
+        self, busy: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        rc, out = _serve(ltvm, capsys, "status")
+        assert rc == 0
+        assert out["enabled"] is True
+        leases = {(x["kind"], x["name"]): x for x in out["leases"]}
+        big = leases[("vm", "rvm-big-c3")]
+        assert big["expires"] == _leases_t.T0 + 2 * _leases_t.HOUR
+        assert big["state"] == "active"
+        assert leases[("vm", "gone-sentinel-c7")]["state"] == "expired"
+        assert out["used"]["vcpus"] == 3
+        assert out["used"]["ram_gb"] == 2
+        assert out["cap"] == {"vcpus": 8, "ram_gb": 16, "disk_gb": None}
+        recent = [(e["verb"], e["result"]) for e in out["recent"]]
+        assert recent == [("list", "ok"), ("vm", "verb_refused")]
+
+    def test_recent_limits_the_requests(
+        self, busy: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        rc, out = _serve(ltvm, capsys, "status", "--recent", "1")
+        assert [e["verb"] for e in out["recent"]] == ["vm"]
+
+    def test_text_names_each_part(
+        self, busy: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        capsys.readouterr()
+        assert ltvm.run(["serve", "status"]) == 0
+        out = capsys.readouterr().out
+        assert "enabled" in out
+        assert "rvm-big-c3" in out
+        assert "vcpus: 3 / 8" in out
+        assert "disk_gb" in out
+        assert "verb_refused" in out
+
+    def test_a_disabled_host_with_no_log(
+        self, reaper: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        _serve(ltvm, capsys, "disable")
+        rc, out = _serve(ltvm, capsys, "status")
+        assert rc == 0
+        assert (out["enabled"], out["leases"], out["recent"]) == (False, [], [])
