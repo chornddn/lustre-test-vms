@@ -46,6 +46,10 @@ MACOS_UIDS = range(401, 500)
 MACOS_STAFF_GID = 20
 # The sshd PATH for a forced command on macOS has no /usr/local/bin.
 FORCED_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Rootless podman needs subordinate UIDs and GIDs for the user.
+SUBID_FILES = (Path("/etc/subuid"), Path("/etc/subgid"))
+SUBID_FIRST = 100000
+SUBID_COUNT = 65536
 # On macOS, Remote Login with "Only these users" uses this group.
 ACCESS_SSH_GROUP = "com.apple.access_ssh"
 
@@ -154,6 +158,7 @@ class Deps:
     launcher: str = LAUNCHER
     read_paths: list[Path] = field(default_factory=_repo_read_paths)
     hostkey_pub: Path = HOSTKEY_PUB
+    subid_files: tuple[Path, Path] = SUBID_FILES
     address: Callable[[], str | None] = _address
     hostname: Callable[[], str] = _hostname
     reap: Callable[..., str] | None = None
@@ -258,6 +263,30 @@ def _linux_user(user: str, home: str, groups: list[str]) -> list[list[str]]:
     return [[*cmd, user], ["usermod", "--lock", user]]
 
 
+def _subid_command(path: Path, flag: str, user: str) -> list[str] | None:
+    """The usermod command that gives user a free range, or None.
+
+    None when user has a range already.  The new range starts after
+    the highest range in the file.
+    """
+    try:
+        lines = path.read_text().splitlines()
+    except FileNotFoundError:
+        lines = []
+    end = SUBID_FIRST
+    for line in lines:
+        parts = line.strip().split(":")
+        if len(parts) != 3:
+            continue
+        if parts[0] == user:
+            return None
+        try:
+            end = max(end, int(parts[1]) + int(parts[2]))
+        except ValueError:
+            continue
+    return ["usermod", flag, f"{end}-{end + SUBID_COUNT - 1}", user]
+
+
 def _ensure_user(deps: Deps, user: str) -> dict[str, Any]:
     """Make the user, or keep the one that is there.  Return its facts."""
     macos = deps.system == "Darwin"
@@ -285,6 +314,16 @@ def _ensure_user(deps: Deps, user: str) -> dict[str, Any]:
             cmds = _linux_user(user, home, extra)
         for cmd in cmds:
             deps.run(cmd)
+    if not macos:
+        # Without these ranges rootless podman cannot run as the user.
+        subuid, subgid = deps.subid_files
+        for path, flag in (
+            (subuid, "--add-subuids"),
+            (subgid, "--add-subgids"),
+        ):
+            subid = _subid_command(path, flag, user)
+            if subid is not None:
+                deps.run(subid)
     group_name = "staff" if macos else GROUP
     if macos:
         deps.run(["dseditgroup", "-o", "edit", "-a", user, "-t", "user", GROUP])

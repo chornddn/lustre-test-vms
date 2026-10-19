@@ -277,6 +277,10 @@ class FakeHost:
         self.readable.mkdir()
         self.readable.chmod(0o755)
         self.read_paths: list[Path] = []
+        self.subuid = tmp_path / "subuid"
+        self.subgid = tmp_path / "subgid"
+        self.subuid.write_text("alice:100000:65536\n")
+        self.subgid.write_text("alice:100000:65536\nbob:165536:65536\n")
         self._pwd = pwd
 
     def getpwnam(self, name: str) -> Any:
@@ -331,6 +335,7 @@ class FakeHost:
             address=lambda: "192.0.2.10",
             hostname=lambda: "box",
             reap=lambda **k: "installed",
+            subid_files=(self.subuid, self.subgid),
         )
         fields.update(kw)
         return serve_install.Deps(**fields)
@@ -756,3 +761,48 @@ class TestInstallJson:
         )
         assert host.as_user[0][-3:] == ["--yes", "--max-vcpus", "2"]
         assert seen == [{"check": False, "quiet": True}]
+
+
+class TestSubordinateIds:
+    def test_new_linux_user_gets_free_ranges(self, tmp_path: Path) -> None:
+        host = FakeHost(tmp_path, "Linux")
+        _install(host)
+        assert [
+            "usermod",
+            "--add-subuids",
+            "165536-231071",
+            "ltvm",
+        ] in host.elevated
+        assert [
+            "usermod",
+            "--add-subgids",
+            "231072-296607",
+            "ltvm",
+        ] in host.elevated
+        useradd = [i for i, c in enumerate(host.elevated) if c[0] == "useradd"]
+        sub = [i for i, c in enumerate(host.elevated) if "--add-subuids" in c]
+        assert useradd[0] < sub[0]
+
+    def test_existing_ranges_are_kept(self, tmp_path: Path) -> None:
+        host = FakeHost(tmp_path, "Linux")
+        host.subuid.write_text("ltvm:200000:65536\n")
+        host.subgid.write_text("ltvm:200000:65536\n")
+        _install(host)
+        assert "--add-sub" not in _flat(host.elevated)
+
+    def test_missing_files_start_at_100000(self, tmp_path: Path) -> None:
+        host = FakeHost(tmp_path, "Linux")
+        host.subuid.unlink()
+        host.subgid.unlink()
+        _install(host)
+        assert [
+            "usermod",
+            "--add-subuids",
+            "100000-165535",
+            "ltvm",
+        ] in host.elevated
+
+    def test_macos_gets_no_ranges(self, tmp_path: Path) -> None:
+        host = FakeHost(tmp_path, "Darwin")
+        _install(host)
+        assert "--add-sub" not in _flat(host.elevated)
