@@ -77,6 +77,26 @@ def inhibit_argv(kind: str) -> list[str] | None:
     return None
 
 
+# On Linux, logind asks polkit before it gives a sleep lock.  The
+# default refuses it to a user with no active local session, such as
+# the dedicated user over ssh or in the reap timer.  `install --serve`
+# installs this rule (serve_install.py).
+POLKIT_RULE = Path("/etc/polkit-1/rules.d/50-ltvm-serve.rules")
+
+
+def polkit_rule(user: str) -> str:
+    return f"""\
+// ltvm serve: the user {user} may block sleep while a remote VM
+// lease is active.  `ltvm install --serve` installs this file.
+polkit.addRule(function(action, subject) {{
+    if (action.id == "org.freedesktop.login1.inhibit-block-sleep" &&
+        subject.user == "{user}") {{
+        return polkit.Result.YES;
+    }}
+}});
+"""
+
+
 # ── the power source ─────────────────────────────────────
 
 
@@ -133,21 +153,36 @@ def on_battery(kind: str | None = None) -> bool:
 # ── the holder process ───────────────────────────────────
 
 
-def _spawn(argv: list[str]) -> int:
+# A holder that polkit refuses stops in less than this time.
+SETTLE_S = 0.5
+
+
+def _spawn(argv: list[str], log: Path) -> int:
     """Start the holder detached.  Return its pid.
 
     The holder must not keep the stdio of serve open: sshd closes the
-    session only when every copy of the channel is closed.
+    session only when every copy of the channel is closed.  Its stderr
+    goes to log.  Raise RuntimeError when the holder stops at once, for
+    example when polkit refuses the sleep lock.
     """
-    proc = subprocess.Popen(
-        argv,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        close_fds=True,
-        start_new_session=True,
-    )
-    return proc.pid
+    with open(log, "w") as err:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=err,
+            close_fds=True,
+            start_new_session=True,
+        )
+    try:
+        rc = proc.wait(timeout=SETTLE_S)
+    except subprocess.TimeoutExpired:
+        return proc.pid
+    try:
+        why = log.read_text().strip()
+    except OSError:
+        why = ""
+    raise RuntimeError(f"{argv[0]} stopped with exit {rc}: {why or '-'}")
 
 
 def _alive(pid: int, argv: list[str]) -> bool:
@@ -231,7 +266,9 @@ def sync(env: Mapping[str, str], *, busy: bool = False) -> bool:
 
     busy holds the guard with no active lease, for a create whose VM
     does not exist yet.  Return True when a holder runs after the call.
-    A failure prints a warning and never fails the request.
+    A failure prints a warning to stderr (the controller sees it after
+    the verb, and the journal keeps it for `serve reap`).  It never
+    fails the request.
     """
     from .serve import TEST_LAYOUT_ENV
 
@@ -248,14 +285,14 @@ def sync(env: Mapping[str, str], *, busy: bool = False) -> bool:
             running = held is not None and _alive(*held)
             if want and running:
                 return True
-            if want:
-                pid = _spawn(argv)
-                path.write_text(json.dumps({"pid": pid, "argv": argv}) + "\n")
-                return True
             if held is not None and running:
                 _stop(held[0])
             path.unlink(missing_ok=True)
-            return False
+            if not want:
+                return False
+            pid = _spawn(argv, path.with_suffix(".log"))
+            path.write_text(json.dumps({"pid": pid, "argv": argv}) + "\n")
+            return True
     except (OSError, ValueError, RuntimeError) as e:
         print(
             f"ltvm serve: cannot change the sleep guard: {e}", file=sys.stderr

@@ -259,6 +259,8 @@ class FakeHost:
         self.system = system
         self.wsl2 = wsl2
         self.elevated: list[list[str]] = []
+        # What each `install SRC DST` wrote, by DST.
+        self.files: dict[str, str] = {}
         self.as_user: list[list[str]] = []
         self.users: dict[str, Any] = {}
         self.groups = {
@@ -298,6 +300,8 @@ class FakeHost:
     ) -> Any:
         import subprocess
 
+        if cmd[:1] == ["install"] and Path(cmd[-2]).is_file():
+            self.files[cmd[-1]] = Path(cmd[-2]).read_text()
         if cmd[:2] == ["sudo", "-u"]:
             self.as_user.append(cmd)
         else:
@@ -684,6 +688,47 @@ class TestReapHook:
         report, out = _install(host, reap=reap)
         assert report["reap_job"] == "not installed: systemctl failed"
         assert "Reap job: not installed" in out
+
+
+class TestPolkitRule:
+    RULE = "/etc/polkit-1/rules.d/50-ltvm-serve.rules"
+
+    def test_linux_lets_the_user_block_sleep(self, tmp_path: Path) -> None:
+        host = FakeHost(tmp_path, "Linux")
+        report, _ = _install(host)
+        assert report["polkit"] == "installed"
+        install = next(c for c in host.elevated if c[-1] == self.RULE)
+        assert install[1:7] == ["-m", "644", "-o", "root", "-g", "root"]
+        rule = host.files[self.RULE]
+        assert '"org.freedesktop.login1.inhibit-block-sleep"' in rule
+        assert 'subject.user == "ltvm"' in rule
+        assert "polkit.Result.YES" in rule
+
+    @pytest.mark.parametrize(
+        ("system", "wsl2"), [("Linux", True), ("Darwin", False)]
+    )
+    def test_wsl2_and_macos_get_no_rule(
+        self, tmp_path: Path, system: str, wsl2: bool
+    ) -> None:
+        host = FakeHost(tmp_path, system, wsl2=wsl2)
+        report, _ = _install(host)
+        assert report["polkit"] == "not needed"
+        assert self.RULE not in _flat(host.elevated)
+
+    def test_a_failed_rule_is_a_step_left(self, tmp_path: Path) -> None:
+        import subprocess
+
+        host = FakeHost(tmp_path, "Linux")
+        real = host.run
+
+        def run(cmd: list[str], **kw: Any) -> Any:
+            if cmd[-1] == self.RULE:
+                raise subprocess.CalledProcessError(1, cmd, "", "no dir")
+            return real(cmd, **kw)
+
+        report, out = _install(host, run=run)
+        assert report["polkit"].startswith("not installed")
+        assert "polkit" in out
 
 
 class TestInstallServeCommand:

@@ -8,7 +8,9 @@ can do:
    and WSL2 the password is locked.  The shell is ``/bin/sh``.  The user
    is in the ``ltvm`` group and has its own artifacts directory.
 2. It runs ``serve init`` (the wizard) as that user.
-3. It installs the reap job (ltvm_pkg/remote/reap_job.py).
+3. It installs the reap job (ltvm_pkg/remote/reap_job.py).  On Linux
+   (not WSL2), it installs a polkit rule that lets the user take the
+   sleep lock of the power guard (power.py).
 4. It checks sshd for the user, and it reads the host key.
 
 It never changes sshd, Remote Login or a VPN.  For each item that the
@@ -93,13 +95,11 @@ def _hostname() -> str:
     return _controller_name()
 
 
-def _reap(*, ltvm: str, user: str, home: str, run: RunFn, system: str) -> str:
-    from ltvm_pkg.remote import reap_job
-
+def _root_writer(run: RunFn, system: str) -> Callable[[Path, str, int], None]:
+    """A writer for files that root owns (launchd, systemd, polkit)."""
     group = "wheel" if system == "Darwin" else "root"
 
     def write(path: Path, text: str, mode: int) -> None:
-        # launchd and systemd want root-owned files.
         fd, tmp = tempfile.mkstemp(prefix=f".{path.name}.")
         try:
             with os.fdopen(fd, "w") as f:
@@ -122,7 +122,31 @@ def _reap(*, ltvm: str, user: str, home: str, run: RunFn, system: str) -> str:
         finally:
             os.unlink(tmp)
 
+    return write
+
+
+def _reap(*, ltvm: str, user: str, home: str, run: RunFn, system: str) -> str:
+    from ltvm_pkg.remote import reap_job
+
+    write = _root_writer(run, system)
     reap_job.install(ltvm, user, home, system=system, write=write, run=run)
+    return "installed"
+
+
+def _polkit(deps: Deps, user: str) -> str:
+    """Let the user take the sleep lock of the power guard (power.py).
+
+    Only Linux needs the rule.  WSL2 has no power guard.
+    """
+    from ltvm_pkg.remote import power
+
+    if deps.system != "Linux" or deps.wsl2:
+        return "not needed"
+    write = _root_writer(deps.run, deps.system)
+    try:
+        write(power.POLKIT_RULE, power.polkit_rule(user), 0o644)
+    except (OSError, subprocess.CalledProcessError) as e:
+        return f"not installed: {e}"
     return "installed"
 
 
@@ -542,6 +566,13 @@ def _steps(deps: Deps, report: dict[str, Any], user: str) -> list[str]:
         )
     if report["reap_job"] != "installed":
         steps.append(f"Reap job: {report['reap_job']}")
+    if report["polkit"].startswith("not installed"):
+        from ltvm_pkg.remote import power
+
+        steps.append(
+            f"polkit rule {power.POLKIT_RULE}: {report['polkit']}.  "
+            f"Without it, the host can sleep while a lease is active."
+        )
     steps.append(
         "ltvm installs no VPN.  Use your own private network, and let "
         "only the controller reach port 22 (see docs/REMOTE_HOSTS.md)."
@@ -600,6 +631,7 @@ def install(
         "wizard": wizard,
         "wizard_command": shlex.join(init_cmd),
         "reap_job": reap_result,
+        "polkit": _polkit(deps, user),
         "sshd": _check_sshd(deps, user, facts["gids"]),
         "hostkey": _hostkey(deps),
         "address": deps.address() or None,

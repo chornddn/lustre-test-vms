@@ -171,7 +171,7 @@ def guard(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> SimpleNamespace:
         sockets=vm_state.SOCKETS,
     )
 
-    def spawn(argv: list[str]) -> int:
+    def spawn(argv: list[str], log: Path) -> int:
         pid = 50000 + len(g.spawned)
         g.spawned.append(argv)
         procs[pid] = argv
@@ -335,7 +335,7 @@ class TestGuard:
     ) -> None:
         from ltvm_pkg.remote import power
 
-        def no_tool(argv: list[str]) -> int:
+        def no_tool(argv: list[str], log: Path) -> int:
             raise FileNotFoundError(2, "No such file", argv[0])
 
         monkeypatch.setattr(power, "_spawn", no_tool)
@@ -343,6 +343,27 @@ class TestGuard:
         _lease(guard, "vm", "pg-sentinel-a8")
         assert power.sync(guard.env) is False
         assert "caffeinate" in capsys.readouterr().err
+
+    def test_a_holder_that_is_refused_is_reported(
+        self,
+        guard: SimpleNamespace,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: Any,
+    ) -> None:
+        """polkit can refuse the sleep lock to the ltvm user."""
+        from ltvm_pkg.remote import power
+
+        def refused(argv: list[str], log: Path) -> int:
+            raise RuntimeError(f"{argv[0]} stopped with exit 1: Access denied")
+
+        monkeypatch.setattr(power, "system", lambda: power.LINUX)
+        monkeypatch.setattr(power, "_spawn", refused)
+        _vm("pg-sentinel-aa")
+        _lease(guard, "vm", "pg-sentinel-aa")
+        assert power.sync(guard.env) is False
+        err = capsys.readouterr().err
+        assert "systemd-inhibit stopped with exit 1: Access denied" in err
+        assert not power.state_path(guard.env).exists()
 
     def test_a_test_host_never_runs_the_tool(
         self, guard: SimpleNamespace
@@ -544,3 +565,38 @@ def test_reap_releases_the_guard(
     guard.now = T0 + 2 * HOUR
     leases.reap(lambda *a, **k: 0, guard.env)
     assert guard.stopped == [50000]
+
+
+class TestSpawn:
+    """The real _spawn, with a Python child in place of the tool."""
+
+    def test_a_holder_that_stops_at_once_raises_with_its_error(
+        self, tmp_path: Path
+    ) -> None:
+        import sys
+
+        from ltvm_pkg.remote import power
+
+        argv = [
+            sys.executable,
+            "-c",
+            "import sys; sys.stderr.write('Access denied\\n'); sys.exit(1)",
+        ]
+        with pytest.raises(RuntimeError) as e:
+            power._spawn(argv, tmp_path / "guard.log")
+        assert "exit 1" in str(e.value)
+        assert "Access denied" in str(e.value)
+
+    def test_a_holder_that_runs_gives_its_pid(self, tmp_path: Path) -> None:
+        import os
+        import sys
+
+        from ltvm_pkg.remote import power
+
+        argv = [sys.executable, "-c", "import time; time.sleep(60)"]
+        pid = power._spawn(argv, tmp_path / "guard.log")
+        try:
+            assert os.getpgid(pid) == pid
+        finally:
+            power._stop(pid)
+            os.waitpid(pid, 0)
