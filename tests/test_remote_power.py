@@ -377,6 +377,22 @@ class TestGuard:
         assert power.sync(env) is False
         assert guard.spawned == []
 
+    def test_the_switch_under_sshd_keeps_the_guard_on(
+        self, guard: SimpleNamespace
+    ) -> None:
+        """sshd sets SSH_CONNECTION.  Then the test switch has no effect."""
+        from ltvm_pkg.remote import power
+
+        _vm("pg-sentinel-ab")
+        _lease(guard, "vm", "pg-sentinel-ab")
+        env = {
+            **guard.env,
+            "LTVM_SERVE_TEST_LAYOUT": "ready",
+            "SSH_CONNECTION": "192.0.2.7 50000 192.0.2.1 22",
+        }
+        assert power.sync(env) is True
+        assert guard.spawned != []
+
 
 def test_conftest_keeps_the_real_tools_out() -> None:
     """With no opt-in, a test sees a system with no power control."""

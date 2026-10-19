@@ -272,7 +272,7 @@ class ExecTransport:
             "LOGNAME": user,
             "SHELL": "/bin/sh",
             "PATH": "/usr/bin:/bin:/usr/sbin:/sbin",
-            "SSH_CONNECTION": "127.0.0.1 50000 127.0.0.1 22",
+            # No SSH_CONNECTION: serve refuses its test switch under sshd.
             "SSH_ORIGINAL_COMMAND": command,
         }
         if self.host.pubkey:

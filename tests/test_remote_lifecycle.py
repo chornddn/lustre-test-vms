@@ -160,6 +160,32 @@ class TestLayout:
         assert resp.error.code == "layout_unsupported"
         assert _audit(child.home)[-1]["result"] == "layout_unsupported"
 
+    def test_the_switch_under_sshd_is_refused(
+        self, child: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        """A controller that gets the switch through sshd gains nothing."""
+        from ltvm_pkg.remote import protocol, serve, transport
+
+        out = io.StringIO()
+        env = {
+            "HOME": str(child.home),
+            "SSH_ORIGINAL_COMMAND": "list",
+            "SSH_CONNECTION": "192.0.2.7 50000 192.0.2.1 22",
+            **LAYOUT_SWITCH,
+        }
+        rc = serve.serve_stdio(
+            ltvm.run,
+            parse=ltvm._parse_request,
+            stdin=io.StringIO(protocol.hello_line("0") + "\n"),
+            stdout=out,
+            env=env,
+        )
+        resp = transport.parse_reply(rc, out.getvalue(), "")
+        assert rc == 1
+        assert resp.error is not None
+        assert resp.error.code == "layout_unsupported"
+        assert "test" in resp.error.message
+
     def test_root_is_refused(
         self, child: SimpleNamespace, ltvm: Any, capsys: Any
     ) -> None:

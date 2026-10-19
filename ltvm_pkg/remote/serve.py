@@ -68,10 +68,22 @@ RunFn = Callable[..., int]
 # Parse argv as ltvm does.  Raises SystemExit for a bad command.
 ParseFn = Callable[[list[str]], argparse.Namespace]
 
-# Tests only.  With the value "ready", serve does not check the layout of
-# the host.  sshd does not let a client set the environment of a forced
-# command, so a controller cannot set it.
+# Tests only.  With the value "ready", serve does not check the layout
+# of the host, and the power guard stays off.
+#
+# A test host cannot pass the real layout check.  The check needs root
+# files, such as a setuid qemu-bridge-helper and /etc/qemu/bridge.conf.
+# An exec:// child also gets no conftest patch.  So the switch stays.
+#
+# sshd sets SSH_CONNECTION, and an exec:// child does not.  serve
+# refuses the switch under sshd, because an sshd AcceptEnv rule can
+# pass it from a client.
 TEST_LAYOUT_ENV = "LTVM_SERVE_TEST_LAYOUT"
+
+
+def test_layout(env: Mapping[str, str]) -> bool:
+    """Whether the test switch is on, and serve does not run under sshd."""
+    return env.get(TEST_LAYOUT_ENV) == "ready" and not env.get("SSH_CONNECTION")
 
 
 def _ltvm_version() -> str:
@@ -141,7 +153,14 @@ def _check_layout(env: Mapping[str, str]) -> None:
             "serve does not run as root",
             hint="Run serve as the dedicated ltvm user.",
         )
-    if env.get(TEST_LAYOUT_ENV) == "ready":
+    if env.get(TEST_LAYOUT_ENV) and env.get("SSH_CONNECTION"):
+        raise RemoteError(
+            "layout_unsupported",
+            f"{TEST_LAYOUT_ENV} is a test switch, and serve runs under sshd",
+            hint="The host owner removes the switch from the environment "
+            "of sshd.",
+        )
+    if test_layout(env):
         return
     from ltvm_pkg import rootless
 

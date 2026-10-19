@@ -270,10 +270,10 @@ def sync(env: Mapping[str, str], *, busy: bool = False) -> bool:
     the verb, and the journal keeps it for `serve reap`).  It never
     fails the request.
     """
-    from .serve import TEST_LAYOUT_ENV
+    from .serve import test_layout
 
     # An exec:// child in the tests gets none of the conftest patches.
-    if env.get(TEST_LAYOUT_ENV) == "ready":
+    if test_layout(env):
         return False
     argv = inhibit_argv(system())
     if argv is None:
