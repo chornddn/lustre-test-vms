@@ -147,6 +147,30 @@ def default_seconds(env: Mapping[str, str]) -> float:
     return serve_config.load(env).lease_hours * 3600
 
 
+def request_seconds(env: Mapping[str, str], text: str | None) -> float:
+    """The length of a lease that a remote request asks for.
+
+    text is the --lease or --for value, or None for the default length.
+    Raise bad_request for a length above max_lease_hours of serve.toml.
+    The default length is never above the max.
+    """
+    from . import serve_config
+
+    cfg = serve_config.load(env)
+    most = cfg.max_lease_hours * 3600
+    if not text:
+        return min(cfg.lease_hours * 3600, most)
+    seconds = parse_length(text)
+    if seconds > most:
+        raise RemoteError(
+            "bad_request",
+            f"the lease {text!r} is longer than the host allows "
+            f"(max_lease_hours = {cfg.max_lease_hours:g})",
+            hint="Ask for a shorter lease, and renew it before it ends.",
+        )
+    return seconds
+
+
 def parse_length(text: str) -> float:
     """``90``, ``30m``, ``4h`` or ``2d`` as seconds.  Raise bad_request."""
     from ltvm_pkg.vm_claim import parse_ttl
@@ -243,7 +267,7 @@ def on_request(
     env: Mapping[str, str],
     owner: str,
 ) -> None:
-    """Give a lease for a remote create.
+    """Give a lease for a remote create.  Check the length of a renew.
 
     The verb ignores --lease.  run() refuses it only for a local command.
 
@@ -256,7 +280,7 @@ def on_request(
         kind = VM
     elif argv[:2] == ["cluster", "create"]:
         kind = CLUSTER
-    if kind is None:
+    elif argv[:2] != ["lease", "renew"]:
         return
     sink = io.StringIO()
     try:
@@ -265,8 +289,11 @@ def on_request(
     except SystemExit:
         # The verb gets the same parse error and makes nothing.
         return
-    text = getattr(args, "lease", None)
-    seconds = parse_length(text) if text else default_seconds(env)
+    if kind is None:
+        # `lease renew`: the verb grants the lease.  Check its length.
+        request_seconds(env, getattr(args, "for_time", None))
+        return
+    seconds = request_seconds(env, getattr(args, "lease", None))
     if not getattr(args, "dry_run", False):
         grant(env, kind, args.name, owner, seconds)
 

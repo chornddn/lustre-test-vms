@@ -27,6 +27,7 @@ RAM_SHARE = 0.8
 DISK_SHARE = 0.25
 DISK_MAX_GB = 100.0
 LEASE_HOURS = 8.0
+MAX_LEASE_HOURS = 24.0
 
 
 @dataclass(frozen=True)
@@ -44,6 +45,7 @@ def defaults(facts: HostFacts) -> ServeConfig:
         max_ram_gb=round(facts.ram_gb * RAM_SHARE, 1),
         max_disk_gb=round(min(DISK_MAX_GB, facts.free_disk_gb * DISK_SHARE), 1),
         lease_hours=LEASE_HOURS,
+        max_lease_hours=MAX_LEASE_HOURS,
         ac_only=facts.laptop,
     )
 
@@ -174,6 +176,12 @@ def _questions(
             _positive,
             "Give a number above 0.",
         ),
+        (
+            "max_lease_hours",
+            "Longest lease in hours that a remote request can ask for",
+            _positive,
+            "Give a number above 0.",
+        ),
     ]
     if facts.laptop:
         questions.append(
@@ -235,6 +243,7 @@ CAP_FLAGS = {
     "max_ram_gb": "--max-ram-gb",
     "max_disk_gb": "--max-disk-gb",
     "lease_hours": "--lease-hours",
+    "max_lease_hours": "--max-lease-hours",
 }
 
 
@@ -282,6 +291,13 @@ def add_cap_args(parser: argparse.ArgumentParser) -> None:
         type=_arg(float),
         metavar="H",
         help="The default lease (default: 8)",
+    )
+    parser.add_argument(
+        "--max-lease-hours",
+        type=_arg(float),
+        metavar="H",
+        help="The longest lease that a remote request can ask for "
+        "(default: 24)",
     )
     parser.add_argument(
         "--ac-only",

@@ -30,6 +30,8 @@ class ServeConfig:
     max_ram_gb: float | None = None
     max_disk_gb: float | None = None
     lease_hours: float = 8.0
+    # The longest lease that a remote request can ask for.
+    max_lease_hours: float = 24.0
     ac_only: bool = False
 
 
@@ -41,6 +43,7 @@ _TYPES: dict[str, tuple[type, ...]] = {
     "max_ram_gb": (int, float),
     "max_disk_gb": (int, float),
     "lease_hours": (int, float),
+    "max_lease_hours": (int, float),
     "ac_only": (bool,),
 }
 

@@ -120,6 +120,41 @@ class TestCreateGivesALease:
         assert _leases(inproc) == {}
         assert _audit(inproc.home)[-1]["result"] == "bad_request"
 
+    @pytest.mark.parametrize(
+        "toml, lease, ok",
+        [
+            ("", "24h", True),
+            ("", "25h", False),
+            ("", "2d", False),
+            ("max_lease_hours = 48\n", "2d", True),
+            ("max_lease_hours = 48\n", "49h", False),
+        ],
+    )
+    def test_lease_above_the_max_is_refused(
+        self,
+        inproc: SimpleNamespace,
+        qemu: dict[str, Any],
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+        toml: str,
+        lease: str,
+        ok: bool,
+    ) -> None:
+        _serve_toml(inproc, toml)
+        rc = ltvm.run(
+            ["--host", "t", "create", "new-l1", "--lease", lease, "--json"]
+        )
+        if ok:
+            assert rc == 0
+            return
+        assert rc == 1
+        err = _err(capsys.readouterr().err)
+        assert err["code"] == "bad_request"
+        assert "max_lease_hours" in err["error"]
+        assert not qemu["launch"].called
+        assert _leases(inproc) == {}
+
     def test_dry_run_gives_no_lease(
         self,
         inproc: SimpleNamespace,
@@ -345,6 +380,7 @@ class TestRenew:
         capsys: Any,
     ) -> None:
         _grant(reaper, "vm", REMOTE_VM, 1)
+        _serve_toml(reaper, "max_lease_hours = 48\n")
         rc = ltvm.run(
             [
                 "--host",
@@ -442,6 +478,24 @@ class TestRenew:
             ["--host", "t", "lease", "renew", REMOTE_VM, "--for", "x", "--json"]
         )
         assert rc == 1
+        assert _leases(reaper)["vm:" + REMOTE_VM][1] == T0 + HOUR
+
+    def test_renew_above_the_max_is_refused(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _grant(reaper, "vm", REMOTE_VM, 1)
+        rc = ltvm.run(
+            ["--host", "t", "lease", "renew", REMOTE_VM]
+            + ["--for", "1000d", "--json"]
+        )
+        assert rc == 1
+        err = _err(capsys.readouterr().err)
+        assert err["code"] == "bad_request"
+        assert "24" in err["error"]
         assert _leases(reaper)["vm:" + REMOTE_VM][1] == T0 + HOUR
 
 

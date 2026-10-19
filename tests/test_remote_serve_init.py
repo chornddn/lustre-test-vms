@@ -91,10 +91,10 @@ class TestWizard:
         assert cfg.ac_only is False
 
     def test_laptop_gets_the_ac_question_with_yes_as_default(self) -> None:
-        cfg, out = _wizard(LAPTOP, "\n\n\n\n\n")
+        cfg, out = _wizard(LAPTOP, "\n\n\n\n\n\n")
         assert "AC power" in out
         assert cfg.ac_only is True
-        cfg, _ = _wizard(LAPTOP, "\n\n\n\nn\n")
+        cfg, _ = _wizard(LAPTOP, "\n\n\n\n\nn\n")
         assert cfg.ac_only is False
 
     def test_yes_accepts_all_defaults_and_asks_nothing(self) -> None:
@@ -202,7 +202,7 @@ class TestServeInitCommand:
     ) -> None:
         import os
 
-        assert init_cli([], "6\n\n\n4\nn\n") == 0
+        assert init_cli([], "6\n\n\n4\n\nn\n") == 0
         cfg = serve_config.load(os.environ)
         assert cfg.max_vcpus == 6
         assert cfg.max_ram_gb == 12.8

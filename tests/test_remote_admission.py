@@ -97,6 +97,7 @@ class TestServeConfig:
             "max_vcpus": 8,
             "max_disk_gb": 50.0,
             "lease_hours": 8.0,
+            "max_lease_hours": 24.0,
             "ac_only": False,
         }
 
