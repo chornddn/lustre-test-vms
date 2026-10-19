@@ -340,3 +340,147 @@ class TestListShowsLeases:
         node = next(v for v in data["vms"] if v["name"] == f"t/{REMOTE_NODE}")
         assert node["lease_expires"] == expires
         assert data["clusters"][0]["lease_expires"] == expires
+
+
+# ── job directories ──────────────────────────────────────
+
+
+def _job(home: Any, name: str, age_hours: float) -> Any:
+    """A job directory made `age_hours` before the fixed clock."""
+    import datetime
+
+    job = home / "jobs" / name
+    (job / "tree").mkdir(parents=True)
+    (job / "tree" / "file").write_bytes(b"x" * 9000)
+    created = datetime.datetime.fromtimestamp(
+        _leases_t.T0 - age_hours * 3600, datetime.timezone.utc
+    )
+    (job / "job.json").write_text(json.dumps({"created": created.isoformat()}))
+    return job
+
+
+OLD_JOB = "j-20270101-000000-0000000a"
+YOUNG_JOB = "j-20270101-000000-0000000b"
+USED_JOB = "j-20270101-000000-0000000c"
+
+
+class TestJobs:
+    @pytest.fixture(autouse=True)
+    def _home(
+        self, reaper: SimpleNamespace, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The owner commands run as the user of host `t`."""
+        monkeypatch.setenv("HOME", str(reaper.home))
+
+    def test_reap_deletes_old_jobs_that_no_vm_uses(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        from ltvm_pkg.vm_state import VMInfo
+
+        _job(reaper.home, OLD_JOB, 9)
+        _job(reaper.home, YOUNG_JOB, 7)
+        used = _job(reaper.home, USED_JOB, 9)
+        # The remote VM was deployed from the used job.
+        with patch("ltvm_pkg.vm_state.SOCKETS", reaper.sockets):
+            vm = VMInfo.load(REMOTE_VM)
+            vm.update_deploy(1, str(used / "tree"), "k")
+        _leases_t._grant(reaper, "vm", REMOTE_VM, 8)
+        rc = ltvm.run(["serve", "reap", "--json"])
+        assert rc == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["jobs_deleted"] == [OLD_JOB]
+        jobs = reaper.home / "jobs"
+        assert not (jobs / OLD_JOB).exists()
+        assert (jobs / YOUNG_JOB).exists()
+        assert (jobs / USED_JOB).exists()
+
+    def test_reap_keeps_old_jobs_that_name_a_remote_target(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        # `pull <job>` reads the results of the targets in job.json.
+        for name, target in ((USED_JOB, REMOTE_VM), (OLD_JOB, "gone-vm")):
+            job = _job(reaper.home, name, 9)
+            info = json.loads((job / "job.json").read_text())
+            info["targets"] = [target]
+            (job / "job.json").write_text(json.dumps(info))
+        _leases_t._grant(reaper, "vm", REMOTE_VM, 8)
+        assert ltvm.run(["serve", "reap", "--json"]) == 0
+        out = json.loads(capsys.readouterr().out)
+        assert out["jobs_deleted"] == [OLD_JOB]
+        assert (reaper.home / "jobs" / USED_JOB).exists()
+
+    def test_serve_toml_sets_the_age(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _leases_t._serve_toml(reaper, "lease_hours = 1\n")
+        _job(reaper.home, YOUNG_JOB, 2)
+        assert ltvm.run(["serve", "reap", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["jobs_deleted"] == [
+            YOUNG_JOB
+        ]
+
+    def test_reap_leaves_other_entries_in_the_jobs_directory(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        other = reaper.home / "jobs" / "owner-sentinel-notes"
+        other.mkdir(parents=True)
+        assert ltvm.run(["serve", "reap", "--json"]) == 0
+        assert json.loads(capsys.readouterr().out)["jobs_deleted"] == []
+        assert other.exists()
+
+    def test_disable_destroy_deletes_every_job(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _job(reaper.home, OLD_JOB, 9)
+        _job(reaper.home, YOUNG_JOB, 0)
+        rc, out = _serve(ltvm, capsys, "disable", "--destroy")
+        assert rc == 0
+        assert sorted(out["jobs_deleted"]) == [OLD_JOB, YOUNG_JOB]
+        assert list((reaper.home / "jobs").iterdir()) == []
+
+    def test_disable_alone_keeps_the_jobs(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _job(reaper.home, OLD_JOB, 9)
+        _serve(ltvm, capsys, "disable")
+        assert (reaper.home / "jobs" / OLD_JOB).exists()
+
+    def test_status_shows_the_job_disk_use(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _job(reaper.home, OLD_JOB, 9)
+        _job(reaper.home, YOUNG_JOB, 0)
+        rc, out = _serve(ltvm, capsys, "status")
+        assert out["jobs"]["count"] == 2
+        assert out["jobs"]["disk_gb"] > 0
+        capsys.readouterr()
+        ltvm.run(["serve", "status"])
+        assert "Jobs: 2" in capsys.readouterr().out

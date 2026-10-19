@@ -10,8 +10,9 @@ only that user can destroy the remote VMs without sudo.
   With --destroy, it also destroys each VM and cluster that remote
   requests made, and no VM of the owner.
 - `serve enable` sets ``enabled = true``.
+  It also deletes every job directory.
 - `serve status` shows the leases, the resource use against each cap,
-  and the most recent requests in the audit log.
+  the job directories, and the most recent requests in the audit log.
 """
 
 from __future__ import annotations
@@ -95,14 +96,23 @@ def cmd_disable(
     except RemoteError as e:
         return _emit_error(e.message, args.json, hint=e.hint, error_code=e.code)
     destroyed: list[dict[str, object]] = []
+    deleted: list[str] = []
     if args.destroy:
         destroyed = leases.reap(run, env, script=script, everything=True)
+        deleted = prune_jobs(env, everything=True)
     if args.json:
-        print(json.dumps({"enabled": False, "destroyed": destroyed}, indent=2))
+        doc = {
+            "enabled": False,
+            "destroyed": destroyed,
+            "jobs_deleted": deleted,
+        }
+        print(json.dumps(doc, indent=2))
     else:
         print("Remote use of this host is disabled.")
         for r in destroyed:
             print(f"{r['kind']} {r['name']}: {r['result']}")
+        for job in deleted:
+            print(f"job {job}: deleted")
     failed = any(r["result"] != "reaped" for r in destroyed)
     return EXIT_ERROR if failed else 0
 
@@ -175,7 +185,9 @@ def status(env: Mapping[str, str], recent: int) -> dict[str, object]:
     the disk only when a disk cap is set, so with no disk cap the used
     disk is null.
     """
-    from . import admission
+    from pathlib import Path
+
+    from . import admission, jobs
 
     try:
         cfg = serve_config.load(env)
@@ -185,6 +197,7 @@ def status(env: Mapping[str, str], recent: int) -> dict[str, object]:
     used = admission._as_json(admission.usage(env, disk=disk))
     if not disk:
         used["disk_gb"] = None
+    home = Path(env.get("HOME") or Path.home())
     return {
         "enabled": cfg.enabled,
         "lease_hours": cfg.lease_hours,
@@ -192,6 +205,10 @@ def status(env: Mapping[str, str], recent: int) -> dict[str, object]:
         "leases": _lease_rows(env),
         "used": used,
         "cap": admission._as_json(cfg),
+        "jobs": {
+            "count": len(jobs.all_jobs(home)),
+            "disk_gb": admission._allocated([jobs.root(home)]) / admission.GIB,
+        },
         "recent": _recent(env, recent),
     }
 
@@ -232,6 +249,10 @@ def print_status(data: Mapping[str, object]) -> None:
     for key in ("vcpus", "ram_gb", "disk_gb"):
         print(f"  {key}: {_show(used.get(key))} / {_show(cap.get(key))}")
     print()
+    job_use = data["jobs"]
+    assert isinstance(job_use, dict)
+    print(f"Jobs: {job_use['count']} ({job_use['disk_gb']:.2f} GB on disk)")
+    print()
     print("Recent requests:")
     entries = data["recent"]
     assert isinstance(entries, list)
@@ -257,3 +278,29 @@ def cmd_status(args: argparse.Namespace) -> int:
     else:
         print_status(data)
     return 0
+
+
+def prune_jobs(env: Mapping[str, str], *, everything: bool) -> list[str]:
+    """Delete old job directories.  Return the deleted job names.
+
+    `serve reap` deletes each job that is older than the default lease
+    length and that no remote VM uses.  `serve disable --destroy`
+    (everything) deletes each job.
+    """
+    import sys
+    from pathlib import Path
+
+    from . import jobs, leases
+
+    home = Path(env.get("HOME") or Path.home())
+    max_age: float | None = None
+    if not everything:
+        try:
+            max_age = leases.default_seconds(env)
+        except (OSError, ValueError) as e:
+            print(
+                f"warning: no job is deleted: {_bad_config(e).message}",
+                file=sys.stderr,
+            )
+            return []
+    return jobs.prune(home, now=leases.clock(), max_age=max_age)

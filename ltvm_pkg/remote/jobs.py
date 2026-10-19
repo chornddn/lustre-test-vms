@@ -220,3 +220,89 @@ def targets(home: Path, job: str) -> list[str] | None:
             return None
     found = info.get("targets", []) if isinstance(info, dict) else []
     return [t for t in found if isinstance(t, str)]
+
+
+# ── delete old jobs ──────────────────────────────────────
+
+
+def all_jobs(home: Path) -> list[Path]:
+    """Each job directory.  Other entries in the jobs directory stay."""
+    try:
+        entries = list(root(home).iterdir())
+    except FileNotFoundError:
+        return []
+    return sorted(
+        p
+        for p in entries
+        if is_job_name(p.name) and p.is_dir() and not p.is_symlink()
+    )
+
+
+def created(job: Path) -> float:
+    """When receive-tree made the job.  The directory mtime if unknown."""
+    try:
+        info = json.loads((job / JOB_FILE).read_text())
+        return datetime.datetime.fromisoformat(info["created"]).timestamp()
+    except (OSError, ValueError, KeyError, TypeError):
+        return job.lstat().st_mtime
+
+
+def in_use(home: Path) -> set[str]:
+    """The jobs that a remote VM was last deployed from, or that name a
+    remote VM or cluster in "targets" (add_target).
+
+    A remote VM exists while its lease (or the lease of its cluster)
+    is live, so its job stays until reap destroys the VM.
+    """
+    from ltvm_pkg.vm_state import VMInfo
+
+    from . import scope
+
+    top = os.path.realpath(root(home)) + os.sep
+    used: set[str] = set()
+    for name in VMInfo.all_names():
+        try:
+            vm = VMInfo.load(name)
+        except (ValueError, OSError, KeyError, TypeError):
+            continue
+        path = vm.build_path or ""
+        if scope.is_remote(vm.owner_id) and path.startswith(top):
+            used.add(path[len(top) :].split(os.sep, 1)[0])
+    # `pull <job>` reads the results of the targets that the job names.
+    for job in all_jobs(home):
+        for target in targets(home, job.name) or []:
+            try:
+                scope.target_nodes(target)
+            except RemoteError:
+                continue  # destroyed: it does not hold the job
+            used.add(job.name)
+            break
+    return used
+
+
+def prune(home: Path, *, now: float, max_age: float | None) -> list[str]:
+    """Delete the jobs older than max_age that no remote VM uses.
+
+    With max_age None, delete every job.  Return the deleted job names.
+    A job that cannot be deleted stays, with a warning on stderr.
+    """
+    import sys
+
+    from ltvm_pkg import podman_run
+
+    used = set() if max_age is None else in_use(home)
+    deleted: list[str] = []
+    for job in all_jobs(home):
+        if max_age is not None and (
+            job.name in used or now - created(job) < max_age
+        ):
+            continue
+        try:
+            podman_run.rmtree(job)
+        except OSError as e:
+            print(
+                f"warning: cannot delete job {job.name}: {e}", file=sys.stderr
+            )
+            continue
+        deleted.append(job.name)
+    return deleted

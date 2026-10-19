@@ -3161,17 +3161,23 @@ def _cmd_pull(args: argparse.Namespace) -> int:
 
 
 def _cmd_serve_reap(args: argparse.Namespace) -> int:
-    """`ltvm serve reap`: destroy what each expired lease names."""
+    """`ltvm serve reap`: destroy what each expired lease names.
+
+    Then delete the old job directories that no remote VM uses.
+    """
     import json
 
-    from ltvm_pkg.remote import leases
+    from ltvm_pkg.remote import leases, owner
 
     reaped = leases.reap(run, os.environ, script=str(Path(__file__).resolve()))
+    deleted = owner.prune_jobs(os.environ, everything=False)
     if args.json:
-        print(json.dumps({"reaped": reaped}, indent=2))
+        print(json.dumps({"reaped": reaped, "jobs_deleted": deleted}, indent=2))
     else:
         for r in reaped:
             print(f"{r['kind']} {r['name']}: {r['result']}")
+        for job in deleted:
+            print(f"job {job}: deleted")
     failed = any(str(r["result"]).startswith("exit") for r in reaped)
     return EXIT_ERROR if failed else 0
 
