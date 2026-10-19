@@ -303,6 +303,7 @@ class TestClusterScope:
                 "name": f"t/{REMOTE_CL}",
                 "owner_id": REMOTE_OWNER,
                 "members": [f"t/{REMOTE_NODE}"],
+                "lease_expires": None,
             }
         ]
         node = next(v for v in data["vms"] if v["name"] == f"t/{REMOTE_NODE}")

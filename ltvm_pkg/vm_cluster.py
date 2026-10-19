@@ -2355,6 +2355,10 @@ def cmd_cluster_list(args: argparse.Namespace) -> None:
             }
         )
 
+    lease = vm_commands.list_lease
+    if lease is not None:
+        for c in clusters:
+            c["lease_expires"] = lease("cluster", c["cluster"])
     if use_json:
         print(json.dumps({"clusters": clusters}, indent=2))
         return
@@ -2363,6 +2367,8 @@ def cmd_cluster_list(args: argparse.Namespace) -> None:
 
 def print_cluster_list(clusters: list[dict[str, Any]]) -> None:
     """Print the `cluster list --json` rows as text."""
+    from .vm_commands import lease_field
+
     if not clusters:
         print("(no clusters)")
         return
@@ -2374,7 +2380,10 @@ def print_cluster_list(clusters: list[dict[str, Any]]) -> None:
             f"{n['name']}({'+'.join(n['roles'])},{n['state']})"
             for n in c["nodes"]
         )
-        print(f"{c['cluster']}: {summary} owner={c['owner_id'] or '-'}")
+        print(
+            f"{c['cluster']}: {summary} owner={c['owner_id'] or '-'}"
+            f"{lease_field(c.get('lease_expires'))}"
+        )
 
 
 def cmd_cluster_status(args: argparse.Namespace) -> None:

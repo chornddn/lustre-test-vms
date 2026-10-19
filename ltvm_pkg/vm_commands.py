@@ -1948,6 +1948,19 @@ def _cluster_rows() -> list[dict[str, Any]]:
 # remote requests made.  It gets the owner ID of a VM.  None shows all.
 list_filter: Callable[[str | None], bool] | None = None
 
+# `serve` sets this so that a remote `list` and `cluster list` show the
+# lease of each VM and cluster.  It gets ("vm" or "cluster", name) and
+# returns the expiry time (epoch seconds), or None for no lease.  With
+# None here, the output has no lease field.
+list_lease: Callable[[str, str], float | None] | None = None
+
+
+def lease_field(expires: float | None) -> str:
+    """The ` lease=<time>` field of the text list.  Empty for no lease."""
+    if not expires:
+        return ""
+    return " lease=" + time.strftime("%Y-%m-%dT%H:%M", time.localtime(expires))
+
 
 def cmd_list(args: argparse.Namespace) -> None:
     total_vcpus = 0
@@ -2033,6 +2046,15 @@ def cmd_list(args: argparse.Namespace) -> None:
     member_of = {m: c["name"] for c in clusters for m in c["members"]}
     for e in entries:
         e["cluster"] = member_of.get(e["name"])
+    if list_lease is not None:
+        for c in clusters:
+            c["lease_expires"] = list_lease("cluster", c["name"])
+        for e in entries:
+            # A cluster node has the lease of its cluster.
+            own = list_lease("vm", e["name"])
+            e["lease_expires"] = own or (
+                list_lease("cluster", e["cluster"]) if e["cluster"] else None
+            )
 
     host_cpus = os.cpu_count() or 1
     host_mem_mb = _host_total_mem_mb()
@@ -2109,6 +2131,7 @@ def print_list(data: dict[str, Any]) -> None:
             f"{os_id:<8} {disks:<14} mem={mem:<12} "
             f"boot={boot:<10} deploy={deploy:<10} by={creator} "
             f"owner={owner_id}{_claim_field(e.get('claim'))}{cluster}"
+            f"{lease_field(e.get('lease_expires'))}"
         )
     total_rss = totals["mem_rss_mb"]
     budget = totals["mem_budget"]

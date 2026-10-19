@@ -461,6 +461,7 @@ def inproc(
     monkeypatch.setenv("LTVM_TELEMETRY", "0")
     monkeypatch.setattr(priv, "_sudo_forbidden", False)
     monkeypatch.setattr(vm_commands, "list_filter", None)
+    monkeypatch.setattr(vm_commands, "list_lease", None)
     monkeypatch.setattr(vm_state, "VM_DIR", tmp_path)
     monkeypatch.setattr(rootless, "readiness", lambda: rootless.Readiness())
     auth = tmp_path / "auth"

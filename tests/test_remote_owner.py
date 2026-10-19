@@ -273,3 +273,70 @@ class TestStatus:
         rc, out = _serve(ltvm, capsys, "status")
         assert rc == 0
         assert (out["enabled"], out["leases"], out["recent"]) == (False, [], [])
+
+
+class TestListShowsLeases:
+    def test_list_shows_the_lease_expiry_of_each_remote_vm(
+        self,
+        inproc: SimpleNamespace,
+        qemu: dict[str, Any],
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        assert (
+            ltvm.run(["--host", "t", "create", "new-l5", "--lease", "2h"]) == 0
+        )
+        capsys.readouterr()
+        assert ltvm.run(["--host", "t", "list", "--json"]) == 0
+        vms = {
+            vm["name"]: vm for vm in json.loads(capsys.readouterr().out)["vms"]
+        }
+        assert vms["t/new-l5"]["lease_expires"] == _leases_t.T0 + 2 * 3600
+        # A VM from before leases existed has no lease.
+        assert vms[f"t/{REMOTE_VM}"]["lease_expires"] is None
+        assert ltvm.run(["--host", "t", "list"]) == 0
+        line = next(
+            ln
+            for ln in capsys.readouterr().out.splitlines()
+            if ln.startswith("t/new-l5 ")
+        )
+        assert "lease=" in line
+
+    def test_local_list_has_no_lease_field(
+        self, inproc: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        assert ltvm.run(["list", "--json"]) == 0
+        vms = json.loads(capsys.readouterr().out)["vms"]
+        assert all("lease_expires" not in vm for vm in vms)
+
+    def test_cluster_list_and_list_show_the_cluster_lease(
+        self,
+        icl: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        from tests.test_remote_clusters import (
+            REMOTE_CL,
+            REMOTE_NODE,
+            _save_cluster,
+        )
+        from tests.test_remote_lifecycle import REMOTE_OWNER
+
+        _save_cluster(icl.sockets, REMOTE_CL, REMOTE_NODE, REMOTE_OWNER)
+        _leases_t._grant(icl, "cluster", REMOTE_CL, 3)
+        expires = _leases_t.T0 + 3 * 3600
+        capsys.readouterr()
+        assert ltvm.run(["--host", "t", "cluster", "list", "--json"]) == 0
+        rows = json.loads(capsys.readouterr().out)["clusters"]
+        assert [(c["cluster"], c["lease_expires"]) for c in rows] == [
+            (f"t/{REMOTE_CL}", expires)
+        ]
+        assert ltvm.run(["--host", "t", "cluster", "list"]) == 0
+        assert "lease=" in capsys.readouterr().out
+        assert ltvm.run(["--host", "t", "list", "--json"]) == 0
+        data = json.loads(capsys.readouterr().out)
+        node = next(v for v in data["vms"] if v["name"] == f"t/{REMOTE_NODE}")
+        assert node["lease_expires"] == expires
+        assert data["clusters"][0]["lease_expires"] == expires

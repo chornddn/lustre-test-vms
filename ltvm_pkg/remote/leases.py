@@ -157,6 +157,23 @@ def parse_length(text: str) -> float:
         raise RemoteError("bad_request", str(e)) from None
 
 
+def show_in_list(env: Mapping[str, str]) -> None:
+    """Make `list` and `cluster list` show the lease of each VM and cluster."""
+    from ltvm_pkg import vm_commands
+
+    try:
+        leases = load_all(env)
+    except (OSError, ValueError, KeyError, TypeError):
+        # A bad lease file must not stop the request.  reap reports it.
+        leases = {}
+
+    def expires(kind: str, name: str) -> float | None:
+        lease = leases.get(f"{kind}:{name}")
+        return lease.expires if lease else None
+
+    vm_commands.list_lease = expires
+
+
 # ── lease renew ──────────────────────────────────────────
 
 

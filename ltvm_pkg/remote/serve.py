@@ -312,6 +312,7 @@ def serve_stdio(
 
     priv.forbid_sudo()
     scope.apply(key)
+    leases.show_in_list(env)
     stdout.write(protocol.reply_line(_ltvm_version(), None) + "\n")
     stdout.flush()
     if power.makes_vm(to_run):
