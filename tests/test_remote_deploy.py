@@ -196,6 +196,16 @@ class TestUnsafeStreams:
             [("hard", "h", "/etc/passwd")],
             [("fifo", "f", "")],
             [("file", "a", "x"), ("sym", "a", "b")],
+            # Each link passes a check of its member name.  Through the
+            # earlier links, tree/q resolves to the serve home.
+            [
+                ("sym", "a", "."),
+                ("sym", "a/l", ".."),
+                ("sym", "a/p", "l/.."),
+                ("sym", "a/q", "p/.."),
+            ],
+            # A later link moves an earlier link out of the tree.
+            [("sym", "up", "d/.."), ("sym", "d", ".")],
         ],
     )
     def test_unsafe_stream_is_refused_and_leaves_no_job(
@@ -215,6 +225,20 @@ class TestUnsafeStreams:
         assert resp.error is None
         tree = Path(json.loads(resp.stdout)["tree"])
         assert os.readlink(tree / "lustre" / "b.c") == "a.c"
+        assert (tree / "lustre" / "b.c").read_text() == "a"
+
+    def test_link_up_to_a_place_inside_the_tree_is_kept(
+        self, child: SimpleNamespace
+    ) -> None:
+        resp = _receive(
+            _tar(
+                ("file", "lnet/a.c", "a"),
+                ("sym", "lustre/b.c", "../lnet/a.c"),
+                ("sym", "here", "."),
+            )
+        )
+        assert resp.error is None
+        tree = Path(json.loads(resp.stdout)["tree"])
         assert (tree / "lustre" / "b.c").read_text() == "a"
 
     def test_garbage_stream_is_a_bad_request(

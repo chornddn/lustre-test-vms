@@ -14,6 +14,11 @@ absolute name, a ".." component, a symbolic link whose target is outside
 the tree, a hard link or a device.  It also refuses to write through a
 symbolic link.  A refused stream leaves no job directory.
 
+A link target can go through other links of the stream.  A later link
+can also change where an earlier link goes.  So after the unpack, the
+check resolves each link in the tree to its real path.  Each real path
+must be in the tree.
+
 A verb takes a job tree only as its canonical path, which is the path
 that `receive-tree` printed (job_tree).  So ".." and symbolic links in a
 path argument give path_refused.
@@ -96,6 +101,16 @@ def _inside(tree: Path, path: Path) -> bool:
     return real == str(tree) or real.startswith(str(tree) + os.sep)
 
 
+def _check_links(tree: Path) -> None:
+    """Refuse the tree if a link in it resolves to a path outside it."""
+    for top, dirs, files in os.walk(tree):
+        for name in dirs + files:
+            path = Path(top) / name
+            if path.is_symlink() and not _inside(tree, path):
+                rel = path.relative_to(tree)
+                raise _refuse(f"link {str(rel)!r} points outside the tree")
+
+
 def _unpack(stream: IO[bytes], tree: Path) -> tuple[int, int]:
     """Unpack the tar stream into tree.  Return (files, bytes)."""
     files = size = 0
@@ -133,6 +148,7 @@ def _unpack(stream: IO[bytes], tree: Path) -> tuple[int, int]:
                 size += member.size
             else:
                 raise _refuse(f"{rel!r} is not a file, a directory or a link")
+    _check_links(tree)
     return files, size
 
 
