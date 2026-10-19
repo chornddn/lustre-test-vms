@@ -173,6 +173,8 @@ Each side pins the other. No person edits `authorized_keys` by hand.
 
    `--from` is the address that the host sees for the controller. By default, `host add` uses the local address of the route to the host. Change it if a NAT or a VPN is in the path.
 
+   `--from` takes one IP address or one CIDR range, such as `100.64.0.9` or `100.64.0.0/24`. It refuses a wildcard (`*`, `?`), a host name, a `!` pattern and a list. It also refuses a CIDR range with host bits set, such as `100.64.0.9/24`.
+
 3. Run that command on the host. `serve authorize` adds one line to `~ltvm/.ssh/authorized_keys` (directory 0700, file 0600). The restrict options are always there:
 
    ```
@@ -227,6 +229,7 @@ On the controller, a remote VM has the name `<host>/<vm>`. `list`, `cluster list
 - `create --owner` gives `bad_request`.
 - A `passthrough` NIC gives `needs_root`.
 - Path options give `path_refused`: `create --image`, `vm crash-collect --outdir` and `--mod-dir`, `suite run --results-dir`, `suite collect --dest` and `--results-dir`, `--zfs-source`, `--url`, and a `--lustre-tree` that is not a job tree.
+- `build all`, `build kernel` and `build image` with no `--lustre-tree` give `path_refused`. Locally these verbs build the current directory. On the host, that directory is the home of `ltvm`. These builds use no tree, so they pass: `build image --no-lustre`, and a kernel build of a Debian or kernel.org target.
 - `vm console-log --follow` gives `verb_refused`, because `serve` does not stream that output.
 - `vm crash-collect` always writes to `VM_DIR/crashes/<vm>/` on the host. `vm dk-collect` always writes to `VM_DIR/dk/<vm>/`.
 - A build or a deploy gives `podman_unsafe` when podman on a Linux or WSL2 host is not rootless. On macOS, podman runs containers in the podman machine VM, so `serve` accepts it.
@@ -244,11 +247,13 @@ ltvm --host lab1 vm exec co1-single lctl dl
 The build runs on the host, in the build container of the host. The controller and the host can have different architectures.
 
 1. The controller makes a gzip tar stream of the tree. The stream holds the files from `git ls-files --cached --others --exclude-standard`, without deleted files and submodule directories. It also holds a `LUSTRE-VERSION-FILE` that the controller makes from `git describe`. It does not hold `.git`.
-2. `serve` unpacks the stream into a new job directory, `~ltvm/jobs/j-YYYYMMDD-HHMMSS-<hex>/tree/`.
+2. `serve` unpacks the stream into a new job directory, `~ltvm/jobs/j-YYYYMMDD-HHMMSS-<hex>/tree/`. It refuses the stream with `path_refused` for an absolute name, a `..` component, a hard link, a device or a `.git` entry. It also refuses a symbolic link whose real path is outside the tree. A link can go through other links of the stream. So `serve` resolves each link after the last member.
 3. The controller replaces `--lustre-tree` (or `--build`) with the job tree, and `serve` runs the verb.
 
 The controller sends the tree for `deploy-lustre`, `cluster deploy`, and `build all|kernel|image` with `--lustre-tree`. With no tree option, `deploy-lustre` and `cluster deploy` send the current directory.
 
+- The host runs no code from the tree outside the build container. It runs no `git` on a job tree and does not run `LUSTRE-VERSION-GEN`. The version comes from the `LUSTRE-VERSION-FILE` in the stream.
+- The build container can write links into the job tree. So the host opens its stamp, lock and version files in the tree with `O_NOFOLLOW`. A staging path with a link in it, or a staging link that resolves out of the staging, stops the build.
 - The tree must be a git checkout. A tree that is not a git checkout gives `bad_request` on the controller. So a remote deploy of a release tarball or of the Lustre that `target fetch` bundles is not possible.
 - Each deploy sends the full tree and makes a new job. Each job has its own ccache. So each deploy is a full build on the host. See fork F2 in [Design decisions](#design-decisions).
 - The controller prints the output of a verb only when the verb ends. A deploy shows nothing while it builds.
@@ -286,6 +291,7 @@ Each VM or cluster that a remote `create` or `cluster create` makes gets a lease
 
 - The default lease is `lease_hours` in `serve.toml` (8 hours by default). `--lease TIME` on `create` or `cluster create` sets a different length (`30m`, `4h`, `2d`). `--lease` without `--host` is an error.
 - `ltvm --host lab1 lease renew <vm|cluster> [--for TIME]` makes the lease end TIME from now. The name of a cluster node renews the lease of its cluster.
+- A `--lease` or `--for` value above `max_lease_hours` in `serve.toml` (24 hours by default) gives `bad_request`. The message names the max. The default lease is never longer than the max.
 - `serve` writes the lease before the verb runs. So a create that fails still has a lease. Reap drops a lease when its VM does not exist.
 - A cluster has one lease. Its nodes have no lease of their own.
 - A `create` on a remote VM that exists resets the lease length. `--dry-run` gives no lease.
@@ -298,6 +304,8 @@ A reap job runs `ltvm serve reap` as the dedicated user every 5 minutes:
 - Linux and WSL2: `/etc/systemd/system/ltvm-serve-reap.timer` and `.service` (`OnBootSec=60s`, `OnUnitActiveSec=300s`). WSL2 needs `systemd=true`.
 
 For each expired lease, reap runs the scope checks of `serve`, then `destroy` or `cluster destroy`, and writes one audit line. A failed destroy keeps the lease, and the next reap tries again.
+
+Reap also destroys a remote VM or cluster with no lease when it is older than `lease_hours`. The age comes from the create time of the VM, or of the oldest node of a cluster. A VM with no create time stays until `serve disable --destroy`. Reap never destroys a cluster node by itself.
 
 Reap also deletes old jobs. A job goes when it is older than `lease_hours` and no remote VM or cluster that exists uses it. A job delete writes no audit line.
 
@@ -313,6 +321,7 @@ Leases are separate from claims (`ltvm claim`). See fork F1 in [Design decisions
 | RAM of all remote VMs | `--max-ram-gb GB` | 80 % of the physical RAM |
 | Disk | `--max-disk-gb GB` | the smaller of 100 GB and 25 % of the free disk |
 | Default lease | `--lease-hours H` | 8 |
+| Longest lease that a request can ask for | `--max-lease-hours H` | 24 |
 | New VMs only on AC power | `--ac-only`, `--no-ac-only` | on for a laptop, off for a desktop |
 
 `--yes` accepts all defaults. `--json` asks nothing. `install --serve` gives the same flags to the wizard. The file is `~ltvm/.config/ltvm/serve.toml`:
@@ -323,14 +332,22 @@ max_vcpus = 12
 max_ram_gb = 25.6
 max_disk_gb = 100.0
 lease_hours = 8.0
+max_lease_hours = 24.0
 ac_only = true
 ```
 
-Admission control checks only `create` and `cluster create`:
+`install --serve` and `serve init` always write this file. When the file is missing, `serve` refuses every request with `bad_config`. `serve disable` and `serve enable` still work, and they write a new file.
+
+Admission control checks `create` and `cluster create` against all caps:
 
 - Requested: `--vcpus` and `--mem` for each new VM. With no `--mem`, the default memory of the target. Disk: 1 GB for each new VM, because the disk files are sparse. A remote VM that exists asks for nothing.
-- Used: all remote VMs, both running and stopped. Disk used is the allocated blocks of the remote VM disks. It also includes `~ltvm/jobs` and the artifacts directory. `serve` counts the disk only when the owner sets a disk cap.
+- Used: all remote VMs, both running and stopped. Disk used is the allocated blocks of the remote VM disks. It also includes `~ltvm/jobs`, the artifacts directory, and `VM_DIR/crashes`, `VM_DIR/dk` and `VM_DIR/suites`. `serve` counts the disk only when the owner sets a disk cap.
 - A resource is over its cap when used plus requested is more than the cap.
+
+The disk cap also applies to the verbs that write to the disk but make no VM:
+
+- `build all|container|kernel|image|zfs|mofed-kmods`, `target fetch`, `vm snapshot`, `vm crash-collect` and `vm dk-collect` give `over_cap` when the used disk is at the cap.
+- `receive-tree` gives `over_cap` when the used disk is at the cap. The unpack stops before a file goes above the cap. Then `serve` removes the job.
 
 There is no cap on the number of VMs. For example, with a vCPU cap of 80, the controller can make 80 VMs with 1 vCPU each, or 10 VMs with 8 vCPUs each.
 
@@ -382,7 +399,7 @@ sudo -u ltvm -H ltvm serve init              # change the caps
 
 - `serve disable` writes `enabled = false` and keeps the caps. `serve` then refuses every request with `disabled`, the probe of `host list` too.
 - `serve disable --destroy` destroys each VM and cluster with a lease, and each remote VM with no lease. Then it deletes all jobs. A request that started before `disable` can still finish. Run `disable --destroy` again to remove what it made.
-- A `serve.toml` that `serve` cannot read refuses every request with `bad_config`.
+- A `serve.toml` that `serve` cannot read, or that is missing, refuses every request with `bad_config`.
 - To remove a controller, delete its line in `~ltvm/.ssh/authorized_keys`.
 
 `serve` writes one audit line for each request to `~ltvm/.local/state/ltvm/serve.log`. Each line has the time, the key fingerprint, the verb, the arguments and the result. `serve` opens the file in append mode, with mode 0600. A verb that kills `serve` leaves no line.
@@ -418,7 +435,7 @@ Each refusal has a stable code. With `--json`, the code is in the `code` field a
 | `timed_out` | The host did not finish the request in time. | Check `LTVM_REMOTE_TIMEOUT`. |
 | `host_key_mismatch` | The host key is not the key that the controller pinned. | Stop. Ask the host owner. |
 | `over_cap` | The request goes above a cap that the host owner set. | Ask for less, or use local VMs. |
-| `bad_config` | `serve` cannot read `serve.toml`. | The owner fixes the file. |
+| `bad_config` | `serve` cannot read `serve.toml`, or the file is missing. | The owner fixes the file, or runs `ltvm serve init`. |
 | `on_battery` | The host runs on battery, and the owner allows new VMs only on AC power. | Use local VMs, or wait. |
 | `podman_unsafe` | podman on the host is not rootless and not in a VM. | The owner fixes podman. |
 
@@ -438,6 +455,7 @@ Other limits:
 - **A key with no passphrase.** A person who steals the controller key can use the host. The allow-list, the scope rules and the caps still apply. The key works only from the `from=` address.
 - **Root daemons stay.** socket_vmnet and dnsmasq run as root on macOS. The `ltvm` user does not change that.
 - **No automatic update.** The controller never updates the host, because an update would let the controller replace the code that does the checks. A protocol version change stops all remote use until the owner updates the host.
+- **The test switch.** For the exec:// test hosts, `LTVM_SERVE_TEST_LAYOUT=ready` turns off the layout check and the power guard. The `serve` command refuses a request that has the switch under sshd (`SSH_CONNECTION` is set). Do not add `LTVM_*` to `AcceptEnv` in `sshd_config`.
 - **Guests share one root password.** Only the host reaches the guest subnet. Do not route the guest subnet to other machines.
 
 ## Design decisions
@@ -454,8 +472,10 @@ These items are not proven on a real host yet. The end-to-end test on a macOS ho
 - `install --serve` did not make a real user. No real launchd job or systemd timer ran.
 - No real Lustre build, deploy, `pull` or `lctl dk` ran through `serve`. The tests replace the verb handlers.
 - The power guard did not run on a real laptop. The lid-close behavior and the polkit rule are from documentation only.
-- The controller builds the tree stream in memory, with no size limit. `serve` does not check the disk cap while a stream arrives.
-- `serve` does not check `build *`, `target fetch` and `receive-tree` against the disk cap.
+- The controller builds the tree stream in memory, with no size limit.
+- There is no isolation between controllers. Each paired controller has its own owner ID, but the scope check accepts any `remote:` owner. So any paired controller can see, use and destroy each remote VM and cluster on the host.
+- A disk-writing verb that starts below the disk cap can go above it. `serve` checks the cap only before the verb runs.
+- The build container can leave a link in a job tree that points outside the tree. The host reads some files of the tree after a build, such as `configure`, `config.h` and the kernel patch series. Those reads can follow such a link. The content goes to the build, not to the controller.
 - Two parallel creates can both pass the cap check. `serve` takes no lock.
 - A cluster cannot span hosts. The guest subnet is private to each host.
 - The controller does not stream verb output. A long deploy prints only at the end.

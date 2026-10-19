@@ -737,15 +737,21 @@ ltvm --host lab1 destroy co1-single
   Each deploy is a full build on the host, and the controller prints the
   output only at the end. A deploy takes as long as a full local build,
   with no output. That delay is not a hang.
+- `build all`, `build kernel` and `build image` on a host need
+  `--lustre-tree <local tree>`. Without it they give `path_refused`.
+- A tree with a `.git` entry, or with a link that points out of the
+  tree, gives `path_refused`. The normal tree stream has neither.
 
 ### Leases
 
 Each remote VM or cluster gets a lease. When the lease expires, the host
 destroys it, and its data goes with it. The default is the lease length
 that the owner set, usually 8 hours. `list --json` shows `lease_expires`.
+A lease can be at most `max_lease_hours`, usually 24 hours. A longer
+`--lease` or `--for` gives `bad_request`. Renew the lease instead.
 
 ```bash
-ltvm --host lab1 create co1-single --lease 2d     # set the length at create
+ltvm --host lab1 create co1-single --lease 20h    # set the length at create
 ltvm --host lab1 lease renew co1-single --for 4h  # end 4 h from now
 ```
 
@@ -775,7 +781,7 @@ With `--json`, a refusal is a JSON envelope on stderr. The error code is in
 
 | `code` | Action |
 |---|---|
-| `over_cap` | Read `requested`, `used` and `cap`. Ask for fewer vCPUs, less memory or fewer nodes. If the smaller request does not fit the task, use local VMs. |
+| `over_cap` | Read `requested`, `used` and `cap`. Ask for fewer vCPUs, less memory or fewer nodes. If the smaller request does not fit the task, use local VMs. A full disk refuses builds, `receive-tree`, snapshots and collects too. Destroy your old remote VMs, or use local VMs. |
 | `disabled` | The owner turned off remote use. Use local VMs. Do not retry. |
 | `unreachable` | The host is off, asleep or off the network. Try one time more. Then use local VMs. |
 | `on_battery` | The owner allows new VMs only on AC power. Use local VMs. |
@@ -783,7 +789,7 @@ With `--json`, a refusal is a JSON envelope on stderr. The error code is in
 | `version_mismatch` | Tell the user. The hint names the side that needs `ltvm update`. Do not update the host. |
 | `host_key_mismatch` | Stop. Tell the user. Do not remove the pinned key. |
 | `vm_not_found`, `name_in_use` | The name is not one of your remote VMs. Use a different name. |
-| `layout_unsupported`, `needs_root`, `podman_unsafe`, `bad_config` | The host owner must fix the host. Tell the user, and use local VMs. |
+| `layout_unsupported`, `needs_root`, `podman_unsafe`, `bad_config` | The host owner must fix the host. A missing `serve.toml` gives `bad_config` too. Tell the user, and use local VMs. |
 
 A move to local VMs is a normal result, not a failure. Tell the user which
 host refused the request and why. `docs/REMOTE_HOSTS.md` lists every code.
