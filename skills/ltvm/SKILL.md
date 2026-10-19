@@ -1,6 +1,6 @@
 ---
 name: ltvm
-description: This skill should be used to get a Lustre test VM and put a build on it with ltvm - "create a test VM", "spin up a Lustre VM", "deploy my tree to a VM", "build Lustre for the VM", "mount Lustre and run sanity", "make a two-node cluster", "my VM is hung", "collect the crash from that VM", "the VM kernel does not match my build". Covers VM and cluster lifecycle, deploying a Lustre tree, artifacts, and the root rules.
+description: This skill should be used to get a Lustre test VM and put a build on it with ltvm - "create a test VM", "spin up a Lustre VM", "deploy my tree to a VM", "build Lustre for the VM", "mount Lustre and run sanity", "make a two-node cluster", "my VM is hung", "collect the crash from that VM", "the VM kernel does not match my build", "run it on the lab host", "use --host", "the remote host refused with over_cap", "pull the results from the host". Covers VM and cluster lifecycle, deploying a Lustre tree, artifacts, the root rules, and VMs on remote hosts (--host, leases, pull, and the fallback to local VMs).
 version: 0.1.0
 ---
 
@@ -703,6 +703,90 @@ its claims end when it exits.  Another agent exports `LTVM_OWNER_ID` and
 is a fresh shell), or passes `--owner`/`--pid`; `--ttl 4h` ends a claim
 after a while regardless.  A human's claims (`user:<name>`) last until
 released, and a hand deploy never claims.
+
+## Remote hosts
+
+A remote host is a different machine that runs VMs for this machine, the
+controller. The host owner set it up with `ltvm install --serve`. A user
+of this machine added it with `ltvm host add`. `docs/REMOTE_HOSTS.md` has the setup.
+
+```bash
+ltvm host list                                   # status ok, or an error code
+ltvm --host lab1 create co1-single --mem 4096 --lease 4h
+ltvm --host lab1 deploy-lustre co1-single --lustre-tree <tree> --mount
+ltvm --host lab1 vm exec co1-single lctl dl
+ltvm --host lab1 suite run co1-single sanity --only '39r 42a' --wait
+ltvm --host lab1 pull co1-single suite           # to ./ltvm-pull/lab1/suite/
+ltvm --host lab1 destroy co1-single
+```
+
+- Put `--host` before the verb. `ltvm list --host lab1` is an error.
+  `LTVM_HOST=lab1` sends every verb except `serve` and `host`. Prefer an
+  explicit `--host`, so that each command shows where it runs.
+- On the controller, a remote VM has the name `lab1/<vm>`. A name with the
+  prefix of a registered host also selects that host:
+  `ltvm pull lab1/co1-single crash`.
+- The host refuses a verb that is not on its allow-list (`verb_refused`).
+  You cannot use `cluster ssh`, `build lustre`, `vm set`, `claim`,
+  `doctor` or a path option such as `--results-dir`, `--outdir`,
+  `--mod-dir` or `--image`. Plain `ssh` to a remote guest does not work.
+  Use `vm exec` or `cluster exec`.
+- You see and change only the VMs that remote requests made. A VM of the
+  host owner gives `vm_not_found`. Do not try to work around it.
+- A deploy sends the tree to the host. The tree must be a git checkout.
+  Each deploy is a full build on the host, and the controller prints the
+  output only at the end. A deploy takes as long as a full local build,
+  with no output. That delay is not a hang.
+
+### Leases
+
+Each remote VM or cluster gets a lease. When the lease expires, the host
+destroys it, and its data goes with it. The default is the lease length
+that the owner set, usually 8 hours. `list --json` shows `lease_expires`.
+
+```bash
+ltvm --host lab1 create co1-single --lease 2d     # set the length at create
+ltvm --host lab1 lease renew co1-single --for 4h  # end 4 h from now
+```
+
+Renew the lease before a long run starts, not after. A lease that expires
+during a suite destroys the VM and the results. Pull the results that you
+need before the lease ends. Destroy the VMs when the task ends. Do not
+let the lease clean up after you.
+
+### Results
+
+`pull <vm|cluster|job> <suite|crash|dk|console> [--dest DIR]` copies one
+result type into DIR. The default DIR is `./ltvm-pull/<host>/<what>/`.
+Make the results on the host first:
+
+- `suite`: `suite run --wait` or `suite collect`.
+- `crash`: `vm crash-collect <vm>`. The host chooses the directory.
+- `dk`: `vm dk-collect <vm>` runs `lctl dk` in the guest. This command
+  empties the debug buffer of the guest.
+- `console`: no step. QEMU writes the log.
+
+When there are no results, `pull` prints "no <what> results" and exits 0.
+
+### When to use local VMs instead
+
+With `--json`, a refusal is a JSON envelope on stderr. The error code is in
+`code`, the message is in `error`, and the exit status is 1. Read `code`:
+
+| `code` | Action |
+|---|---|
+| `over_cap` | Read `requested`, `used` and `cap`. Ask for fewer vCPUs, less memory or fewer nodes. If the smaller request does not fit the task, use local VMs. |
+| `disabled` | The owner turned off remote use. Use local VMs. Do not retry. |
+| `unreachable` | The host is off, asleep or off the network. Try one time more. Then use local VMs. |
+| `on_battery` | The owner allows new VMs only on AC power. Use local VMs. |
+| `timed_out` | The request ran longer than `LTVM_REMOTE_TIMEOUT` (default 8 h). Check the VM with `vm console-log`. |
+| `version_mismatch` | Tell the user. The hint names the side that needs `ltvm update`. Do not update the host. |
+| `host_key_mismatch` | Stop. Tell the user. Do not remove the pinned key. |
+| `vm_not_found`, `name_in_use` | The name is not one of your remote VMs. Use a different name. |
+| `layout_unsupported`, `needs_root`, `podman_unsafe`, `bad_config` | The host owner must fix the host. Tell the user, and use local VMs. |
+
+A move to local VMs is a normal result, not a failure. Tell the user which
+host refused the request and why. `docs/REMOTE_HOSTS.md` lists every code.
 
 ## Flags that apply everywhere
 
