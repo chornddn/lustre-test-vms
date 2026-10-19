@@ -211,7 +211,7 @@ class TestClusterDryRun:
 def _send(command: str) -> Any:
     from ltvm_pkg.remote import hosts
 
-    return hosts.transport_for("t").send(command)  # type: ignore[attr-defined]
+    return hosts.transport_for("t").send(command)
 
 
 class TestClusterScope:

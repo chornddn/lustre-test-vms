@@ -50,6 +50,14 @@ Consume = Callable[[IO[bytes]], None]
 class Transport(Protocol):
     def request(self, argv: list[str], data: bytes = b"") -> Response: ...
 
+    def send(self, command: str, data: bytes = b"") -> Response:
+        """Send one command string, as an SSH client sends it.
+
+        request() quotes argv into this string.  data goes to the stdin
+        of serve after the handshake line.
+        """
+        ...
+
     def stream(self, argv: list[str], consume: Consume) -> Response:
         """Send argv.  Give the verb stdout to consume, as a stream.
 
