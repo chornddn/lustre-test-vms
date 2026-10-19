@@ -45,7 +45,16 @@ from typing import IO, Any
 
 from ltvm_pkg import priv
 
-from . import admission, allowlist, audit, jobs, podman, protocol, scope
+from . import (
+    admission,
+    allowlist,
+    audit,
+    jobs,
+    leases,
+    podman,
+    protocol,
+    scope,
+)
 from .protocol import RemoteError
 from .tree import RECEIVE_TREE
 
@@ -263,6 +272,7 @@ def serve_stdio(
             return EXIT_OK
         to_run = _check_scope(parse, argv, env)
         podman.check(to_run)
+        leases.on_request(to_run, parse, env, scope.owner_id(key))
     except RemoteError as e:
         stdout.write(protocol.reply_line(_ltvm_version(), e) + "\n")
         stdout.flush()

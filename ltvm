@@ -481,6 +481,18 @@ def _add_ignored_confirm_flags(sp: argparse.ArgumentParser) -> None:
     )
 
 
+def _add_lease_arg(sp: argparse.ArgumentParser) -> None:
+    """--lease for a create on a remote host (ltvm_pkg.remote.leases)."""
+    sp.add_argument(
+        "--lease",
+        default=None,
+        metavar="TIME",
+        help="With --host: the host destroys it after TIME, e.g. 30m, 4h "
+        "or 2d (default: lease_hours in the serve.toml of the host).  "
+        "`lease renew` makes it longer",
+    )
+
+
 def _wait_seconds(value: str) -> int:
     """argparse type for --wait: a whole, non-negative number of seconds."""
     try:
@@ -1514,6 +1526,7 @@ def build_parser() -> argparse.ArgumentParser:
             "(default: 0)"
         ),
     )
+    _add_lease_arg(sp)
     sp.set_defaults(func=cmd_create)
 
     # -- VM lifecycle: destroy --
@@ -2331,6 +2344,7 @@ def build_parser() -> argparse.ArgumentParser:
             "once (default: 0)"
         ),
     )
+    _add_lease_arg(ccp)
     ccp.set_defaults(func=cmd_cluster_create)
 
     cdp = cluster_sub.add_parser(
@@ -3080,6 +3094,14 @@ def run(
                 strip_host_option(argv),
                 use_json=bool(getattr(args, "json", False)),
                 args=args,
+            )
+        if getattr(args, "lease", None):
+            from ltvm_pkg.cli.util import _error
+
+            # serve runs the verb with remote=False and gives the lease.
+            return _error(
+                "--lease applies only to a create on a remote host (--host)",
+                bool(getattr(args, "json", False)),
             )
 
     # `ltvm vm create` is `ltvm create`.  Collapse it to the top-level
