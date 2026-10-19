@@ -7,7 +7,8 @@ or the reply was bad.
 
 The request goes the way SSH sends it: the command is one string, which
 sshd gives to the forced command as SSH_ORIGINAL_COMMAND.  stdin carries
-the handshake line, and later changes put data after it.
+the handshake line, then the request data (the tar stream of
+`receive-tree`).
 
 The exec:// transport is for tests: it starts `serve` as a local child
 process, with the environment that sshd gives to a forced command.  The
@@ -41,7 +42,19 @@ class Response:
 
 
 class Transport(Protocol):
-    def request(self, argv: list[str]) -> Response: ...
+    def request(self, argv: list[str], data: bytes = b"") -> Response: ...
+
+
+def stdin_bytes(data: bytes) -> bytes:
+    """The stdin of serve: the handshake line, then the request data."""
+    return (protocol.hello_line(_ltvm_version()) + "\n").encode() + data
+
+
+def text(out: bytes | str | None) -> str:
+    """Decode the output of a child process."""
+    if isinstance(out, bytes):
+        return out.decode("utf-8", "replace")
+    return out or ""
 
 
 def _ltvm_version() -> str:
@@ -106,19 +119,21 @@ class ExecTransport:
         if not self.script.is_absolute():
             raise ValueError(f"exec:// needs an absolute path: {host.url}")
 
-    def request(self, argv: list[str]) -> Response:
-        return self.send(shlex.join(argv))
+    def request(self, argv: list[str], data: bytes = b"") -> Response:
+        return self.send(shlex.join(argv), data)
 
-    def send(self, command: str) -> Response:
-        """Send one command string, as an SSH client sends it."""
+    def send(self, command: str, data: bytes = b"") -> Response:
+        """Send one command string, as an SSH client sends it.
+
+        data goes to the stdin of serve after the handshake line.
+        """
         with tempfile.TemporaryDirectory(prefix="ltvm-exec-") as tmp:
             env = self._sshd_env(command, Path(tmp))
             try:
                 proc = subprocess.run(
                     [sys.executable, str(self.script), "serve", "--stdio"],
-                    input=protocol.hello_line(_ltvm_version()) + "\n",
+                    input=stdin_bytes(data),
                     capture_output=True,
-                    text=True,
                     env=env,
                     cwd=env["HOME"],
                     check=False,
@@ -134,7 +149,9 @@ class ExecTransport:
                         f"serve did not finish in {self.timeout:g} s",
                     ),
                 )
-        return parse_reply(proc.returncode, proc.stdout, proc.stderr)
+        return parse_reply(
+            proc.returncode, text(proc.stdout), text(proc.stderr)
+        )
 
     def _sshd_env(self, command: str, tmp: Path) -> dict[str, str]:
         """The environment that sshd gives to a forced command."""

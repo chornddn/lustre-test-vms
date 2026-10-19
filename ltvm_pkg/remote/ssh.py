@@ -31,15 +31,24 @@ from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit
 
-from . import protocol
 from .hosts import Host, registry_path
 from .protocol import RemoteError
-from .transport import Response, _ltvm_version, parse_reply
+from .transport import Response, parse_reply, stdin_bytes, text
 
 SERVE_COMMAND = "ltvm serve --stdio"
 AUTHORIZED_PREFIX = f'restrict,command="{SERVE_COMMAND}",from='
 DEFAULT_USER = "ltvm"
 CONNECT_TIMEOUT = 10
+# ssh sends a keepalive after this many seconds with no data from the
+# host.  After SERVER_ALIVE_COUNT keepalives with no answer, ssh stops.
+# So a dead host or a dead network stops a request in about 2 minutes.
+SERVER_ALIVE_INTERVAL = 30
+SERVER_ALIVE_COUNT = 4
+# The longest time that one request can take, in seconds.  A deploy
+# builds Lustre and `suite run --wait` runs a full suite, so the default
+# is long.  0 sets no limit.
+TIMEOUT_ENV = "LTVM_REMOTE_TIMEOUT"
+DEFAULT_REQUEST_TIMEOUT = 8 * 3600.0
 
 _FP_RE = re.compile(r"^SHA256:[A-Za-z0-9+/]{43}$")
 _KEY_TYPES = frozenset(
@@ -65,6 +74,18 @@ _URL_PART_RE = re.compile(r"^[A-Za-z0-9._:%-]+$")
 def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
     """Run one ssh tool.  The tests replace this function."""
     return subprocess.run(argv, text=True, check=False, **kwargs)
+
+
+def request_timeout() -> float | None:
+    """The time limit of one ssh:// request, from TIMEOUT_ENV."""
+    raw = os.environ.get(TIMEOUT_ENV, "").strip()
+    if not raw:
+        return DEFAULT_REQUEST_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        return DEFAULT_REQUEST_TIMEOUT
+    return value if value > 0 else None
 
 
 # -- keys -------------------------------------------------------------------
@@ -374,30 +395,48 @@ class SshTransport:
         argv += _opt("ControlMaster", "no")
         argv += _opt("ControlPath", "none")
         argv += _opt("ConnectTimeout", str(CONNECT_TIMEOUT))
+        argv += _opt("ServerAliveInterval", str(SERVER_ALIVE_INTERVAL))
+        argv += _opt("ServerAliveCountMax", str(SERVER_ALIVE_COUNT))
         argv += ["--", self.target.addr]
         if command:
             argv.append(command)
         return argv
 
-    def request(self, argv: list[str]) -> Response:
-        return self.send(shlex.join(argv))
+    def request(self, argv: list[str], data: bytes = b"") -> Response:
+        return self.send(shlex.join(argv), data)
 
-    def send(self, command: str) -> Response:
+    def send(self, command: str, data: bytes = b"") -> Response:
         if not known_hosts_path(self.host.key).exists():
             pin_host_key(self.host)
+        limit = request_timeout()
         try:
             proc = run(
                 self.ssh_argv(command),
-                input=protocol.hello_line(_ltvm_version()) + "\n",
+                input=stdin_bytes(data),
                 capture_output=True,
+                text=False,
+                timeout=limit,
             )
         except FileNotFoundError:
             raise RemoteError("unreachable", "ssh is not installed") from None
-        if proc.returncode == 255 and not proc.stdout:
+        except subprocess.TimeoutExpired:
+            return Response(
+                1,
+                "",
+                "",
+                RemoteError(
+                    "timed_out",
+                    f"the host did not finish the request in {limit:g} s",
+                    hint=f"Set {TIMEOUT_ENV} to a longer time in seconds "
+                    "(0 for no limit).",
+                ),
+            )
+        out, err = text(proc.stdout), text(proc.stderr)
+        if proc.returncode == 255 and not out:
             # The hint holds the ssh message, so stderr stays clean
             # for --json.
-            return Response(255, "", "", _ssh_error(proc.stderr))
-        return parse_reply(proc.returncode, proc.stdout, proc.stderr)
+            return Response(255, "", "", _ssh_error(err))
+        return parse_reply(proc.returncode, out, err)
 
 
 def _ssh_error(stderr: str) -> RemoteError:

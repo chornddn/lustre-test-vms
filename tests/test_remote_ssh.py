@@ -183,7 +183,7 @@ class FakeSsh:
             return self.ssh_result
         return self._serve(argv, kwargs["input"])
 
-    def _serve(self, argv: list[str], stdin: str) -> Any:
+    def _serve(self, argv: list[str], stdin: bytes) -> Any:
         from ltvm_pkg.remote.hosts import Host
         from ltvm_pkg.remote.transport import ExecTransport
 
@@ -200,7 +200,6 @@ class FakeSsh:
             [sys.executable, _LTVM_PATH, "serve", "--stdio"],
             input=stdin,
             capture_output=True,
-            text=True,
             env=env,
             cwd=env["HOME"],
             check=False,
