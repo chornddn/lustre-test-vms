@@ -69,6 +69,7 @@ def run_remote(
             use_json,
             hint=_hint(name, err),
             error_code=err.code,
+            details=err.details,
         )
         return EXIT_ERROR
     if not names.show(name, argv, response.status, response.stdout, use_json):

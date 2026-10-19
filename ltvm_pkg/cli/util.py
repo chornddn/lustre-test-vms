@@ -78,12 +78,17 @@ def _emit_error(
     hint: str | None = None,
     code: int = EXIT_ERROR,
     error_code: str | None = None,
+    details: dict[str, Any] | None = None,
 ) -> int:
     """Print an error message and return the given exit code.
 
     error_code is a stable name for the error, such as the codes in
     ltvm_pkg.remote.protocol.ERROR_CODES.  With --json it goes in the
     "code" field.  "error" stays the message.
+
+    details is more data about the error, such as the "requested",
+    "used" and "cap" objects of over_cap.  With --json each key is a
+    field of the envelope.  As text each key is one line.
 
     When called from inside an ``except`` block with LTVM_VERBOSE=1 (or
     --verbose flipped the root logger to DEBUG), append the in-flight
@@ -97,13 +102,26 @@ def _emit_error(
             err["code"] = error_code
         if hint:
             err["hint"] = hint
+        for key, value in (details or {}).items():
+            err.setdefault(key, value)
         print(json.dumps(err, indent=2), file=sys.stderr)
     else:
         print(f"error: {msg}", file=sys.stderr)
+        for key, value in (details or {}).items():
+            print(f"{key}: {_detail_text(value)}", file=sys.stderr)
         if hint:
             print(f"hint: {hint}", file=sys.stderr)
         _maybe_print_traceback()
     return code
+
+
+def _detail_text(value: Any) -> str:
+    """`a=1 b=2` for an object; a value with no limit shows as "-"."""
+    if isinstance(value, dict):
+        return " ".join(
+            f"{k}={'-' if v is None else v}" for k, v in value.items()
+        )
+    return str(value)
 
 
 def _maybe_print_traceback() -> None:

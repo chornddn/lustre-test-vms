@@ -12,7 +12,9 @@ The handshake is one JSON line in each direction:
   stdin of `serve`.
 - `serve` writes ``{"protocol": N, "ltvm": "<version>", "error": E}`` as
   the first line of its stdout.  E is null, or an object with "code",
-  "message" and "hint".  The verb output follows that line.
+  "message" and "hint", and "details" when the error has data, such as
+  the requested, used and cap values of over_cap.  The verb output
+  follows that line.
 
 Do not change the shape of these two lines.  Peers with different
 protocol versions must still read them to report version_mismatch.
@@ -46,6 +48,8 @@ ERROR_CODES: dict[str, str] = {
     "timed_out": "the host did not finish the request in time",
     "host_key_mismatch": "the host key is not the key that the "
     "controller pinned",
+    "over_cap": "the request goes above a cap that the host owner set",
+    "bad_config": "serve cannot read its settings in serve.toml",
     "podman_unsafe": "podman on the host is not rootless and not in a VM",
 }
 
@@ -65,7 +69,15 @@ class RemoteError(Exception):
         super().__init__(self.message)
 
     def to_json(self) -> dict[str, Any]:
-        return {"code": self.code, "message": self.message, "hint": self.hint}
+        data: dict[str, Any] = {
+            "code": self.code,
+            "message": self.message,
+            "hint": self.hint,
+        }
+        if self.details:
+            # An older controller ignores the key that it does not know.
+            data["details"] = self.details
+        return data
 
     @classmethod
     def from_json(cls, data: Any) -> RemoteError:
@@ -75,6 +87,7 @@ class RemoteError(Exception):
             code=str(data.get("code")),
             message=str(data.get("message", "")),
             hint=data.get("hint") or None,
+            details=dict(data.get("details") or {}),
         )
 
 
