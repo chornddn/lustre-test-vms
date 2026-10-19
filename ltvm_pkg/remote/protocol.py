@@ -31,6 +31,7 @@ PROTOCOL_VERSION = 1
 # Each code that a remote request can fail with, and its meaning.  The
 # code goes in the "code" field of the JSON error envelope.
 ERROR_CODES: dict[str, str] = {
+    "disabled": "the host owner disabled remote use of this host",
     "version_mismatch": "the controller and the host use different "
     "protocol versions",
     "verb_refused": "the verb is not on the serve allow-list",

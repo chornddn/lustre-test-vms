@@ -5,25 +5,24 @@ The request is in SSH_ORIGINAL_COMMAND.  `serve` splits it into an
 argument vector with shlex and gives it to no shell.  Then it does these
 checks, in this order:
 
-1. the protocol version from the handshake matches
-2. the host has the shared layout, and serve does not run as root.
+1. the host owner did not disable remote use (owner.py)
+2. the protocol version from the handshake matches
+3. the host has the shared layout, and serve does not run as root.
    A probe (no command) skips this check and the checks after it.
-3. the verb is on the allow-list
-4. the request stays in its scope: it names only VMs that remote
+4. the verb is on the allow-list
+5. the request stays in its scope: it names only VMs that remote
    requests made, it needs no root, and a Lustre tree is a job tree
    that `receive-tree` made (scope.py, jobs.py)
-5. the request stays inside the caps of serve.toml (admission.py)
-6. a request that builds has a rootless or VM-backed podman (podman.py)
+6. the request stays inside the caps of serve.toml (admission.py)
+7. a request that builds has a rootless or VM-backed podman (podman.py)
 
 A request with no command is a probe.  `serve` sends only the handshake
 reply, so `host list` gets the versions with no verb.
 
-`receive-tree` is not an ltvm verb.  After check 3, serve unpacks the
+`receive-tree` is not an ltvm verb.  After check 4, serve unpacks the
 tar stream that follows the handshake line into a new job directory,
 and prints the job (jobs.py).  serve also answers `pull` itself after
 check 3: it sends the results as a tar stream (pull.py).
-
-A later change adds this check: the host is enabled (before 1).
 
 Then `serve` runs the verb in this process, with the update check and
 telemetry off, and with sudo forbidden.  It writes one audit line for
@@ -52,6 +51,7 @@ from . import (
     audit,
     jobs,
     leases,
+    owner,
     podman,
     power,
     protocol,
@@ -279,6 +279,7 @@ def serve_stdio(
 
     hello = _read_hello(stdin)
     try:
+        owner.check_enabled(env)
         _check_hello(hello)
         if split_error:
             raise split_error

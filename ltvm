@@ -676,6 +676,23 @@ def build_parser() -> argparse.ArgumentParser:
         "(a launchd job or systemd timer runs it)",
     )
     srp.set_defaults(func=_cmd_serve_reap)
+    sep = serve_sub.add_parser(
+        "enable",
+        parents=[common],
+        help="Accept remote requests again (run it as the dedicated user)",
+    )
+    sep.set_defaults(func=_cmd_serve_enable)
+    sdp = serve_sub.add_parser(
+        "disable",
+        parents=[common],
+        help="Refuse all remote requests (run it as the dedicated user)",
+    )
+    sdp.add_argument(
+        "--destroy",
+        action="store_true",
+        help="Also destroy every VM and cluster that remote requests made",
+    )
+    sdp.set_defaults(func=_cmd_serve_disable)
 
     # -- lease (remote VMs and clusters) --
     lp = sub.add_parser(
@@ -3143,6 +3160,18 @@ def _cmd_serve_reap(args: argparse.Namespace) -> int:
             print(f"{r['kind']} {r['name']}: {r['result']}")
     failed = any(str(r["result"]).startswith("exit") for r in reaped)
     return EXIT_ERROR if failed else 0
+
+
+def _cmd_serve_enable(args: argparse.Namespace) -> int:
+    from ltvm_pkg.remote import owner
+
+    return owner.cmd_enable(args)
+
+
+def _cmd_serve_disable(args: argparse.Namespace) -> int:
+    from ltvm_pkg.remote import owner
+
+    return owner.cmd_disable(args, run, str(Path(__file__).resolve()))
 
 
 def _parse_request(argv: list[str]) -> argparse.Namespace:

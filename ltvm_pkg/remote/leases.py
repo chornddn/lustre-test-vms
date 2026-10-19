@@ -311,6 +311,39 @@ def _reap_one(
     return "reaped"
 
 
+def _unleased(env: Mapping[str, str], kind: str) -> list[Lease]:
+    """The remote VMs or clusters that have no lease.
+
+    VMs that remote requests made before leases existed have no lease.
+    The Lease that comes back has no times (0).  A cluster node is not
+    in the list while its cluster exists.
+    """
+    from ltvm_pkg.vm_state import ClusterInfo, VMInfo
+
+    from . import scope
+
+    leased = load_all(env)
+    unreadable = (RuntimeError, ValueError, KeyError, TypeError, OSError)
+    out: list[Lease] = []
+    if kind == CLUSTER:
+        for name in ClusterInfo.all_names():
+            try:
+                owner = ClusterInfo.load(name).owner_id
+            except unreadable:
+                continue
+            if scope.is_remote(owner) and f"{CLUSTER}:{name}" not in leased:
+                out.append(Lease(CLUSTER, name, str(owner), 0.0, 0.0))
+        return out
+    for name in VMInfo.all_names():
+        try:
+            owner = VMInfo.load(name).owner_id
+        except unreadable:
+            continue
+        if scope.is_remote(owner) and f"{VM}:{name}" not in leased:
+            out.append(Lease(VM, name, str(owner), 0.0, 0.0))
+    return out
+
+
 def reap(
     run: Callable[..., int],
     env: Mapping[str, str],
@@ -320,13 +353,15 @@ def reap(
 ) -> list[dict[str, object]]:
     """Destroy each VM and cluster whose lease has expired.
 
-    With everything, destroy what each lease names, expired or not.
-    `disable --destroy` uses it.
+    With everything, destroy each VM and cluster that remote requests
+    made: what each lease names, expired or not, and then each remote
+    cluster and VM with no lease.  `serve disable --destroy` uses it.
 
     run is ltvm.run.  Each destroy runs in this process, with sudo
     forbidden, as a remote request does.  Return one entry for each
-    expired lease, with its audit result: "reaped", "exit <N>", or the
-    error code of a lease whose VM serve may not destroy.
+    destroy, with its audit result: "reaped", "exit <N>", or the error
+    code of a lease whose VM serve may not destroy.  An entry with no
+    lease has the times 0.
     """
     from ltvm_pkg import priv
 
@@ -338,9 +373,8 @@ def reap(
     now = float("inf") if everything else clock()
     log = audit.log_path(env)
     out: list[dict[str, object]] = []
-    for key, lease in sorted(load_all(env).items()):
-        if not lease.expired(now) or not _still_expired(env, key, now):
-            continue
+
+    def one(lease: Lease) -> None:
         result = _reap_one(run, env, lease)
         audit.append(
             log,
@@ -349,5 +383,15 @@ def reap(
             result=result,
         )
         out.append({**asdict(lease), "result": result})
+
+    for key, lease in sorted(load_all(env).items()):
+        if not lease.expired(now) or not _still_expired(env, key, now):
+            continue
+        one(lease)
+    if everything:
+        # Clusters first: a cluster destroy also destroys its nodes.
+        for kind in (CLUSTER, VM):
+            for lease in _unleased(env, kind):
+                one(lease)
     power.sync(env)
     return out
