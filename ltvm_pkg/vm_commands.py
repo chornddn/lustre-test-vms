@@ -12,7 +12,7 @@ import stat
 import subprocess
 import sys
 import time
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
@@ -1944,6 +1944,11 @@ def _cluster_rows() -> list[dict[str, Any]]:
     return rows
 
 
+# `serve` sets this so that a remote `list` shows only the VMs that
+# remote requests made.  It gets the owner ID of a VM.  None shows all.
+list_filter: Callable[[str | None], bool] | None = None
+
+
 def cmd_list(args: argparse.Namespace) -> None:
     total_vcpus = 0
     total_mem = 0
@@ -1967,7 +1972,9 @@ def cmd_list(args: argparse.Namespace) -> None:
             # healthy VM behind a traceback.  Report the casualty in
             # place instead.  (Named `exc`, not `e`: the render loop
             # below binds `e`, and Python deletes an except-name at
-            # block exit.)
+            # block exit.)  A filtered list cannot tell whose it is.
+            if list_filter is not None:
+                continue
             print(
                 f"warning: {name}: unreadable VM state ({exc})",
                 file=sys.stderr,
@@ -1975,6 +1982,8 @@ def cmd_list(args: argparse.Namespace) -> None:
             entries.append(
                 {"name": name, "status": "corrupt", "error": str(exc)}
             )
+            continue
+        if list_filter is not None and not list_filter(vm.owner_id):
             continue
         status = "running" if is_running(vm) else "stopped"
 
@@ -2019,6 +2028,8 @@ def cmd_list(args: argparse.Namespace) -> None:
         )
 
     clusters = _cluster_rows()
+    if list_filter is not None:
+        clusters = [c for c in clusters if list_filter(c["owner_id"])]
     member_of = {m: c["name"] for c in clusters for m in c["members"]}
     for e in entries:
         e["cluster"] = member_of.get(e["name"])
@@ -2032,75 +2043,84 @@ def cmd_list(args: argparse.Namespace) -> None:
     budget = guest_memory_budget()
     mem_limit_mb = budget.limit_mb if budget else host_mem_mb
 
+    data = {
+        "vms": entries,
+        "clusters": clusters,
+        "totals": {
+            "running": running_count,
+            "stopped": stopped_count,
+            "vcpus_used": total_vcpus,
+            "vcpus_available": host_cpus,
+            "mem_used_mb": total_mem,
+            "mem_rss_mb": total_rss,
+            # The running VMs may commit this much in all;
+            # mem_free_mb of it is left for new ones.
+            "mem_available_mb": mem_limit_mb,
+            "mem_free_mb": max(0, mem_limit_mb - total_mem),
+            "mem_per_vm_max_mb": (budget.budget_mb if budget else host_mem_mb),
+            "mem_budget": budget.describe() if budget else "",
+            "mem_host_mb": host_mem_mb,
+        },
+    }
     if args.json:
-        print(
-            json.dumps(
-                {
-                    "vms": entries,
-                    "clusters": clusters,
-                    "totals": {
-                        "running": running_count,
-                        "stopped": stopped_count,
-                        "vcpus_used": total_vcpus,
-                        "vcpus_available": host_cpus,
-                        "mem_used_mb": total_mem,
-                        "mem_rss_mb": total_rss,
-                        # The running VMs may commit this much in all;
-                        # mem_free_mb of it is left for new ones.
-                        "mem_available_mb": mem_limit_mb,
-                        "mem_free_mb": max(0, mem_limit_mb - total_mem),
-                        "mem_per_vm_max_mb": (
-                            budget.budget_mb if budget else host_mem_mb
-                        ),
-                        "mem_budget": budget.describe() if budget else "",
-                        "mem_host_mb": host_mem_mb,
-                    },
-                }
-            )
-        )
+        print(json.dumps(data))
     else:
-        if not entries:
-            print("(no VMs)")
-            return
-        for e in entries:
-            if e["status"] == "corrupt":
-                print(
-                    f"{e['name']:<20} {'-':<18} {'corrupt':<8} "
-                    f"(unreadable state: {e['error']})"
-                )
-                continue
-            disks = ""
-            if e["mdt_disks"] + e["ost_disks"] > 0:
-                disks = f"mdt={e['mdt_disks']} ost={e['ost_disks']}"
-            deploy = _ago(e["last_deploy"]) if e["last_deploy"] else "-"
-            boot = _ago(e["last_boot"]) if e["last_boot"] else "-"
-            os_id = e.get("os_id") or "-"
-            # `by=` shows who created the VM (SUDO_USER at create time);
-            # legacy VMs from before this field existed show `by=-`.
-            creator = e.get("creator") or "-"
-            owner_id = e.get("owner_id") or "-"
-            # Running VMs show what they are actually holding against
-            # what they were given; stopped ones have only the latter.
-            mem = (
-                f"{e['mem_rss_mb']}/{e['mem']}M"
-                if e.get("mem_rss_mb") is not None
-                else f"{e['mem']}M"
-            )
-            cluster = f" cluster={e['cluster']}" if e["cluster"] else ""
+        print_list(data)
+
+
+def print_list(data: dict[str, Any]) -> None:
+    """Print the `list --json` document as the `list` text.
+
+    The controller also uses it for a remote `list`, so the remote text
+    is the same as the local text.
+    """
+    entries = data["vms"]
+    totals = data["totals"]
+    if not entries:
+        print("(no VMs)")
+        return
+    for e in entries:
+        if e["status"] == "corrupt":
             print(
-                f"{e['name']:<20} {e['ip']:<18} {e['status']:<8} "
-                f"{os_id:<8} {disks:<14} mem={mem:<12} "
-                f"boot={boot:<10} deploy={deploy:<10} by={creator} "
-                f"owner={owner_id}{_claim_field(e.get('claim'))}{cluster}"
+                f"{e['name']:<20} {'-':<18} {'corrupt':<8} "
+                f"(unreadable state: {e['error']})"
             )
-        print("---")
-        print(
-            f"{running_count} running, {stopped_count} stopped | "
-            f"vcpus: {total_vcpus}/{host_cpus} | "
-            f"mem: {total_mem}M/{mem_limit_mb}M committed"
-            f"{f' ({total_rss}M resident)' if total_rss else ''}"
-            f"{f' | budget: {budget.describe()}' if budget else ''}"
+            continue
+        disks = ""
+        if e["mdt_disks"] + e["ost_disks"] > 0:
+            disks = f"mdt={e['mdt_disks']} ost={e['ost_disks']}"
+        deploy = _ago(e["last_deploy"]) if e["last_deploy"] else "-"
+        boot = _ago(e["last_boot"]) if e["last_boot"] else "-"
+        os_id = e.get("os_id") or "-"
+        # `by=` shows who created the VM (SUDO_USER at create time);
+        # legacy VMs from before this field existed show `by=-`.
+        creator = e.get("creator") or "-"
+        owner_id = e.get("owner_id") or "-"
+        # Running VMs show what they are actually holding against
+        # what they were given; stopped ones have only the latter.
+        mem = (
+            f"{e['mem_rss_mb']}/{e['mem']}M"
+            if e.get("mem_rss_mb") is not None
+            else f"{e['mem']}M"
         )
+        cluster = f" cluster={e['cluster']}" if e["cluster"] else ""
+        print(
+            f"{e['name']:<20} {e['ip']:<18} {e['status']:<8} "
+            f"{os_id:<8} {disks:<14} mem={mem:<12} "
+            f"boot={boot:<10} deploy={deploy:<10} by={creator} "
+            f"owner={owner_id}{_claim_field(e.get('claim'))}{cluster}"
+        )
+    total_rss = totals["mem_rss_mb"]
+    budget = totals["mem_budget"]
+    print("---")
+    print(
+        f"{totals['running']} running, {totals['stopped']} stopped | "
+        f"vcpus: {totals['vcpus_used']}/{totals['vcpus_available']} | "
+        f"mem: {totals['mem_used_mb']}M/{totals['mem_available_mb']}M "
+        "committed"
+        f"{f' ({total_rss}M resident)' if total_rss else ''}"
+        f"{f' | budget: {budget}' if budget else ''}"
+    )
 
 
 def cmd_console_log(args: argparse.Namespace) -> None:
