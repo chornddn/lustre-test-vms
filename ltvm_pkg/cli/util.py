@@ -77,8 +77,13 @@ def _emit_error(
     use_json: bool,
     hint: str | None = None,
     code: int = EXIT_ERROR,
+    error_code: str | None = None,
 ) -> int:
     """Print an error message and return the given exit code.
+
+    error_code is a stable name for the error, such as the codes in
+    ltvm_pkg.remote.protocol.ERROR_CODES.  With --json it goes in the
+    "code" field.  "error" stays the message.
 
     When called from inside an ``except`` block with LTVM_VERBOSE=1 (or
     --verbose flipped the root logger to DEBUG), append the in-flight
@@ -88,6 +93,8 @@ def _emit_error(
     """
     if use_json:
         err = {"error": msg}
+        if error_code:
+            err["code"] = error_code
         if hint:
             err["hint"] = hint
         print(json.dumps(err, indent=2), file=sys.stderr)
