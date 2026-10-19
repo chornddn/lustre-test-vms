@@ -3,7 +3,9 @@
 The file is ``$XDG_CONFIG_HOME/ltvm/serve.toml``, which is
 ``~/.config/ltvm/serve.toml`` of the dedicated user.  It is flat TOML:
 one ``key = value`` on each line, with no tables.  A cap that is not in
-the file has no limit.  A missing file gives the defaults.
+the file has no limit.  `ltvm install --serve` and `ltvm serve init`
+write the file.  When the file is missing, serve refuses every request
+with bad_config.
 
 Python 3.10 has no tomllib.  There, a small parser reads the same flat
 format: true and false, integers, floats and quoted strings.
@@ -116,12 +118,23 @@ def loads(text: str) -> ServeConfig:
     return ServeConfig(**values)
 
 
-def load(env: Mapping[str, str]) -> ServeConfig:
-    """Read serve.toml.  Raise ValueError for a file that is not valid."""
+class MissingConfig(ValueError):
+    """serve.toml does not exist."""
+
+
+def load(env: Mapping[str, str], *, missing_ok: bool = False) -> ServeConfig:
+    """Read serve.toml.  Raise ValueError for a file that is not valid.
+
+    A missing file raises MissingConfig.  With missing_ok, a missing
+    file gives the defaults.
+    """
+    path = config_path(env)
     try:
-        text = config_path(env).read_text()
+        text = path.read_text()
     except FileNotFoundError:
-        return ServeConfig()
+        if missing_ok:
+            return ServeConfig()
+        raise MissingConfig(f"{path} does not exist") from None
     return loads(text)
 
 

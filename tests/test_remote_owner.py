@@ -112,6 +112,24 @@ class TestDisable:
         assert rc == 1
         assert _err(capsys.readouterr().err)["code"] == "bad_config"
 
+    def test_a_missing_serve_toml_refuses_every_request(
+        self, reaper: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        (reaper.home / ".config" / "ltvm" / "serve.toml").unlink()
+        rc = ltvm.run(["--host", "t", "list", "--json"])
+        assert rc == 1
+        err = _err(capsys.readouterr().err)
+        assert err["code"] == "bad_config"
+        assert "serve init" in err["hint"]
+        assert _audit(reaper.home)[-1]["result"] == "bad_config"
+
+    def test_disable_works_with_no_serve_toml(
+        self, reaper: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        (reaper.home / ".config" / "ltvm" / "serve.toml").unlink()
+        rc, out = _serve(ltvm, capsys, "disable")
+        assert (rc, out["enabled"]) == (0, False)
+
 
 class TestEnable:
     def test_enable_accepts_requests_again(

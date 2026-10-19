@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.remote_helpers import write_serve_toml
 from tests.test_ltvm_cli import _LTVM_PATH, _load_ltvm
 
 # A fixed controller key.  The fingerprint is the value that
@@ -57,6 +58,7 @@ def host_t(tmp_path: Path) -> SimpleNamespace:
 
     home = tmp_path / "host-home"
     home.mkdir()
+    write_serve_toml(home)
     vm_dir = tmp_path / "host-vms"
     sockets = vm_dir / "sockets"
     sockets.mkdir(parents=True)

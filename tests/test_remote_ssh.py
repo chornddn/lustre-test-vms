@@ -23,6 +23,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.remote_helpers import write_serve_toml
 from tests.test_ltvm_cli import _LTVM_PATH, _load_ltvm
 from tests.test_remote_serve import TEST_KEY_FP, TEST_PUBKEY
 
@@ -236,6 +237,7 @@ def fake(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> FakeSsh:
 
     home = tmp_path / "remote-home"
     home.mkdir()
+    write_serve_toml(home)
     vm_dir = tmp_path / "remote-vms"
     sockets = vm_dir / "sockets"
     sockets.mkdir(parents=True)

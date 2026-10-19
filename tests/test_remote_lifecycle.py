@@ -30,6 +30,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.remote_helpers import write_serve_toml
 from tests.test_ltvm_cli import _LTVM_PATH, _load_ltvm
 from tests.test_remote_serve import TEST_KEY_FP, TEST_PUBKEY
 
@@ -72,6 +73,7 @@ def child(tmp_path: Path) -> SimpleNamespace:
 
     home = tmp_path / "host-home"
     home.mkdir()
+    write_serve_toml(home)
     vm_dir = tmp_path / "host-vms"
     sockets = vm_dir / "sockets"
     sockets.mkdir(parents=True)
@@ -471,6 +473,7 @@ def inproc(
 
     home = tmp_path / "host-home"
     home.mkdir()
+    write_serve_toml(home)
     # serve changes these for the process; give them back after.
     monkeypatch.setenv("LTVM_OWNER_ID", "controller-owner")
     monkeypatch.setenv("LTVM_TELEMETRY", "0")

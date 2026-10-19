@@ -14,16 +14,23 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.remote_helpers import write_serve_toml
 from tests.test_ltvm_cli import _load_ltvm
 
 # ── serve.toml ───────────────────────────────────────────
 
 
 class TestServeConfig:
-    def test_missing_file_gives_no_caps(self, tmp_path: Path) -> None:
+    def test_missing_file_is_an_error(self, tmp_path: Path) -> None:
         from ltvm_pkg.remote import serve_config
 
-        cfg = serve_config.load({"HOME": str(tmp_path)})
+        with pytest.raises(serve_config.MissingConfig):
+            serve_config.load({"HOME": str(tmp_path)})
+
+    def test_missing_ok_gives_the_defaults(self, tmp_path: Path) -> None:
+        from ltvm_pkg.remote import serve_config
+
+        cfg = serve_config.load({"HOME": str(tmp_path)}, missing_ok=True)
         assert cfg == serve_config.ServeConfig()
         assert cfg.max_vcpus is None
         assert cfg.enabled is True
@@ -119,6 +126,7 @@ def host(tmp_path: Path) -> Iterator[SimpleNamespace]:
     """A host VM directory and a home for the dedicated user."""
     home = tmp_path / "home"
     home.mkdir()
+    write_serve_toml(home)
     sockets = tmp_path / "vms" / "sockets"
     sockets.mkdir(parents=True)
     overlays = tmp_path / "vms" / "overlays"
@@ -352,7 +360,7 @@ class TestOtherVerbs:
         from ltvm_pkg.remote.protocol import RemoteError
 
         path = serve_config.config_path(host.env)
-        path.parent.mkdir(parents=True)
+        path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text("max_vcpus = = 3\n")
         with pytest.raises(RemoteError) as e:
             _admit(ltvm, host, ["create", "x"])

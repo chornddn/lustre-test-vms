@@ -27,10 +27,12 @@ from .protocol import RemoteError
 
 
 def _bad_config(e: Exception) -> RemoteError:
+    if isinstance(e, serve_config.MissingConfig):
+        hint = "The host owner runs `ltvm serve init` to write serve.toml."
+    else:
+        hint = "The host owner corrects serve.toml."
     return RemoteError(
-        "bad_config",
-        f"serve cannot read serve.toml: {e}",
-        hint="The host owner corrects serve.toml.",
+        "bad_config", f"serve cannot read serve.toml: {e}", hint=hint
     )
 
 
@@ -55,7 +57,8 @@ def check_enabled(env: Mapping[str, str]) -> None:
 
 def _set_enabled(env: Mapping[str, str], enabled: bool) -> None:
     try:
-        cfg = serve_config.load(env)
+        # With no file, write one: `disable` must always work.
+        cfg = serve_config.load(env, missing_ok=True)
     except (OSError, ValueError) as e:
         raise _bad_config(e) from None
     cfg.enabled = enabled
