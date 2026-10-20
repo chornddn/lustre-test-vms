@@ -3178,7 +3178,12 @@ def _cmd_serve_reap(args: argparse.Namespace) -> int:
             print(f"{r['kind']} {r['name']}: {r['result']}")
         for job in deleted:
             print(f"job {job}: deleted")
-    failed = any(str(r["result"]).startswith("exit") for r in reaped)
+    # serve._run_verb gives "exit <N>" for a failed destroy and
+    # "exception" for a destroy that raised.
+    failed = any(
+        str(r["result"]).startswith("exit") or r["result"] == "exception"
+        for r in reaped
+    )
     return EXIT_ERROR if failed else 0
 
 

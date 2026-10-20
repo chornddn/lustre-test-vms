@@ -334,6 +334,23 @@ class TestReap:
         assert "vm:" + REMOTE_VM in _leases(reaper)
         assert _audit(reaper.home)[-1]["result"] == "exit 1"
 
+    def test_a_destroy_that_raises_is_a_failure(
+        self,
+        reaper: SimpleNamespace,
+        clock: SimpleNamespace,
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        _grant(reaper, "vm", REMOTE_VM, 1)
+        clock.now = T0 + 2 * HOUR
+        with patch(
+            "ltvm_pkg.cli.setup._vm_call", side_effect=RuntimeError("boom")
+        ):
+            rc, reaped = _reap(ltvm, capsys)
+        assert [r["result"] for r in reaped] == ["exception"]
+        assert rc == 1
+        assert "vm:" + REMOTE_VM in _leases(reaper)
+
     def test_reap_never_uses_sudo(
         self,
         reaper: SimpleNamespace,

@@ -449,10 +449,9 @@ def reap(
 
     run is ltvm.run.  Each destroy runs in this process, with sudo
     forbidden, as a remote request does.  Return one entry for each
-    destroy, with its audit result.  The result is "reaped" or
-    "exit <N>".  For a lease whose VM serve may not destroy, it is the
-    error code.  An entry with no
-    lease has the times 0.
+    destroy, with its audit result.  The result is "reaped", "exit <N>"
+    or "exception".  For a lease whose VM serve may not destroy, it is
+    the error code.  An entry with no lease has the times 0.
     """
     from ltvm_pkg import priv
 
