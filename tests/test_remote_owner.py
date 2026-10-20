@@ -278,6 +278,20 @@ class TestStatus:
         assert "disk_gb" in out
         assert "verb_refused" in out
 
+    def test_text_escapes_control_characters_in_requests(
+        self, busy: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        # A request argument can hold a newline or an escape code.  The
+        # text must not fake a line or reach the terminal of the owner.
+        ltvm.run(["--host", "t", "vm", "set", "x\n  FAKE -> ok\x1b[2J\x7f"])
+        capsys.readouterr()
+        assert ltvm.run(["serve", "status"]) == 0
+        out = capsys.readouterr().out
+        assert "\x1b" not in out
+        assert "\x7f" not in out
+        assert not any(ln.startswith("  FAKE") for ln in out.splitlines())
+        assert "x\\x0a  FAKE -> ok\\x1b[2J\\x7f" in out
+
     def test_a_disabled_host_with_no_log(
         self, reaper: SimpleNamespace, ltvm: Any, capsys: Any
     ) -> None:

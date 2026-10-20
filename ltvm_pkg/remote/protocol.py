@@ -23,6 +23,7 @@ protocol versions must still read them to report version_mismatch.
 from __future__ import annotations
 
 import json
+import re
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -92,6 +93,19 @@ class RemoteError(Exception):
             hint=data.get("hint") or None,
             details=dict(data.get("details") or {}),
         )
+
+
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
+
+
+def printable(text: object) -> str:
+    """Text from a request or a host, safe for a terminal.
+
+    Each control character (below 0x20, and 0x7f) becomes \\xNN.  So a
+    newline cannot fake a line, and an escape code cannot reach the
+    terminal.
+    """
+    return _CONTROL_RE.sub(lambda m: f"\\x{ord(m.group()):02x}", str(text))
 
 
 def hello_line(ltvm_version: str) -> str:

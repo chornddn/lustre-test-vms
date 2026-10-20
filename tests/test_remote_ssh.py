@@ -485,6 +485,29 @@ class TestSshTransport:
         assert err["code"] == "unreachable"
         assert "serve authorize" in err["hint"]
 
+    def test_text_error_from_the_host_escapes_control_characters(
+        self, ltvm: Any, fake: FakeSsh, capsys: Any
+    ) -> None:
+        from ltvm_pkg.remote import protocol
+        from ltvm_pkg.remote.protocol import RemoteError
+
+        _add(ltvm, capsys)
+        err = RemoteError(
+            "bad_request", "bad\x1b[2Jthing", hint="one\nerror: fake"
+        )
+        fake.ssh_result = subprocess.CompletedProcess(
+            [], 1, protocol.reply_line("0.0", err) + "\n", ""
+        )
+        rc = ltvm.run(["--host", "lab", "list"])
+        out = capsys.readouterr().err
+        assert rc == 1
+        assert "\x1b" not in out
+        assert "bad\\x1b[2Jthing" in out
+        assert "error: fake" not in out.splitlines()
+        assert [ln for ln in out.splitlines() if ln.startswith("error:")] == [
+            "error: host lab: bad\\x1b[2Jthing"
+        ]
+
 
 class TestHostList:
     def test_shows_reachability_and_versions(

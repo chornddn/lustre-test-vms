@@ -135,7 +135,7 @@ def text_error(stderr: str) -> bool:
     verb writes its error as JSON.  Return False if stderr is not one
     envelope.  Then the caller prints stderr as it is.
     """
-    from ltvm_pkg.cli.util import _emit_error
+    from .client import _emit_error
 
     try:
         data = json.loads(stderr)

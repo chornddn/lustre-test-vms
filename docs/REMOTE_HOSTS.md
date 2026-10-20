@@ -398,6 +398,7 @@ sudo -u ltvm -H ltvm serve enable            # accept requests again
 sudo -u ltvm -H ltvm serve init              # change the caps
 ```
 
+- The text of `serve status` shows each control character in a name or a request argument as `\xNN`. So a request cannot fake a line or send an escape code to your terminal. The controller does the same for the error, hint and detail text of a host reply. `--json` and the output of the verb do not change.
 - `serve disable` writes `enabled = false` and keeps the caps. `serve` then refuses every request with `disabled`, the probe of `host list` too.
 - `serve disable --destroy` destroys each VM and cluster with a lease, and each remote VM with no lease. Then it deletes all jobs. A request that started before `disable` can still finish. Run `disable --destroy` again to remove what it made.
 - A `serve.toml` that `serve` cannot read, or that is missing, refuses every request with `bad_config`.

@@ -42,6 +42,33 @@ def _hint(name: str, err: RemoteError) -> str | None:
     )
 
 
+def _emit_error(
+    msg: str,
+    use_json: bool,
+    *,
+    hint: str | None = None,
+    error_code: str | None = None,
+    details: dict[str, object] | None = None,
+) -> int:
+    """cli.util._emit_error for text that can come from a host.
+
+    As text, protocol.printable() escapes the control characters of the
+    message, the hint and the details.  JSON escapes them already.
+    """
+    from ltvm_pkg.cli import util
+
+    if not use_json:
+        pr = protocol.printable
+        msg = pr(msg)
+        hint = None if hint is None else pr(hint)
+        details = {
+            pr(k): pr(util._detail_text(v)) for k, v in (details or {}).items()
+        }
+    return util._emit_error(
+        msg, use_json, hint=hint, error_code=error_code, details=details
+    )
+
+
 def run_remote(
     name: str,
     argv: list[str],
@@ -54,7 +81,7 @@ def run_remote(
     args is the parsed argv.  With it, `<host>/<vm>` names become bare
     names, and the JSON views (names.show) show the `<host>/` prefix.
     """
-    from ltvm_pkg.cli.util import EXIT_ERROR, _emit_error
+    from ltvm_pkg.cli.util import EXIT_ERROR
 
     try:
         if args is not None:

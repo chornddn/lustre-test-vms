@@ -24,7 +24,7 @@ from collections.abc import Callable, Mapping
 
 from ltvm_pkg import paths
 
-from . import serve_config
+from . import protocol, serve_config
 from .protocol import RemoteError
 
 
@@ -241,10 +241,13 @@ def print_status(data: Mapping[str, object]) -> None:
     assert isinstance(rows, list)
     if not rows:
         print("  (none)")
+    # Names, owners and request arguments come from remote requests.
+    # printable() keeps their control characters off the terminal.
+    pr = protocol.printable
     for r in rows:
         print(
-            f"  {r['kind']:<8} {r['name']:<24} {r['state']:<8} "
-            f"until {_when(r['expires'])}  owner={r['owner']}"
+            f"  {pr(r['kind']):<8} {pr(r['name']):<24} {pr(r['state']):<8} "
+            f"until {_when(r['expires'])}  owner={pr(r['owner'])}"
         )
     print()
     print("Use (used / cap, - is no cap):")
@@ -265,7 +268,8 @@ def print_status(data: Mapping[str, object]) -> None:
     for e in entries:
         argv = " ".join([str(e.get("verb", "")), *map(str, e.get("args", []))])
         print(
-            f"  {e.get('time', '-')} {e.get('key', '-')} {argv} -> {e.get('result', '-')}"
+            f"  {pr(e.get('time', '-'))} {pr(e.get('key', '-'))} {pr(argv)} "
+            f"-> {pr(e.get('result', '-'))}"
         )
 
 
