@@ -92,6 +92,35 @@ class TestNetworkChoice:
         monkeypatch.setenv("LTVM_REMOTE_SUBNET", "192.168.160")
         assert guest_net.remote().subnet == "192.168.160"
 
+    @pytest.mark.parametrize(
+        "value",
+        [
+            "192.168.101.1/24 dev fcbr1'; touch /tmp/x; '",
+            "192.168.101\nconf-file=/tmp/x",
+            "0.0.0.0/0",
+            "8.8.8",
+            "192.168.101.5",
+            "192.168",
+            "192.168.300",
+            "192.168.01",
+        ],
+    )
+    @pytest.mark.parametrize("file", ["remote-subnet", "remote-extra-subnet"])
+    def test_a_bad_record_is_refused(
+        self, tmp_vmdir: Path, file: str, value: str
+    ) -> None:
+        """A member of group ltvm can write these files."""
+        (tmp_vmdir / file).write_text(value + "\n")
+        with pytest.raises(ValueError, match=file):
+            guest_net.remote()
+
+    def test_a_bad_env_value_is_refused(
+        self, tmp_vmdir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LTVM_REMOTE_SUBNET", "10.0.0;x")
+        with pytest.raises(ValueError, match="LTVM_REMOTE_SUBNET"):
+            guest_net.remote()
+
     def test_for_vm_reads_the_owner_id(self, tmp_vmdir: Path) -> None:
         vm = VMInfo(name="a", ip="192.168.101.20", owner_id=REMOTE)
         assert guest_net.for_vm(vm).kind == "remote"

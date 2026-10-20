@@ -5,6 +5,7 @@ Every write and every command is stubbed.  No test changes the host.
 
 from __future__ import annotations
 
+import os
 import plistlib
 from collections.abc import Iterator
 from pathlib import Path
@@ -120,6 +121,38 @@ class TestLinux:
         assert host.files[record] == "192.168.150\n"
         assert "192.168.150.0/24" in line
 
+    def test_the_bridge_unit_runs_no_shell(self, host: _Host) -> None:
+        self._install(host)
+        unit = host.files[gni.SYSTEMD_DIR / guest_net.REMOTE_NET_UNIT]
+        assert "sh -c" not in unit and "/bin/sh" not in unit
+        execs = [ln for ln in unit.splitlines() if ln.startswith("Exec")]
+        assert all(ln.split("=", 1)[1].lstrip("-")[:1] == "/" for ln in execs)
+
+    def test_a_planted_record_is_not_trusted(self, host: _Host) -> None:
+        """A group member owns a file that it makes in VM_DIR."""
+        record = host.vm_dir / "remote-subnet"  # type: ignore[attr-defined]
+        record.write_text("192.168.170\n")
+        line = self._install(host)
+        assert "192.168.101.0/24" in line
+        assert host.files[record] == "192.168.101\n"
+
+    def test_a_root_record_is_kept_and_written_again(self, host: _Host) -> None:
+        record = host.vm_dir / "remote-subnet"  # type: ignore[attr-defined]
+        record.write_text("192.168.170\n")
+        with patch.object(gni, "TRUSTED_UID", os.getuid()):
+            line = self._install(host)
+        assert "192.168.170.0/24" in line
+        assert host.files[record] == "192.168.170\n"
+
+    def test_the_records_are_written_as_root_under_the_env(
+        self, host: _Host, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LTVM_REMOTE_SUBNET", "192.168.180")
+        self._install(host)
+        vm_dir = host.vm_dir  # type: ignore[attr-defined]
+        assert host.files[vm_dir / "remote-subnet"] == "192.168.180\n"
+        assert host.files[vm_dir / "remote-extra-subnet"] == "172.16.101\n"
+
     def test_the_owner_subnet_is_never_the_remote_one(
         self, host: _Host
     ) -> None:
@@ -199,6 +232,19 @@ class TestMacos:
         conf = host.files[gni.DNSMASQ_CONF_MACOS]
         assert "listen-address=192.168.106.1\n" in conf
         assert "server=" not in conf
+
+    def test_planted_records_do_not_reach_root_config(
+        self, host: _Host, tmp_path: Path
+    ) -> None:
+        """A group member can make these files at any time on macOS."""
+        (tmp_path / "remote-subnet").write_text("192.168.170\n")
+        (tmp_path / "remote-extra-subnet").write_text("10.0.0\n")
+        self._install(host, tmp_path)
+        rules = host.files[gni.PF_CONF]
+        assert "192.168.106.0/24" in rules and "172.16.101.0/24" in rules
+        assert "192.168.170" not in rules and "10.0.0" not in rules
+        assert host.files[tmp_path / "remote-subnet"] == "192.168.106\n"
+        assert host.files[tmp_path / "remote-extra-subnet"] == "172.16.101\n"
 
     def test_the_owner_jobs_are_not_touched(
         self, host: _Host, tmp_path: Path

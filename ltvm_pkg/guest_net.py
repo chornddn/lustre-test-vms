@@ -101,17 +101,22 @@ def owner() -> GuestNet:
 
 
 def _setting(env: str, file: str, default: str) -> str:
+    """The env, then the record in VM_DIR, then the default.
+
+    A member of group ltvm can make the record, so the value must be
+    the prefix of a private /24.  Raise ValueError for any other value.
+    """
     from . import vm_state
 
     value = os.environ.get(env)
     if value:
-        return value
+        return vm_state.check_prefix24(value, env)
     path = Path(vm_state.VM_DIR) / file
     try:
         value = path.read_text().strip()
     except OSError:
         value = ""
-    return value or default
+    return vm_state.check_prefix24(value, str(path)) if value else default
 
 
 def remote() -> GuestNet:

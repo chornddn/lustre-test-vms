@@ -442,6 +442,44 @@ class TestExtraSubnet6Validation:
         assert all(int(h, 16) >= 0x1000 for h in prefix.split(":"))
 
 
+class TestOwnerSubnetValidation:
+    """A member of group ltvm can make VM_DIR/subnet before an install."""
+
+    @pytest.mark.parametrize("file", ["subnet", "extra-subnet"])
+    def test_a_bad_file_is_refused(self, tmp_path: Path, file: str) -> None:
+        from ltvm_pkg import vm_state
+
+        (tmp_path / file).write_text("192.168.100'; touch /tmp/x; '\n")
+        read = (
+            vm_state._read_subnet
+            if file == "subnet"
+            else vm_state._read_extra_subnet
+        )
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("ltvm_pkg.vm_state.VM_DIR", tmp_path),
+            pytest.raises(ValueError, match=file),
+        ):
+            read()
+
+    def test_a_good_file_is_kept(self, tmp_path: Path) -> None:
+        from ltvm_pkg import vm_state
+
+        (tmp_path / "subnet").write_text("192.168.77\n")
+        with (
+            patch.dict("os.environ", {}, clear=True),
+            patch("ltvm_pkg.vm_state.VM_DIR", tmp_path),
+        ):
+            assert vm_state._read_subnet() == "192.168.77"
+
+    def test_the_install_ignores_a_bad_record(self, tmp_path: Path) -> None:
+        from ltvm_pkg import host_setup
+
+        (tmp_path / "subnet").write_text("192.168.100.1/24;x\n")
+        with patch("ltvm_pkg.host_setup.VM_DIR", tmp_path):
+            assert host_setup._recorded_subnet() is None
+
+
 class TestVMInfoNicIpsField:
     """NIC_IPS stays a plain list of dotted quads even though extras
     moved off the mgmt /24 -- the network is derivable from the

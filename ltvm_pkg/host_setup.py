@@ -1937,13 +1937,18 @@ def _subnet_in_use(subnet: str) -> tuple[str, str] | None:
 
 
 def _recorded_subnet() -> str | None:
-    """The subnet a previous install configured, if any."""
+    """The subnet a previous install configured, if any.
+
+    A member of group ltvm can make the file, and the value goes into
+    root config.  Thus a value that is not a private /24 is ignored.
+    """
+    from .vm_state import check_prefix24
+
     f = VM_DIR / "subnet"
     try:
-        v = f.read_text().strip()
-    except OSError:
+        return check_prefix24(f.read_text().strip(), str(f))
+    except (OSError, ValueError):
         return None
-    return v or None
 
 
 # Where to look for a free range when the usual one is taken.  The

@@ -87,7 +87,9 @@ Remote VMs have a guest network of their own. The VMs of the host owner stay on 
 | macOS attachment | socket_vmnet, vmnet shared mode | second socket_vmnet, vmnet host mode, socket `socket_vmnet.ltvm-remote` |
 | DNS | `ltvm-dnsmasq` | `ltvm-dnsmasq-remote`, local names only |
 
-`LTVM_REMOTE_SUBNET` and `VM_DIR/remote-subnet` move the remote mgmt subnet. On Linux, `install --serve` picks a free /24 (192.168.101, then 192.168.150-199) and writes it to `VM_DIR/remote-subnet`.
+`LTVM_REMOTE_SUBNET` and `VM_DIR/remote-subnet` move the remote mgmt subnet. `LTVM_REMOTE_EXTRA_SUBNET` and `VM_DIR/remote-extra-subnet` move the remote extra NIC subnet. On Linux, `install --serve` picks a free /24 (192.168.101, then 192.168.150-199). Each value must be the prefix of a private /24, such as `192.168.101`. ltvm refuses any other value.
+
+Group `ltvm` can write in `VM_DIR`, so `install --serve` does not trust a record that root did not write. It uses the env, a record that root owns, or the default. Then it writes both records again as root. The sticky bit of `VM_DIR` stops a group member from the replacement of a file that root owns.
 
 On Linux and WSL2, `ltvm-remote-net.service` loads the nftables table `inet ltvm_remote` and then makes `fcbr1`. The table drops each routed packet that goes into `fcbr1` or comes out of it. `ltvm-dnsmasq-remote.service` serves DNS on the remote gateway. `/etc/qemu/bridge.conf` gets `allow fcbr1`. A running ufw gets `allow in on fcbr1` with no `route allow` rule. firewalld puts `fcbr1` in the trusted zone.
 

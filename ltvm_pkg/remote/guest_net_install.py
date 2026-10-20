@@ -28,10 +28,10 @@ The caller gives both, so the tests stub all of them.
 
 from __future__ import annotations
 
-import dataclasses
 import os
 import plistlib
 import shutil
+import stat
 from collections.abc import Callable
 from pathlib import Path
 
@@ -64,6 +64,90 @@ _LINUX_CANDIDATES = [guest_net.REMOTE_SUBNET_LINUX] + [
 ]
 
 
+# A record in VM_DIR is trusted only when this user owns it.  VM_DIR is
+# writable by group ltvm, and the sticky bit stops a member only from
+# the replacement of a file that root owns.
+TRUSTED_UID = 0
+SUBNET_RECORD = "remote-subnet"
+EXTRA_SUBNET_RECORD = "remote-extra-subnet"
+
+
+def _root_record(path: Path) -> str | None:
+    """The prefix in a record that root wrote, or None."""
+    from ltvm_pkg import vm_state
+
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(fd) as f:
+        st = os.fstat(f.fileno())
+        if (
+            not stat.S_ISREG(st.st_mode)
+            or st.st_uid != TRUSTED_UID
+            or st.st_nlink != 1
+        ):
+            return None
+        try:
+            return vm_state.check_prefix24(f.read().strip(), str(path))
+        except (OSError, ValueError):
+            return None
+
+
+def _env_or_record(env: str, record: Path) -> str | None:
+    from ltvm_pkg import vm_state
+
+    value = os.environ.get(env)
+    if value:
+        return vm_state.check_prefix24(value, env)
+    return _root_record(record)
+
+
+def _installed_net(subnet: str, extra_subnet: str) -> GuestNet:
+    from ltvm_pkg import vm_state
+
+    subnet6 = os.environ.get("LTVM_REMOTE_EXTRA_SUBNET6")
+    if subnet6:
+        vm_state._validate_subnet6(subnet6, "LTVM_REMOTE_EXTRA_SUBNET6")
+    return GuestNet(
+        kind="remote",
+        subnet=subnet,
+        extra_subnet=extra_subnet,
+        extra_subnet6=subnet6 or guest_net.REMOTE_EXTRA_SUBNET6,
+        bridge=guest_net.REMOTE_BRIDGE,
+    )
+
+
+def _remote_net(
+    write: WriteFn, choose: Callable[[str | None], str]
+) -> GuestNet:
+    """The remote network from the env, root records and defaults.
+
+    The installer never reads a VM_DIR record that root did not write.
+    It writes both records as root, so that serve reads the values that
+    went into the root config.
+    """
+    from ltvm_pkg import vm_state
+
+    vm_dir = Path(vm_state.VM_DIR)
+    subnet = choose(
+        _env_or_record("LTVM_REMOTE_SUBNET", vm_dir / SUBNET_RECORD)
+    )
+    extra = _env_or_record(
+        "LTVM_REMOTE_EXTRA_SUBNET", vm_dir / EXTRA_SUBNET_RECORD
+    )
+    net = _installed_net(subnet, extra or guest_net.REMOTE_EXTRA_SUBNET)
+    write(vm_dir / SUBNET_RECORD, net.subnet + "\n", 0o644)
+    write(vm_dir / EXTRA_SUBNET_RECORD, net.extra_subnet + "\n", 0o644)
+    return net
+
+
+def _sbin(name: str) -> str:
+    """The absolute path of a root tool, for a unit that runs no shell."""
+    found = shutil.which(name, path="/usr/sbin:/sbin:/usr/bin:/bin")
+    return found or f"/usr/sbin/{name}"
+
+
 # ── Linux ────────────────────────────────────────────────
 
 
@@ -90,6 +174,7 @@ def nft_rules(bridge: str = guest_net.REMOTE_BRIDGE) -> str:
 
 def net_unit(net: GuestNet) -> str:
     br = net.bridge
+    ip, nft = _sbin("ip"), _sbin("nft")
     return (
         "[Unit]\n"
         f"Description=ltvm remote guest bridge {br}, isolated\n"
@@ -99,13 +184,14 @@ def net_unit(net: GuestNet) -> str:
         "[Service]\n"
         "Type=oneshot\n"
         "RemainAfterExit=yes\n"
-        # The table first: the bridge never comes up without it.
-        f"ExecStart=/bin/sh -c 'nft -f {NFT_FILE}'\n"
-        f"ExecStart=/bin/sh -c 'ip link show {br} >/dev/null 2>&1 "
-        f"|| ip link add name {br} type bridge'\n"
-        f"ExecStart=/bin/sh -c 'ip addr replace {net.gateway}/24 dev {br}'\n"
-        f"ExecStart=/bin/sh -c 'ip link set {br} up'\n"
-        f"ExecStop=/bin/sh -c 'ip link del {br} 2>/dev/null || true'\n"
+        # The table first: the bridge never comes up without it.  No
+        # shell: "-" lets systemd ignore the error when the bridge is
+        # there already, or is gone at stop.
+        f"ExecStart={nft} -f {NFT_FILE}\n"
+        f"ExecStart=-{ip} link add name {br} type bridge\n"
+        f"ExecStart={ip} addr replace {net.gateway}/24 dev {br}\n"
+        f"ExecStart={ip} link set {br} up\n"
+        f"ExecStop=-{ip} link del {br}\n"
         "\n"
         "[Install]\n"
         "WantedBy=multi-user.target\n"
@@ -192,19 +278,15 @@ def _install_linux(
     from ltvm_pkg import host_firewall, vm_state
 
     vm_dir = Path(vm_state.VM_DIR)
-    record = vm_dir / "remote-subnet"
-    try:
-        recorded = record.read_text().strip() or None
-    except OSError:
-        recorded = None
-    net = guest_net.remote()
-    if not os.environ.get("LTVM_REMOTE_SUBNET"):
-        # The env wins, as in guest_net.remote().  Otherwise use a free
-        # /24 and record it for the later ltvm processes.
-        subnet = choose_subnet(recorded, vm_state.SUBNET, in_use)
-        if subnet != recorded:
-            write(record, subnet + "\n", 0o644)
-        net = dataclasses.replace(net, subnet=subnet)
+
+    def choose(given: str | None) -> str:
+        # The env wins, as in guest_net.remote().  Otherwise keep the
+        # root record, or use a free /24.
+        if os.environ.get("LTVM_REMOTE_SUBNET") and given:
+            return given
+        return choose_subnet(given, vm_state.SUBNET, in_use)
+
+    net = _remote_net(write, choose)
     dnsmasq = dnsmasq or shutil.which("dnsmasq") or "/usr/sbin/dnsmasq"
     try:
         import pwd
@@ -368,7 +450,9 @@ def _install_macos(
 ) -> GuestNet:
     from ltvm_pkg import host_setup, vm_state
 
-    net = guest_net.remote()
+    net = _remote_net(
+        write, lambda given: given or guest_net.REMOTE_SUBNET_MACOS
+    )
     if socket_vmnet is None:
         found = host_setup.socket_vmnet_path()
         if found is None:

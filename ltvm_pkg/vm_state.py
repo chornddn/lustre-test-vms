@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import dataclasses
 import fcntl
+import ipaddress
 import json
 import logging
 import os
@@ -374,6 +375,26 @@ SOCKETS = VM_DIR / "sockets"
 BRIDGE = "fcbr0"
 
 
+def check_prefix24(value: str, source: str) -> str:
+    """Return value when it is the prefix of a private /24, "a.b.c".
+
+    Raise ValueError for any other value.  A subnet value goes into
+    commands and config files that root runs or reads, and a member of
+    group ltvm can write the files in VM_DIR.
+    """
+    try:
+        net = ipaddress.IPv4Network(f"{value}.0/24")
+        good = str(net.network_address) == f"{value}.0" and net.is_private
+    except ValueError:
+        good = False
+    if not good:
+        raise ValueError(
+            f"{source}: {value!r} is not the prefix of a private /24, "
+            "such as 192.168.101"
+        )
+    return value
+
+
 def _read_subnet() -> str:
     """Return the persisted subnet, or the default.
 
@@ -391,12 +412,12 @@ def _read_subnet() -> str:
     """
     env = os.environ.get("LTVM_SUBNET")
     if env:
-        return env
+        return check_prefix24(env, "LTVM_SUBNET")
     f = VM_DIR / "subnet"
     if f.is_file():
         v = f.read_text().strip()
         if v:
-            return v
+            return check_prefix24(v, str(f))
     # One return, not one per platform: mypy evaluates sys.platform,
     # so a return after an early darwin one is "unreachable" on a Mac.
     subnet = "192.168.100"
@@ -414,12 +435,12 @@ def _read_extra_subnet() -> str:
     """
     env = os.environ.get("LTVM_EXTRA_SUBNET")
     if env:
-        return env
+        return check_prefix24(env, "LTVM_EXTRA_SUBNET")
     f = VM_DIR / "extra-subnet"
     if f.is_file():
         v = f.read_text().strip()
         if v:
-            return v
+            return check_prefix24(v, str(f))
     return "172.16.100"
 
 
