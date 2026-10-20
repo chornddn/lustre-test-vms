@@ -3431,6 +3431,48 @@ def _check_unprivileged_vms(
     return len(rd.problems), 0
 
 
+def _check_remote_guest_net() -> int:
+    """Say whether the remote guest network is ready.  Return the issues.
+
+    A host with no remote VM needs it only for `serve`, so a missing
+    network is an issue only when a remote VM exists.  A remote VM with
+    an address outside the remote network is always an issue: it does
+    not start (qemu_run.launch_qemu).
+    """
+    from .remote import scope
+
+    remote_vms: list[VMInfo] = []
+    for name in VMInfo.all_names():
+        try:
+            vm = VMInfo.load(name)
+        except (VMNotFound, ValueError, OSError):
+            continue
+        if scope.is_remote(vm.owner_id):
+            remote_vms.append(vm)
+    net = guest_net.remote()
+    issues = 0
+    for vm in remote_vms:
+        if not net.contains(vm.ip):
+            print(
+                f"remote VM {vm.name} is on the owner network ({vm.ip}) -- "
+                f"destroy it; a new create puts it on {net.subnet}.0/24"
+            )
+            issues += 1
+    problems = guest_net.remote_problems()
+    if not problems:
+        print(f"remote guest network: ready ({net.subnet}.0/24)")
+    elif not remote_vms:
+        print(
+            "remote guest network: not set up -- `ltvm install --serve` "
+            "sets it up"
+        )
+    else:
+        for problem in problems:
+            print(f"remote guest network unavailable: {problem}")
+        issues += len(problems)
+    return issues
+
+
 def _check_claims(fix: bool) -> tuple[int, int]:
     """The claims directory, and claims whose session has gone.
 
@@ -3543,6 +3585,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         found, failed = _check_unprivileged_vms(shared_gid, args.fix)
         issues += found
         fix_failures += failed
+    issues += _check_remote_guest_net()
 
     for name in VMInfo.all_names():
         try:

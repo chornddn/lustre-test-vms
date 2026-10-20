@@ -195,7 +195,7 @@ def remote_problems() -> list[str]:
         return problems
     if not (SYS_CLASS_NET / REMOTE_BRIDGE).exists():
         problems.append(f"the remote bridge {REMOTE_BRIDGE} does not exist")
-    if not rootless.bridge_allowed(REMOTE_BRIDGE):
+    if not rootless.bridge_allowed(REMOTE_BRIDGE, rootless.BRIDGE_ACL):
         problems.append(f"{rootless.BRIDGE_ACL} does not allow {REMOTE_BRIDGE}")
     for unit in (REMOTE_NET_UNIT, REMOTE_DNSMASQ_UNIT):
         if not _active(unit):

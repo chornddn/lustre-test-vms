@@ -222,13 +222,18 @@ def _classic_privileges() -> object:
     A host installed for unprivileged VMs would otherwise switch launch,
     DNS and CLI code to it.  tests/test_rootless.py opts back in.
     """
-    from ltvm_pkg import rootless
+    from ltvm_pkg import guest_net, rootless
 
     with (
         patch.object(
             rootless,
             "readiness",
             return_value=rootless.Readiness(problems=["disabled in tests"]),
+        ),
+        # It runs systemctl on Linux.  tests/test_guest_net.py calls the
+        # real one with its probes stubbed.
+        patch.object(
+            guest_net, "remote_problems", return_value=["disabled in tests"]
         ),
         patch.object(rootless, "hosts_dir_writable", return_value=False),
         patch.object(rootless, "hosts_entries", return_value=[]),

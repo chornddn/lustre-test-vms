@@ -15,6 +15,9 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from ltvm_pkg import guest_net, vm_net
+
+# The conftest stubs guest_net.remote_problems.  This name is the real one.
+from ltvm_pkg.guest_net import remote_problems as _real_remote_problems
 from ltvm_pkg.vm_state import VMInfo
 
 REMOTE = "remote:SHA256:abc"
@@ -258,6 +261,16 @@ class TestLaunch:
 class TestServeNeedsTheRemoteNetwork:
     """serve refuses a request that makes a VM without the remote network."""
 
+    @pytest.fixture(autouse=True)
+    def _restore(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        # serve changes these for the process; give them back after.
+        from ltvm_pkg import priv, vm_commands
+
+        monkeypatch.setenv("LTVM_OWNER_ID", "controller-owner")
+        monkeypatch.setattr(priv, "_sudo_forbidden", False)
+        monkeypatch.setattr(vm_commands, "list_filter", None)
+        monkeypatch.setattr(vm_commands, "list_lease", None)
+
     def _serve(
         self, tmp_path: Path, ltvm: Any, command: str, problems: list[str]
     ) -> Any:
@@ -300,3 +313,73 @@ class TestServeNeedsTheRemoteNetwork:
     ) -> None:
         resp = self._serve(tmp_vmdir, ltvm, "list --json", ["fcbr1 is missing"])
         assert resp.error is None
+
+
+class TestRemoteProblems:
+    def test_linux_ready(self, tmp_vmdir: Path) -> None:
+        sysnet = tmp_vmdir / "sys-class-net"
+        (sysnet / "fcbr1").mkdir(parents=True)
+        acl = tmp_vmdir / "bridge.conf"
+        acl.write_text("allow fcbr0\nallow fcbr1\n")
+        with (
+            patch.object(guest_net, "SYS_CLASS_NET", sysnet),
+            patch("ltvm_pkg.rootless.BRIDGE_ACL", acl),
+            patch.object(guest_net, "_active", return_value=True),
+        ):
+            assert _real_remote_problems() == []
+
+    def test_linux_missing(self, tmp_vmdir: Path) -> None:
+        acl = tmp_vmdir / "bridge.conf"
+        acl.write_text("allow fcbr0\n")
+        with (
+            patch.object(guest_net, "SYS_CLASS_NET", tmp_vmdir / "none"),
+            patch("ltvm_pkg.rootless.BRIDGE_ACL", acl),
+            patch.object(guest_net, "_active", return_value=False),
+        ):
+            problems = _real_remote_problems()
+        assert len(problems) == 4
+        assert any("fcbr1 does not exist" in p for p in problems)
+        assert any("does not allow fcbr1" in p for p in problems)
+
+    def test_macos_needs_the_socket_and_the_jobs(
+        self, tmp_vmdir: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("LTVM_REMOTE_VMNET_SOCKET", str(tmp_vmdir / "s"))
+        with (
+            patch("ltvm_pkg.guest_net._darwin", return_value=True),
+            patch.object(guest_net, "LAUNCH_DAEMONS", tmp_vmdir / "ld"),
+        ):
+            problems = _real_remote_problems()
+        assert len(problems) == 4
+        assert any("pf-remote" in p for p in problems)
+
+
+class TestDoctor:
+    def _vm(self, name: str, ip: str, owner: str | None) -> None:
+        VMInfo(name=name, ip=ip, owner_id=owner).save()
+
+    def test_a_remote_vm_on_the_owner_network_is_an_issue(
+        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from ltvm_pkg import vm_commands
+
+        self._vm("old-r", "192.168.100.30", REMOTE)
+        self._vm("new-r", "192.168.101.30", REMOTE)
+        with patch.object(guest_net, "remote_problems", return_value=[]):
+            assert vm_commands._check_remote_guest_net() == 1
+        out = capsys.readouterr().out
+        assert "old-r is on the owner network" in out
+        assert "new-r" not in out
+        assert "remote guest network: ready (192.168.101.0/24)" in out
+
+    def test_a_missing_network_is_an_issue_only_with_remote_vms(
+        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        from ltvm_pkg import vm_commands
+
+        self._vm("own", "192.168.100.30", "pid:1")
+        assert vm_commands._check_remote_guest_net() == 0
+        assert "not set up" in capsys.readouterr().out
+        self._vm("rvm", "192.168.101.31", REMOTE)
+        assert vm_commands._check_remote_guest_net() == 1
+        assert "unavailable: disabled in tests" in capsys.readouterr().out
