@@ -66,6 +66,16 @@ def test_systemd_timer_runs_reap_as_the_dedicated_user() -> None:
     assert "WantedBy=timers.target\n" in timer
 
 
+def test_systemd_service_keeps_the_sleep_lock_holder() -> None:
+    # power.sync() can start a systemd-inhibit holder that must live
+    # after `serve reap` exits.  The default KillMode=control-group of a
+    # oneshot service stops every process of the unit.
+    from ltvm_pkg.remote import reap_job
+
+    service = reap_job.systemd_units(LTVM, USER)[f"{reap_job.UNIT}.service"]
+    assert "KillMode=process\n" in service
+
+
 def test_install_on_macos_writes_the_daemon_and_loads_it() -> None:
     from ltvm_pkg.remote import reap_job
 

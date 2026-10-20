@@ -53,7 +53,12 @@ def launchd_plist(
 def systemd_units(
     ltvm: str, user: str, interval: int = INTERVAL_S
 ) -> dict[str, str]:
-    """The service and timer units, by file name."""
+    """The service and timer units, by file name.
+
+    `serve reap` can start the sleep lock holder of power.py, and the
+    holder must continue after reap exits.  KillMode=process stops only
+    the main process when the service stops, so the holder stays.
+    """
     service = (
         "[Unit]\n"
         "Description=ltvm: destroy remote VMs with an expired lease\n"
@@ -62,6 +67,7 @@ def systemd_units(
         "Type=oneshot\n"
         f"User={user}\n"
         f"ExecStart={ltvm} serve reap\n"
+        "KillMode=process\n"
     )
     timer = (
         "[Unit]\n"

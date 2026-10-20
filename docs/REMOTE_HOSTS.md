@@ -301,7 +301,7 @@ Each VM or cluster that a remote `create` or `cluster create` makes gets a lease
 A reap job runs `ltvm serve reap` as the dedicated user every 5 minutes:
 
 - macOS: `/Library/LaunchDaemons/io.github.ltvm.serve-reap.plist` (`StartInterval` 300).
-- Linux and WSL2: `/etc/systemd/system/ltvm-serve-reap.timer` and `.service` (`OnBootSec=60s`, `OnUnitActiveSec=300s`). WSL2 needs `systemd=true`.
+- Linux and WSL2: `/etc/systemd/system/ltvm-serve-reap.timer` and `.service` (`OnBootSec=60s`, `OnUnitActiveSec=300s`). WSL2 needs `systemd=true`. The service has `KillMode=process`, so the sleep lock holder that reap starts continues after reap exits.
 
 For each expired lease, reap runs the scope checks of `serve`, then `destroy` or `cluster destroy`, and writes one audit line. A failed destroy keeps the lease, and the next reap tries again.
 
