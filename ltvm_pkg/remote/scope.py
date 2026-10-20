@@ -93,7 +93,11 @@ def _require_remote_vm(name: str) -> None:
 
 
 def _has_passthrough(nics: list[str] | None) -> bool:
-    return any(str(n).split(":", 1)[0] == "passthrough" for n in nics or [])
+    # The same type parse as the verb: "PASSTHROUGH" and " passthrough"
+    # are passthrough NICs too.
+    from ltvm_pkg.vm_commands import nic_type_of
+
+    return any(nic_type_of(str(n)) == "passthrough" for n in nics or [])
 
 
 def _refuse_root(what: str) -> RemoteError:

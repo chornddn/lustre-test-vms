@@ -192,6 +192,17 @@ class TestClusterDryRun:
                 ],
                 "needs_root",
             ),
+            (
+                [
+                    "cluster",
+                    "create",
+                    "x-new",
+                    "mgs+mds:x-a:1",
+                    "--nic",
+                    "PassThrough:0000:01:00.0",
+                ],
+                "needs_root",
+            ),
         ],
     )
     def test_create_refusals(

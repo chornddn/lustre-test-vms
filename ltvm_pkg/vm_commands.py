@@ -472,6 +472,15 @@ _NIC_TYPES_RESERVED: dict[str, str] = {}
 _NIC_TYPES_ALL = _NIC_TYPES_IMPLEMENTED + tuple(_NIC_TYPES_RESERVED)
 
 
+def nic_type_of(raw: str) -> str:
+    """The type of a ``--nic`` spec, as parse_nic_spec reads it.
+
+    It does not check the type, so it never exits.  serve uses it to
+    find a passthrough NIC before the verb runs.
+    """
+    return raw.split(":", 1)[0].strip().lower()
+
+
 def parse_nic_spec(raw: str) -> tuple[str, str]:
     """Parse ``--nic <type>[:<arg>]`` into ``(type, arg)``.
 
@@ -487,8 +496,8 @@ def parse_nic_spec(raw: str) -> tuple[str, str]:
     """
     if not raw:
         die("--nic value is empty")
+    nic_type = nic_type_of(raw)
     parts = raw.split(":", 1)
-    nic_type = parts[0].strip().lower()
     nic_arg = parts[1] if len(parts) > 1 else ""
     if nic_type not in _NIC_TYPES_ALL:
         valid = ", ".join(_NIC_TYPES_ALL)

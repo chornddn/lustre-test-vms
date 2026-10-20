@@ -618,6 +618,9 @@ class TestCreate:
             (["--owner-id", "someone"], "bad_request"),
             (["--owner", "someone"], "bad_request"),
             (["--nic", "passthrough:0000:01:00.0"], "needs_root"),
+            # parse_nic_spec ignores case and spaces in the type.
+            (["--nic", "PASSTHROUGH:0000:01:00.0"], "needs_root"),
+            (["--nic", " Passthrough :0000:01:00.0"], "needs_root"),
             (["--image", "/home/owner/disk.qcow2"], "path_refused"),
         ],
     )
