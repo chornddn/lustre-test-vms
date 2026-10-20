@@ -36,6 +36,9 @@ HOST_PUBKEY = (
 HOST_FP = "SHA256:zhmIc4w8p7p5k/fiaN1VlKFXSqIv/J7+DRBnJoOBkk0"
 PREFIX = 'restrict,command="ltvm serve --stdio",from='
 
+# The real ssh.run, before a fixture replaces it.
+from ltvm_pkg.remote.ssh import run as _REAL_RUN  # noqa: E402
+
 
 @pytest.fixture
 def host_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
@@ -585,3 +588,67 @@ class TestHostRemove:
         )
         assert ltvm.run(["host", "remove", "odd"]) == 0
         assert outside.read_text() == "KEEP\n"
+
+
+class TestRealSshRun:
+    """The real ssh.run() with a fake ssh program on PATH.
+
+    The other tests replace ssh.run, so they do not see a bad call to
+    subprocess.run().  These tests keep ssh.run and replace only the
+    ssh program.
+    """
+
+    def _fake_ssh_on_path(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch, body: str
+    ) -> None:
+        bindir = tmp_path / "fake-bin"
+        bindir.mkdir()
+        prog = bindir / "ssh"
+        prog.write_text(f"#!/bin/sh\ncat >/dev/null\n{body}\n")
+        prog.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{bindir}:{os.environ['PATH']}")
+
+    def test_a_request_goes_through_the_real_run(
+        self,
+        ltvm: Any,
+        fake: FakeSsh,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: Any,
+    ) -> None:
+        from ltvm_pkg.remote import protocol, ssh
+
+        _add(ltvm, capsys)
+        reply = protocol.reply_line("0.0", None)
+        self._fake_ssh_on_path(
+            tmp_path,
+            monkeypatch,
+            f"printf '%s\\n' {shlex.quote(reply)}\n"
+            "printf '%s\\n' '{\"vms\": []}'",
+        )
+        monkeypatch.setattr("ltvm_pkg.remote.ssh.run", _REAL_RUN)
+        assert ssh.run is _REAL_RUN
+        rc = ltvm.run(["--host", "lab", "list", "--json"])
+        captured = capsys.readouterr()
+        assert rc == 0, captured.err
+        assert json.loads(captured.out)["vms"] == []
+
+    def test_an_ssh_failure_is_an_error_not_a_traceback(
+        self,
+        ltvm: Any,
+        fake: FakeSsh,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+        capsys: Any,
+    ) -> None:
+        _add(ltvm, capsys)
+        self._fake_ssh_on_path(
+            tmp_path,
+            monkeypatch,
+            "echo 'ltvm@127.0.0.1: Permission denied (publickey).' >&2\n"
+            "exit 255",
+        )
+        monkeypatch.setattr("ltvm_pkg.remote.ssh.run", _REAL_RUN)
+        rc = ltvm.run(["--host", "lab", "list", "--json"])
+        assert rc == 1
+        assert _json_error(capsys.readouterr().err)["code"] == "unreachable"

@@ -76,9 +76,15 @@ _COMMENT_RE = re.compile(r"^[A-Za-z0-9._:@+=/-]*$")
 _URL_PART_RE = re.compile(r"^[A-Za-z0-9._:%-]+$")
 
 
-def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[str]:
-    """Run one ssh tool.  The tests replace this function."""
-    return subprocess.run(argv, text=True, check=False, **kwargs)
+def run(argv: list[str], **kwargs: Any) -> subprocess.CompletedProcess[Any]:
+    """Run one ssh tool.  The tests replace this function.
+
+    The default is text mode.  A caller can set text=False to send and
+    get bytes.
+    """
+    kwargs.setdefault("text", True)
+    kwargs.setdefault("check", False)
+    return subprocess.run(argv, **kwargs)
 
 
 def request_timeout() -> float | None:
