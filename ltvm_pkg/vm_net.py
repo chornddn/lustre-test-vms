@@ -83,12 +83,18 @@ def sshpass_ssh_argv(
     *,
     extra_opts: list[str] | None = None,
 ) -> list[str]:
-    """argv for `sshpass ssh [opts] root@<ip> <command>`."""
+    """argv for `sshpass ssh [opts] -- root@<ip> <command>`.
+
+    The `--` is necessary.  Without it, OpenSSH also reads options after
+    the destination, so a command such as `-oProxyCommand=...` runs on
+    the host and not in the guest.
+    """
     opts = SSH_OPTS + (extra_opts or [])
     return [
         *sshpass_argv(),
         "ssh",
         *opts,
+        "--",
         f"root@{ip}",
         command,
     ]
@@ -103,13 +109,15 @@ def sshpass_scp_argv(
     """argv for `sshpass scp [opts] <src> <dst>`.
 
     Either src or dst may be a `root@host:/path` remote spec; scp
-    figures out the direction itself.
+    figures out the direction itself.  The `--` stops scp from reading
+    a path that starts with `-` as an option.
     """
     opts = SSH_OPTS + (extra_opts or [])
     return [
         *sshpass_argv(),
         "scp",
         *opts,
+        "--",
         src,
         dst,
     ]

@@ -145,6 +145,24 @@ def _check_names(args: argparse.Namespace) -> None:
                 raise _bad_name(option, pair)
 
 
+def _check_exec_command(args: argparse.Namespace) -> None:
+    """Refuse a `vm exec` or `cluster exec` command that starts with `-`.
+
+    The ssh argv puts `--` before the destination, so ssh does not read
+    such a word as an option.  This check is a second barrier.
+    """
+    func = getattr(args, "func", None)
+    if getattr(func, "__name__", "") not in ("cmd_exec", "cmd_cluster_exec"):
+        return
+    words = getattr(args, "command", None) or []
+    if words and str(words[0]).startswith("-"):
+        raise RemoteError(
+            "bad_request",
+            f"the command {words[0]!r} starts with '-'",
+            hint="Start the command with a program name.",
+        )
+
+
 def _refuse_root(what: str) -> RemoteError:
     return RemoteError(
         "needs_root",
@@ -407,6 +425,7 @@ def check(
     home = Path.home() if home is None else home
     verb = argv[0]
     _check_names(args)
+    _check_exec_command(args)
     if verb == "create":
         _check_create(args)
     elif verb in _NAMES_VERBS:

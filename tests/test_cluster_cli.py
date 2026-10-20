@@ -2311,6 +2311,47 @@ class TestCmdClusterSshBehavior:
         # And the SSH target is root@<ip>.
         assert any(a == "root@10.0.0.11" for a in argv)
 
+    def test_dash_token_is_not_an_ssh_option(self, tmp_sockets: Path) -> None:
+        _save_cluster(name="co1")
+        token = "-oProxyCommand=touch /nonexistent/ran"
+        with (
+            patch.object(vm_cluster, "VMInfo") as mock_vm,
+            patch.object(vm_cluster.os, "execvp") as ev,
+        ):
+            mock_vm.load.return_value = MagicMock(ip="10.0.0.11")
+            vm_cluster.cmd_cluster_ssh(
+                argparse.Namespace(name="co1", target="oss", command=[token])
+            )
+        argv = ev.call_args.args[1]
+        dest = argv.index("root@10.0.0.11")
+        assert argv[dest - 1] == "--"
+        assert argv[dest + 1 :] == [token]
+
+    def test_exec_dash_token_reaches_the_guest(self, tmp_sockets: Path) -> None:
+        """cluster exec builds its ssh argv with the real builder."""
+        _save_cluster(name="co1")
+        token = "-oProxyCommand=touch /nonexistent/ran"
+        done = MagicMock(returncode=0, stdout="", stderr="")
+        with (
+            patch.object(vm_cluster, "VMInfo") as mock_vm,
+            patch("ltvm_pkg.vm_net.run", return_value=done) as run,
+            pytest.raises(SystemExit),
+        ):
+            mock_vm.load.return_value = MagicMock(ip="10.0.0.11")
+            vm_cluster.cmd_cluster_exec(
+                argparse.Namespace(
+                    name="co1",
+                    target="co1-oss",
+                    command=[token],
+                    timeout=10,
+                    json=True,
+                )
+            )
+        argv = run.call_args.args[0]
+        dest = argv.index("root@10.0.0.11")
+        assert argv[dest - 1] == "--"
+        assert argv[dest + 1 :] == [token]
+
 
 class TestClusterNodeDiskArgs:
     """`cluster create` must state disk counts explicitly."""

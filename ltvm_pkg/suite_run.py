@@ -537,6 +537,7 @@ def rsync_argv(
         *exclude,
         "-e",
         ssh,
+        "--",
         f"root@{ip}:{run_dir(run_id)}/",
         f"{dest}/",
     ]

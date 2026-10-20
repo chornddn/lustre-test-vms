@@ -2491,6 +2491,8 @@ def cmd_cluster_ssh(args: argparse.Namespace) -> None:
         *sshpass_argv(),
         "ssh",
         *SSH_OPTS,
+        # No ssh options after this, so a command word stays a guest word.
+        "--",
         f"root@{vm.ip}",
         *args.command,
     ]

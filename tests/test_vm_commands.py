@@ -2021,6 +2021,29 @@ class TestCmdExec:
         out = json.loads(capsys.readouterr().out)
         assert out["stdout"] == "hi\n" and out["rc"] == 0
 
+    def test_dash_token_reaches_the_guest_not_ssh(
+        self, tmp_vmdir: Path, capsys: pytest.CaptureFixture[str]
+    ) -> None:
+        """A command token like -oProxyCommand= is a guest word.
+
+        Without `--` before the destination, OpenSSH reads options after
+        it too, and runs a ProxyCommand with /bin/sh on the host.
+        """
+        _seed_vm_files(tmp_vmdir, "x-dash")
+        token = "-oProxyCommand=touch /nonexistent/ran"
+        args = self._args("x-dash", [token])
+        args.json = True
+        done = MagicMock(returncode=0, stdout="", stderr="")
+        with (
+            patch("ltvm_pkg.vm_commands.is_running", return_value=True),
+            patch("ltvm_pkg.vm_net.run", return_value=done) as run,
+        ):
+            vm_commands.cmd_exec(args)
+        argv = run.call_args.args[0]
+        dest = argv.index("root@192.168.100.50")
+        assert argv[dest - 1] == "--"
+        assert argv[dest + 1 :] == [token]
+
 
 # ── cmd_nmi ──────────────────────────────────────────────
 

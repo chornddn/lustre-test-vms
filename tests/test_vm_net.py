@@ -488,6 +488,20 @@ class TestPasswordNotInArgv:
         assert argv[:2] == ["sshpass", "-e"]
         assert SENTINEL_PASSWORD not in " ".join(argv)
 
+    def test_scp_paths_follow_end_of_options(self) -> None:
+        argv = vm_net.sshpass_scp_argv("-oProxyCommand=x", "root@h:/b")
+        assert argv[-3:] == ["--", "-oProxyCommand=x", "root@h:/b"]
+
+    def test_suite_rsync_paths_follow_end_of_options(self) -> None:
+        from ltvm_pkg import suite_run
+
+        t = MagicMock(exec_node="co1-c")
+        with patch.object(
+            suite_run.VMInfo, "load", return_value=MagicMock(ip="10.0.0.5")
+        ):
+            argv = suite_run.rsync_argv(t, "run1", Path("/tmp/x"))
+        assert argv[-3] == "--"
+
     def test_suite_rsync_argv(self) -> None:
         from ltvm_pkg import suite_run
 

@@ -124,6 +124,27 @@ def ccl(child: SimpleNamespace) -> SimpleNamespace:
     return child
 
 
+class TestExecCommandIsNotAnOption:
+    @pytest.mark.parametrize(
+        "argv",
+        [
+            ["vm", "exec", REMOTE_NODE, "-oProxyCommand=touch {s}"],
+            ["cluster", "exec", REMOTE_CL, "mds", "-oProxyCommand=touch {s}"],
+            ["cluster", "exec", REMOTE_CL, "mds", "-F", "/x", "true"],
+        ],
+    )
+    def test_a_first_word_with_a_dash_is_refused(
+        self, ccl: SimpleNamespace, argv: list[str]
+    ) -> None:
+        """Defense in depth: the ssh argv has `--` too."""
+        sentinel = ccl.tmp / "proxy-ran-s3"
+        resp = _send(shlex.join(a.format(s=sentinel) for a in argv))
+        assert resp.error is not None
+        assert resp.error.code == "bad_request"
+        assert "-" in resp.error.message
+        assert not sentinel.exists()
+
+
 class TestClusterDryRun:
     def test_create_dry_run_plans_a_remote_cluster(
         self, ccl: SimpleNamespace, ltvm: Any, capsys: Any
