@@ -3255,6 +3255,15 @@ def run(
         parser.print_help()
         return EXIT_ERROR
 
+    # `ltvm vm create` is `ltvm create`.  Collapse it to the top-level
+    # name so everything downstream -- telemetry counters, the remote
+    # client and serve included -- sees one command rather than two
+    # spellings of it.
+    alias = False
+    if args.command == "vm" and getattr(args, "vm_action", None) in _VM_ALIASES:
+        args.command = args.vm_action
+        alias = True
+
     if remote:
         from ltvm_pkg.remote import names
         from ltvm_pkg.remote.client import (
@@ -3269,14 +3278,18 @@ def run(
         # A `<host>/<vm>` name selects its host too.
         # Read the verb from argv: `vm exec` and `cluster exec` write
         # their own command to args.command.
-        verb = strip_host_option(argv)[0]
+        remote_argv = strip_host_option(argv)
+        if alias and remote_argv[:2] == ["vm", args.command]:
+            # serve allows only the top-level verb.
+            remote_argv = remote_argv[1:]
+        verb = remote_argv[0]
         host = args.host
         if not host and verb not in LOCAL_ONLY_VERBS:
             host = names.host_of(args) or os.environ.get("LTVM_HOST")
         if host:
             return run_remote(
                 host,
-                strip_host_option(argv),
+                remote_argv,
                 use_json=bool(getattr(args, "json", False)),
                 args=args,
             )
@@ -3288,12 +3301,6 @@ def run(
                 "--lease applies only to a create on a remote host (--host)",
                 bool(getattr(args, "json", False)),
             )
-
-    # `ltvm vm create` is `ltvm create`.  Collapse it to the top-level
-    # name so everything downstream -- telemetry counters included --
-    # sees one command rather than two spellings of it.
-    if args.command == "vm" and getattr(args, "vm_action", None) in _VM_ALIASES:
-        args.command = args.vm_action
 
     rc = _reconcile_target_args(args)
     if rc is not None:

@@ -217,7 +217,7 @@ On the controller, a remote VM has the name `<host>/<vm>`. `list`, `cluster list
 | Lustre | `deploy-lustre`, `llmount`, `llumount`, `suite run`, `suite status`, `suite collect` |
 | Remote only | `pull`, `lease renew` (and `receive-tree`, which the controller sends for a deploy) |
 
-`serve` refuses every other verb with `verb_refused`. Examples: `install`, `update`, `doctor`, `clean`, `skills`, `telemetry`, `claim`, `release`, `vm set`, `cluster ssh`, `cluster krb5`, `build lustre`, `build shell`, `target build`, `target publish`, `target delete`, and the `make-*` verbs. A new ltvm verb stays refused until a person adds it to `ltvm_pkg/remote/allowlist.py`. `serve` also refuses the aliases under `vm` (for example `vm create`). Use the top-level verbs.
+`serve` refuses every other verb with `verb_refused`. Examples: `install`, `update`, `doctor`, `clean`, `skills`, `telemetry`, `claim`, `release`, `vm set`, `cluster ssh`, `cluster krb5`, `build lustre`, `build shell`, `target build`, `target publish`, `target delete`, and the `make-*` verbs. A new ltvm verb stays refused until a person adds it to `ltvm_pkg/remote/allowlist.py`. The controller sends an alias under `vm` (for example `vm create`) as its top-level verb (`create`). `serve` refuses the `vm` spelling.
 
 ### Scope rules
 

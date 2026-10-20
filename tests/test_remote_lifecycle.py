@@ -217,6 +217,17 @@ class TestRemoteList:
         assert OWNER_VM not in out
         assert data["totals"]["stopped"] == 1
 
+    def test_vm_alias_goes_as_the_top_level_verb(
+        self, child: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        rc = ltvm.run(["--host", "t", "vm", "list", "--json"])
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert [vm["name"] for vm in json.loads(out)["vms"]] == [
+            f"t/{REMOTE_VM}"
+        ]
+        assert _audit(child.home)[-1]["verb"] == "list"
+
     def test_text_shows_only_remote_vms_with_the_host_prefix(
         self, child: SimpleNamespace, ltvm: Any, capsys: Any
     ) -> None:
@@ -547,6 +558,19 @@ class TestCreate:
         assert "Would create VM: new-g3" in out
         assert not (inproc.sockets / "new-g3.info").exists()
         assert not qemu["launch"].called
+
+    def test_vm_create_alias_with_a_prefixed_name(
+        self,
+        inproc: SimpleNamespace,
+        qemu: dict[str, Any],
+        ltvm: Any,
+        capsys: Any,
+    ) -> None:
+        rc = ltvm.run(["vm", "create", "t/new-g3", "--dry-run"])
+        captured = capsys.readouterr()
+        assert rc == 0, captured.err
+        assert "Would create VM: new-g3" in captured.out
+        assert _audit(inproc.home)[-1]["verb"] == "create"
 
     def test_create_marks_the_vm_as_remote(
         self,
