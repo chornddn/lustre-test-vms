@@ -9,7 +9,8 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 from pathlib import Path
-from unittest.mock import patch
+from typing import Any
+from unittest.mock import MagicMock, patch
 
 import pytest
 
@@ -252,3 +253,50 @@ class TestLaunch:
         joined = " ".join(qemu)
         assert joined.count(f"addr.path={sock},") == 2
         assert TestLaunchQemuMacos._SOCK not in joined
+
+
+class TestServeNeedsTheRemoteNetwork:
+    """serve refuses a request that makes a VM without the remote network."""
+
+    def _serve(
+        self, tmp_path: Path, ltvm: Any, command: str, problems: list[str]
+    ) -> Any:
+        import io
+
+        from ltvm_pkg.remote import protocol, serve, transport
+        from tests.remote_helpers import write_serve_toml
+
+        home = tmp_path / "home"
+        home.mkdir(exist_ok=True)
+        write_serve_toml(home)
+        out = io.StringIO()
+        ready = MagicMock(ok=True, problems=[])
+        with (
+            patch("ltvm_pkg.rootless.readiness", return_value=ready),
+            patch("ltvm_pkg.guest_net.remote_problems", return_value=problems),
+        ):
+            rc = serve.serve_stdio(
+                ltvm.run,
+                parse=ltvm._parse_request,
+                stdin=io.StringIO(protocol.hello_line("0") + "\n"),
+                stdout=out,
+                env={"HOME": str(home), "SSH_ORIGINAL_COMMAND": command},
+            )
+        return transport.parse_reply(rc, out.getvalue(), "")
+
+    @pytest.mark.parametrize(
+        "command", ["create co1-r", "cluster create co1 mgs+mds:co1-mds:1"]
+    )
+    def test_a_create_is_refused_without_it(
+        self, tmp_vmdir: Path, ltvm: Any, command: str
+    ) -> None:
+        resp = self._serve(tmp_vmdir, ltvm, command, ["fcbr1 is missing"])
+        assert resp.error is not None
+        assert resp.error.code == "layout_unsupported"
+        assert "fcbr1 is missing" in resp.error.message
+
+    def test_a_list_does_not_need_it(
+        self, tmp_vmdir: Path, ltvm: Any, capsys: Any
+    ) -> None:
+        resp = self._serve(tmp_vmdir, ltvm, "list --json", ["fcbr1 is missing"])
+        assert resp.error is None

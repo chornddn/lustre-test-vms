@@ -174,6 +174,25 @@ def _check_layout(env: Mapping[str, str]) -> None:
         )
 
 
+def _check_remote_net(argv: list[str], env: Mapping[str, str]) -> None:
+    """Refuse a request that makes a VM when the remote network is missing.
+
+    A remote VM must not fall back to the network of the owner VMs.
+    """
+    if not power.makes_vm(argv) or test_layout(env):
+        return
+    from ltvm_pkg import guest_net
+
+    problems = guest_net.remote_problems()
+    if problems:
+        raise RemoteError(
+            "layout_unsupported",
+            "this host does not have the remote guest network: "
+            + "; ".join(problems),
+            hint="The host owner runs `ltvm install --serve`.",
+        )
+
+
 def _check_scope(
     parse: ParseFn, argv: list[str], env: Mapping[str, str]
 ) -> list[str]:
@@ -330,6 +349,7 @@ def serve_stdio(
         if argv[0] == "pull":
             return _pull(argv, stdout, env, log, key)
         to_run = _check_scope(parse, argv, env)
+        _check_remote_net(to_run, env)
         podman.check(to_run)
         leases.on_request(to_run, parse, env, scope.owner_id(key))
     except RemoteError as e:
