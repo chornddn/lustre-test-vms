@@ -149,7 +149,8 @@ def _polkit(deps: Deps, user: str) -> str:
     write = _root_writer(deps.run, deps.system)
     try:
         write(power.POLKIT_RULE, power.polkit_rule(user), 0o644)
-    except (OSError, subprocess.CalledProcessError) as e:
+    except (OSError, RuntimeError, subprocess.CalledProcessError) as e:
+        # priv.sudo_run raises RuntimeError for a failed command.
         return f"not installed: {e}"
     return "installed"
 
@@ -401,11 +402,15 @@ def _sshd_running(deps: Deps) -> bool:
 
 def _sshd_settings(deps: Deps, user: str) -> dict[str, str] | None:
     """sshd -T for the user (it needs root), or None."""
-    r = deps.run(
-        [SSHD, "-T", "-C", f"user={user},host=localhost,addr=127.0.0.1"],
-        check=False,
-        quiet=True,
-    )
+    try:
+        r = deps.run(
+            [SSHD, "-T", "-C", f"user={user},host=localhost,addr=127.0.0.1"],
+            check=False,
+            quiet=True,
+        )
+    except (OSError, RuntimeError):
+        # As root, a missing sshd gives FileNotFoundError.
+        return None
     if r.returncode != 0:
         return None
     settings: dict[str, str] = {}
@@ -626,8 +631,11 @@ def install(
     if not problems:
         stdout.write(f"Running the wizard as {user}:\n")
         stdout.flush()
-        r = deps.run(init_cmd, check=False, quiet=quiet)
-        wizard = "ok" if r.returncode == 0 else f"exit {r.returncode}"
+        try:
+            r = deps.run(init_cmd, check=False, quiet=quiet)
+            wizard = "ok" if r.returncode == 0 else f"exit {r.returncode}"
+        except (OSError, RuntimeError) as e:
+            wizard = f"failed: {e}"
     reap = deps.reap or _reap
     try:
         reap_result = reap(

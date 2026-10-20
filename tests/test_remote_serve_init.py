@@ -766,6 +766,54 @@ class TestPolkitRule:
         assert report["polkit"].startswith("not installed")
         assert "polkit" in out
 
+    def test_a_rule_that_sudo_run_refuses_is_a_step_left(
+        self, tmp_path: Path
+    ) -> None:
+        # priv.sudo_run raises RuntimeError for a failed command, for
+        # example when /etc/polkit-1/rules.d is not there.
+        host = FakeHost(tmp_path, "Linux")
+        real = host.run
+
+        def run(cmd: list[str], **kw: Any) -> Any:
+            if cmd[-1] == self.RULE:
+                raise RuntimeError("Command failed (rc=1): install")
+            return real(cmd, **kw)
+
+        report, out = _install(host, run=run)
+        assert report["polkit"].startswith("not installed")
+        assert "ltvm host add box" in out
+
+
+class TestSshdFailures:
+    def test_sshd_that_cannot_run_is_a_problem(self, tmp_path: Path) -> None:
+        # No sshd binary: as root, priv._run gets FileNotFoundError.
+        host = FakeHost(tmp_path, "Linux")
+        real = host.run
+
+        def run(cmd: list[str], **kw: Any) -> Any:
+            if cmd[0].endswith("sshd"):
+                raise FileNotFoundError(2, "No such file", cmd[0])
+            return real(cmd, **kw)
+
+        report, out = _install(host, run=run)
+        assert report["sshd"]["match_block"] is True
+        assert "ltvm host add box" in out
+
+    def test_a_wizard_that_cannot_start_is_reported(
+        self, tmp_path: Path
+    ) -> None:
+        host = FakeHost(tmp_path, "Linux")
+        real = host.run
+
+        def run(cmd: list[str], **kw: Any) -> Any:
+            if cmd[:2] == ["sudo", "-u"]:
+                raise FileNotFoundError(2, "No such file", "sudo")
+            return real(cmd, **kw)
+
+        report, out = _install(host, run=run)
+        assert report["wizard"].startswith("failed")
+        assert "ltvm host add box" in out
+
 
 class TestInstallServeCommand:
     @pytest.fixture
