@@ -340,6 +340,8 @@ class FakeHost:
             hostname=lambda: "box",
             reap=lambda **k: "installed",
             subid_files=(self.subuid, self.subgid),
+            # Not the Homebrew of the machine that runs the tests.
+            brew_bin=None,
         )
         fields.update(kw)
         return serve_install.Deps(**fields)
@@ -585,7 +587,41 @@ class TestSshd:
         host = FakeHost(tmp_path, "Darwin")
         host.sshd_t = "exposeauthinfo yes\n"
         _, out = _install(host)
-        assert "SetEnv PATH=/usr/local/bin:" in out
+        line = next(x for x in out.splitlines() if "SetEnv PATH=" in x)
+        assert "/usr/local/bin" in line.split("=", 1)[1].split(":")
+
+    def test_macos_block_has_the_homebrew_bin_directories(
+        self, tmp_path: Path
+    ) -> None:
+        # sshpass and podman are in /opt/homebrew/bin on Apple Silicon.
+        host = FakeHost(tmp_path, "Darwin")
+        host.sshd_t = "exposeauthinfo yes\n"
+        _, out = _install(host, brew_bin="/opt/homebrew/bin")
+        line = next(x for x in out.splitlines() if "SetEnv PATH=" in x)
+        dirs = line.split("=", 1)[1].split(":")
+        assert "/opt/homebrew/bin" in dirs
+        assert "/usr/local/bin" in dirs
+
+    def test_macos_path_without_homebrew_is_a_problem(
+        self, tmp_path: Path
+    ) -> None:
+        host = FakeHost(tmp_path, "Darwin")
+        host.sshd_t = (
+            "exposeauthinfo yes\nsetenv PATH=/usr/local/bin:/usr/bin:/bin\n"
+        )
+        report, out = _install(host, brew_bin="/opt/homebrew/bin")
+        assert any("/opt/homebrew/bin" in p for p in report["sshd"]["problems"])
+        assert report["sshd"]["match_block"] is True
+        assert "Match User ltvm" in out
+
+    def test_macos_path_with_homebrew_is_good(self, tmp_path: Path) -> None:
+        host = FakeHost(tmp_path, "Darwin")
+        host.sshd_t = (
+            "exposeauthinfo yes\n"
+            "setenv PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin\n"
+        )
+        report, _ = _install(host, brew_bin="/opt/homebrew/bin")
+        assert report["sshd"]["match_block"] is False
 
     def test_deny_rule_is_a_problem(self, tmp_path: Path) -> None:
         host = FakeHost(tmp_path, "Linux")

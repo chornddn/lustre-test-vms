@@ -47,7 +47,11 @@ HOSTKEY_PUB = Path("/etc/ssh/ssh_host_ed25519_key.pub")
 MACOS_UIDS = range(401, 500)
 MACOS_STAFF_GID = 20
 # The sshd PATH for a forced command on macOS has no /usr/local/bin.
-FORCED_PATH = "/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+# Homebrew puts sshpass and podman in /opt/homebrew/bin on Apple Silicon
+# and in /usr/local/bin on Intel.  A directory that is not there does no
+# harm, so the PATH has both.
+HOMEBREW_BIN = "/opt/homebrew/bin"
+FORCED_PATH = f"{HOMEBREW_BIN}:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 # Rootless podman needs subordinate UIDs and GIDs for the user.
 SUBID_FILES = (Path("/etc/subuid"), Path("/etc/subgid"))
 SUBID_FIRST = 100000
@@ -162,6 +166,11 @@ def _repo_read_paths() -> list[Path]:
     return seen
 
 
+def _brew_bin() -> str | None:
+    """HOMEBREW_BIN if Homebrew is there (Apple Silicon), else None."""
+    return HOMEBREW_BIN if os.path.isdir(HOMEBREW_BIN) else None
+
+
 @dataclass
 class Deps:
     """What install() uses from the host.  Tests give fakes."""
@@ -186,6 +195,7 @@ class Deps:
     address: Callable[[], str | None] = _address
     hostname: Callable[[], str] = _hostname
     reap: Callable[..., str] | None = None
+    brew_bin: str | None = field(default_factory=_brew_bin)
 
 
 # ── read access ──────────────────────────────────────────
@@ -455,11 +465,15 @@ def _check_sshd(deps: Deps, user: str, gids: list[int]) -> dict[str, Any]:
                 "cannot name the controller key"
             )
             block = True
-        if macos and "/usr/local/bin" not in settings.get("setenv", ""):
-            problems.append(
-                f"the forced command of {user} has no /usr/local/bin in PATH"
-            )
-            block = True
+        if macos:
+            path = settings.get("setenv", "").partition("PATH=")[2]
+            dirs = path.split()[0].split(":") if path else []
+            for need in ("/usr/local/bin", deps.brew_bin):
+                if need and need not in dirs:
+                    problems.append(
+                        f"the forced command of {user} has no {need} in PATH"
+                    )
+                    block = True
     if macos:
         try:
             members = deps.getgrnam(ACCESS_SSH_GROUP).gr_mem

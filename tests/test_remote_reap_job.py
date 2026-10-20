@@ -40,6 +40,18 @@ def test_launchd_job_runs_reap_as_the_dedicated_user() -> None:
     assert plist["EnvironmentVariables"]["HOME"] == HOME
 
 
+def test_launchd_job_path_has_the_homebrew_bin_directories() -> None:
+    # launchd gives a job only /usr/bin:/bin:/usr/sbin:/sbin.  The reap
+    # needs podman and sshpass from Homebrew.
+    from ltvm_pkg.remote import reap_job
+
+    plist = plistlib.loads(reap_job.launchd_plist(LTVM, USER, HOME).encode())
+    dirs = plist["EnvironmentVariables"]["PATH"].split(":")
+    assert "/opt/homebrew/bin" in dirs
+    assert "/usr/local/bin" in dirs
+    assert "/usr/bin" in dirs
+
+
 def test_systemd_timer_runs_reap_as_the_dedicated_user() -> None:
     from ltvm_pkg.remote import reap_job
 

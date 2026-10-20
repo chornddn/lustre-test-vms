@@ -32,12 +32,18 @@ RunFn = Callable[..., object]
 def launchd_plist(
     ltvm: str, user: str, home: str, interval: int = INTERVAL_S
 ) -> str:
-    """The LaunchDaemon plist.  launchd does not set HOME for UserName."""
+    """The LaunchDaemon plist.
+
+    launchd does not set HOME for UserName.  The launchd PATH has no
+    Homebrew directory, so the job gets the PATH of the forced command.
+    """
+    from ltvm_pkg.remote.serve_install import FORCED_PATH
+
     job = {
         "Label": LABEL,
         "UserName": user,
         "ProgramArguments": [ltvm, "serve", "reap"],
-        "EnvironmentVariables": {"HOME": home},
+        "EnvironmentVariables": {"HOME": home, "PATH": FORCED_PATH},
         "StartInterval": interval,
         "RunAtLoad": True,
     }

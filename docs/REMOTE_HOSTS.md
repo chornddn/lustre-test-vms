@@ -98,11 +98,11 @@ Match User ltvm
     X11Forwarding no
     PermitTunnel no
     PermitUserRC no
-    SetEnv PATH=/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
+    SetEnv PATH=/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin
 ```
 
 - `ExposeAuthInfo yes` is necessary. Without it, sshd does not set `SSH_USER_AUTH`. Then the audit log and the VM owner ID cannot name the controller key, and they show `-`.
-- `SetEnv PATH=...` is necessary on macOS only. On macOS, the sshd PATH for a forced command has no `/usr/local/bin`. So sshd cannot find `ltvm`. `SetEnv` needs OpenSSH 8.7 or later. macOS 13 and later have it.
+- `SetEnv PATH=...` is necessary on macOS only. On macOS, the sshd PATH for a forced command has no `/usr/local/bin`. So sshd cannot find `ltvm`. On Apple Silicon, Homebrew puts `sshpass` and `podman` in `/opt/homebrew/bin`, so the PATH must have that directory too. The reap LaunchDaemon gets the same PATH. `SetEnv` needs OpenSSH 8.7 or later. macOS 13 and later have it.
 - The other lines repeat the `restrict` option of the key line. They are a second layer.
 - A `Match` block must be at the end of `sshd_config`. A drop-in file in `sshd_config.d/` works on RHEL 9, Ubuntu 22.04 and later, and macOS 13 and later.
 
