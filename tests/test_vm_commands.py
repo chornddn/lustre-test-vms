@@ -1536,7 +1536,7 @@ class TestCmdCreateChown:
             from contextlib import contextmanager
 
             @contextmanager
-            def fake_alloc(name, count=1, explicit_ip=None):
+            def fake_alloc(name, count=1, explicit_ip=None, net=None):
                 yield [
                     explicit_ip or "192.168.100.50",
                     *[f"192.168.100.{60 + i}" for i in range(count - 1)],

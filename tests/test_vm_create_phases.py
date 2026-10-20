@@ -321,6 +321,7 @@ class TestCreateKernelResolution:
             name: str,
             count: int = 1,
             explicit_ip: str | None = None,
+            net: Any = None,
         ) -> Iterator[list[str]]:
             yield [
                 explicit_ip or "192.168.100.51",
@@ -559,6 +560,7 @@ class TestCreateRollback:
             name: str,
             count: int = 1,
             explicit_ip: str | None = None,
+            net: Any = None,
         ) -> Iterator[list[str]]:
             yield [
                 explicit_ip or "192.168.100.60",
@@ -610,6 +612,7 @@ class TestCreateRollback:
             name: str,
             count: int = 1,
             explicit_ip: str | None = None,
+            net: Any = None,
         ) -> Iterator[list[str]]:
             yield [
                 explicit_ip or "192.168.100.61",
