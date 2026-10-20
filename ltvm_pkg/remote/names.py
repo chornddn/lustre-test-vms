@@ -84,12 +84,13 @@ _JSON_VIEWS = (
     ["cluster", "exec"],
 )
 # cluster exec exits with the worst status of its nodes, and its JSON
-# holds the output of each node.  So the controller shows it for any
-# status.
-_ANY_STATUS = (["cluster", "exec"],)
+# holds the output of each node.  cluster status --wait-recovery exits 1
+# with the status when recovery does not end.  So the controller shows
+# these views for any status.
+_ANY_STATUS = (["cluster", "exec"], ["cluster", "status"])
 
 
-def _json_view(argv: list[str]) -> bool:
+def is_json_view(argv: list[str]) -> bool:
     return any(argv[: len(v)] == v for v in _JSON_VIEWS)
 
 
@@ -116,7 +117,7 @@ def to_host(host: str, argv: list[str], args: argparse.Namespace) -> list[str]:
         target = getattr(args, "target", None)
         if isinstance(target, str):
             _replace(out, target, _strip(host, target))
-    if _json_view(out) and not getattr(args, "json", False):
+    if is_json_view(out) and not getattr(args, "json", False):
         # The controller makes the text from the JSON, with the prefix.
         # The command of cluster exec is a REMAINDER, so --json goes
         # before its positionals.
@@ -125,6 +126,30 @@ def to_host(host: str, argv: list[str], args: argparse.Namespace) -> list[str]:
         else:
             out.append("--json")
     return out
+
+
+def text_error(stderr: str) -> bool:
+    """Print a JSON error envelope on stderr as the text error lines.
+
+    In text mode the controller adds --json to a JSON view, so a failed
+    verb writes its error as JSON.  Return False if stderr is not one
+    envelope.  Then the caller prints stderr as it is.
+    """
+    from ltvm_pkg.cli.util import _emit_error
+
+    try:
+        data = json.loads(stderr)
+    except ValueError:
+        return False
+    if not isinstance(data, dict) or not isinstance(data.get("error"), str):
+        return False
+    hint = data.pop("hint", None)
+    data.pop("code", None)
+    msg = data.pop("error")
+    _emit_error(
+        msg, False, hint=hint if isinstance(hint, str) else None, details=data
+    )
+    return True
 
 
 def _print_exec(host: str, data: dict[str, Any]) -> None:
@@ -150,7 +175,7 @@ def show(
     Return False if argv is not a JSON view, if the verb failed, or if
     the reply is not JSON.  Then the caller prints the reply as it is.
     """
-    if not _json_view(argv):
+    if not is_json_view(argv):
         return False
     if status != 0 and not any(argv[: len(v)] == v for v in _ANY_STATUS):
         return False

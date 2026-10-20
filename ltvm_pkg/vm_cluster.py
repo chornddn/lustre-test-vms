@@ -2462,6 +2462,10 @@ def print_cluster_status(data: dict[str, Any]) -> None:
         )
     # A host with an older ltvm sends no "lustre".
     print_lustre_state(data.get("lustre") or [])
+    # Only --wait-recovery gives "recovered".
+    if "recovered" in data:
+        print()
+        print(f"recovery: {'done' if data['recovered'] else 'not done'}")
 
 
 def cmd_cluster_ssh(args: argparse.Namespace) -> None:

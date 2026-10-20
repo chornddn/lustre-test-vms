@@ -332,6 +332,65 @@ def icl(
     return inproc
 
 
+class TestTextErrors:
+    """Text mode sends --json.  A failed verb must still print text."""
+
+    def test_a_failed_status_prints_an_error_line(
+        self, icl: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        _save_cluster(icl.sockets, REMOTE_CL, REMOTE_NODE, REMOTE_OWNER)
+        with patch(
+            "ltvm_pkg.cluster_lustre_state.lustre_state",
+            side_effect=RuntimeError("state-sentinel-d4"),
+        ):
+            rc = ltvm.run(["--host", "t", "cluster", "status", REMOTE_CL])
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert "error: state-sentinel-d4" in captured.err
+        assert "{" not in captured.err + captured.out
+
+    def test_a_failed_status_keeps_the_json_envelope_with_json(
+        self, icl: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        _save_cluster(icl.sockets, REMOTE_CL, REMOTE_NODE, REMOTE_OWNER)
+        with patch(
+            "ltvm_pkg.cluster_lustre_state.lustre_state",
+            side_effect=RuntimeError("state-sentinel-d4"),
+        ):
+            rc = ltvm.run(
+                ["--host", "t", "cluster", "status", REMOTE_CL, "--json"]
+            )
+        assert rc == 1
+        assert json.loads(capsys.readouterr().err)["error"] == (
+            "state-sentinel-d4"
+        )
+
+    def test_a_recovery_timeout_prints_the_status_as_text(
+        self, icl: SimpleNamespace, ltvm: Any, capsys: Any
+    ) -> None:
+        _save_cluster(icl.sockets, REMOTE_CL, REMOTE_NODE, REMOTE_OWNER)
+        with patch(
+            "ltvm_pkg.cluster_lustre_state.wait_recovery",
+            return_value=([], False),
+        ):
+            rc = ltvm.run(
+                [
+                    "--host",
+                    "t",
+                    "cluster",
+                    "status",
+                    REMOTE_CL,
+                    "--wait-recovery",
+                    "5",
+                ]
+            )
+        captured = capsys.readouterr()
+        assert rc == 1
+        assert f"cluster: t/{REMOTE_CL}" in captured.out
+        assert "recovery: not done" in captured.out
+        assert "{" not in captured.out
+
+
 class TestClusterLifecycle:
     def test_create_runs_guarded_children_of_this_ltvm(
         self, icl: SimpleNamespace, ltvm: Any, capsys: Any

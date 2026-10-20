@@ -84,5 +84,7 @@ def run_remote(
         return response.status
     if not names.show(name, argv, response.status, response.stdout, use_json):
         sys.stdout.write(response.stdout)
-    sys.stderr.write(response.stderr)
+    added_json = not use_json and names.is_json_view(argv)
+    if not (added_json and names.text_error(response.stderr)):
+        sys.stderr.write(response.stderr)
     return response.status
