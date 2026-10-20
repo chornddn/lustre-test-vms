@@ -39,6 +39,7 @@ from pathlib import Path
 from typing import Any
 
 from . import vm_claim
+from .lustre_version import tree_is_untrusted
 from .qemu_run import die, is_running
 from .vm_net import SSH_OPTS, sshpass_argv, sshpass_ssh_argv
 from .vm_state import (
@@ -453,7 +454,25 @@ def parse_results(text: str) -> list[dict[str, Any]]:
 
 
 def _results_files(root: Path) -> list[Path]:
-    return sorted(root.rglob("results.yml"))
+    """Each results.yml under root.  Do not go through a directory link.
+
+    A guest writes the results, so a link can point out of root.
+    """
+    found = []
+    for top, _, names in os.walk(root, followlinks=False):
+        if "results.yml" in names:
+            found.append(Path(top) / "results.yml")
+    return sorted(found)
+
+
+def _read_results(path: Path) -> str | None:
+    """The text of a results.yml, or None if it is a link or unreadable."""
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    with os.fdopen(fd, "rb") as f:
+        return f.read().decode(errors="replace")
 
 
 def summarize(root: Path) -> dict[str, Any]:
@@ -464,9 +483,13 @@ def summarize(root: Path) -> dict[str, Any]:
     failures: list[dict[str, Any]] = []
     unfinished: list[dict[str, Any]] = []
     suites: list[dict[str, Any]] = []
-    files = _results_files(root)
-    for path in files:
-        for s in parse_results(path.read_text(errors="replace")):
+    files = []
+    for path in _results_files(root):
+        text = _read_results(path)
+        if text is None:
+            continue
+        files.append(path)
+        for s in parse_results(text):
             suites.append(
                 {
                     "name": s["name"],
@@ -504,9 +527,13 @@ def rsync_argv(
     ip = VMInfo.load(t.exec_node).ip
     ssh = shlex.join([*sshpass_argv(), "ssh", *SSH_OPTS, *_SSH_EXTRA])
     exclude = [] if debug_logs else ["--exclude", DEBUG_LOG_GLOB]
+    # Under serve, the guest belongs to a remote request.  -rpt is -a
+    # with no links, no devices and no owners, so the guest cannot leave
+    # a link on the host.  openrsync on macOS knows these options too.
+    copy = "-rpt" if tree_is_untrusted() else "-a"
     return [
         "rsync",
-        "-a",
+        copy,
         *exclude,
         "-e",
         ssh,

@@ -285,6 +285,21 @@ class TestResults:
         ]
         assert s["results_files"] == [str(logs / "results.yml")]
 
+    def test_summarize_does_not_follow_links(self, tmp_path: Path) -> None:
+        # A guest writes the results.  Under serve, a link from the
+        # guest must not make the host read a file outside the results.
+        outside = tmp_path / "outside"
+        (outside / "d").mkdir(parents=True)
+        shutil.copy(FIXTURE, outside / "results.yml")
+        shutil.copy(FIXTURE, outside / "d" / "results.yml")
+        root = tmp_path / "run"
+        (root / "a").mkdir(parents=True)
+        (root / "a" / "results.yml").symlink_to(outside / "results.yml")
+        (root / "b").symlink_to(outside / "d")
+        s = suite_run.summarize(root)
+        assert s["counts"] == {}
+        assert s["results_files"] == []
+
     def test_summarize_without_results(self, tmp_path: Path) -> None:
         s = suite_run.summarize(tmp_path)
         assert s["counts"] == {} and s["results_files"] == []
@@ -304,6 +319,28 @@ class TestResults:
         assert argv[-1] == f"{tmp_path}/"
         argv = suite_run.rsync_argv(t, RID, tmp_path, debug_logs=True)
         assert "--exclude" not in argv
+
+    def test_rsync_under_serve_copies_no_links(
+        self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+    ) -> None:
+        # A guest of a remote request must not leave a link on the host.
+        monkeypatch.setattr(
+            suite_run.VMInfo,
+            "load",
+            lambda name: SimpleNamespace(ip="10.0.0.9"),
+        )
+        t = suite_run.SuiteTarget("co1", "vm", "co1", ["co1"])
+        local = suite_run.rsync_argv(t, RID, tmp_path)
+        assert "-a" in local
+        monkeypatch.setenv("LTVM_OWNER_ID", "remote:SHA256:x")
+        argv = suite_run.rsync_argv(t, RID, tmp_path)
+        flags = [
+            a for a in argv if a.startswith("-") and not a.startswith("--")
+        ]
+        assert "-a" not in argv
+        assert not any("l" in f or "D" in f for f in flags if f != "-e")
+        assert "-rpt" in argv
+        assert argv[-1] == f"{tmp_path}/"
 
     def test_collect_counts_the_debug_logs_it_left(
         self,

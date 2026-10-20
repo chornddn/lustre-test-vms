@@ -278,6 +278,7 @@ ltvm --host lab1 pull j-20261019-101500-1a2b3c4d dk
 | `console` | `VM_DIR/sockets/<vm>.log` | QEMU |
 
 - A cluster name selects all of its nodes for `crash`, `dk` and `console`. For `suite` it selects the results directory of the cluster.
+- A guest of a remote request writes the suite results. So under `serve`, `suite collect` copies them with `rsync -rpt`, not `-a`. The copy has no links and no device files. The suite summary does not follow a link to a `results.yml` or to a directory.
 - A job name selects the VMs and clusters that the job deployed to.
 - The request has no path. `serve` refuses any other shape with `bad_request`.
 - `serve` does not follow a symbolic link. A link in the path gives `path_refused`. `serve` skips a link inside a result directory, and prints a message on stderr.
