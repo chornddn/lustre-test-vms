@@ -9,8 +9,12 @@ from . import hosts, names, protocol, pull, tree
 from .protocol import RemoteError
 
 # Verbs that ignore LTVM_HOST and run on this machine.  An explicit
-# --host still sends them to the host.
-LOCAL_ONLY_VERBS = frozenset({"serve", "host"})
+# --host still sends them to the host.  A shell rc file runs
+# `eval "$(ltvm completion)"`, and install, update and doctor act on
+# this machine.
+LOCAL_ONLY_VERBS = frozenset(
+    {"serve", "host", "completion", "install", "update", "doctor"}
+)
 
 
 def strip_host_option(argv: list[str]) -> list[str]:

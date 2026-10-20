@@ -548,6 +548,37 @@ class TestHostList:
         assert json.loads(capsys.readouterr().out) == {"hosts": []}
 
 
+class TestLocalOnlyVerbs:
+    @pytest.mark.parametrize(
+        ("argv", "handler"),
+        [
+            (["completion", "--shell", "bash"], "cmd_completion"),
+            (["install"], "cmd_setup"),
+            (["update"], "cmd_update"),
+            (["doctor"], "cmd_doctor"),
+        ],
+    )
+    def test_ltvm_host_does_not_send_the_verb(
+        self,
+        ltvm: Any,
+        monkeypatch: pytest.MonkeyPatch,
+        argv: list[str],
+        handler: str,
+    ) -> None:
+        # `eval "$(ltvm completion)"` in a shell rc must not reach a host.
+        def no_remote(*a: Any, **k: Any) -> int:
+            raise AssertionError("the verb went to the host")
+
+        ran: list[str] = []
+        monkeypatch.setenv("LTVM_HOST", "nosuch-host-f6")
+        monkeypatch.setattr("ltvm_pkg.remote.client.run_remote", no_remote)
+        monkeypatch.setattr(
+            ltvm, handler, lambda args: ran.append(handler) or 0
+        )
+        assert ltvm.run(argv, update_check=False, telemetry=False) == 0
+        assert ran == [handler]
+
+
 class TestHostRemove:
     def test_deletes_the_entry_and_the_key_and_prints_the_line(
         self, ltvm: Any, fake: FakeSsh, capsys: Any

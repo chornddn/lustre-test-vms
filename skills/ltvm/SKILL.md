@@ -721,7 +721,8 @@ ltvm --host lab1 destroy co1-single
 ```
 
 - Put `--host` before the verb. `ltvm list --host lab1` is an error.
-  `LTVM_HOST=lab1` sends every verb except `serve` and `host`. Prefer an
+  `LTVM_HOST=lab1` sends every verb except `serve`, `host`, `completion`,
+  `install`, `update` and `doctor`. Prefer an
   explicit `--host`, so that each command shows where it runs.
 - On the controller, a remote VM has the name `lab1/<vm>`. A name with the
   prefix of a registered host also selects that host:

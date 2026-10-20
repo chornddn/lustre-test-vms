@@ -201,7 +201,7 @@ We do not use FIDO or Secure Enclave keys. These keys need a touch for each use,
 ### Select the host
 
 - `ltvm --host lab1 <verb> ...` sends the verb to the host. `--host` must come before the verb. `ltvm list --host lab1` is an error.
-- `LTVM_HOST=lab1` in the environment does the same for every verb, except `serve` and `host`.
+- `LTVM_HOST=lab1` in the environment does the same for every verb, except `serve`, `host`, `completion`, `install`, `update` and `doctor`. These verbs act on the controller. So `eval "$(ltvm completion)"` in a shell rc file does not reach the host.
 - A name `lab1/<vm>` selects host `lab1` when `lab1` is a registered host. `--host` wins over the name prefix, and the prefix wins over `LTVM_HOST`.
 
 On the controller, a remote VM has the name `<host>/<vm>`. `list`, `cluster list`, `cluster status` and `cluster exec` show the prefix. You can give a name with or without the prefix. Exception: the values of `--node-target VM=...` and `--node-kernel VM=...` take the bare node name.
