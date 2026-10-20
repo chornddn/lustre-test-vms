@@ -1428,6 +1428,13 @@ fi""")
         "-c",
         script,
     ]
+    if tree_is_untrusted() and not cross_compiling:
+        # Under serve, configure and make run the code of the remote
+        # controller.  With no network, that code cannot reach the
+        # guests of the owner or the LAN.  A native build needs no
+        # network.  A cross build installs its toolchain and sysroot
+        # with dnf or apt, so it keeps the network.
+        cmd[-3:-3] = ["--network=none"]
     if zfs_src is not None:
         # Insert before the image tag, which must stay the last
         # argument before "-c".  Read-only: configure reads headers and

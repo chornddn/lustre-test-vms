@@ -852,3 +852,33 @@ class TestZfsSourceWiring:
         assert 'build_cmd += ["--zfs-source", zfs_source]' in src
         src = Path("ltvm_pkg/vm_cluster.py").read_text()
         assert 'build_cmd += ["--zfs-source", zfs_source]' in src
+
+
+class TestServeBuildHasNoNetwork:
+    """Under serve, the code of a native Lustre build is the controller's.
+
+    A native build needs no network.  A cross build installs a toolchain
+    and a sysroot with dnf or apt, so it keeps the network.
+    """
+
+    def _cmd(self, tmp_path: Path, *, served: bool, host: str) -> list[str]:
+        with (
+            patch.object(lb, "tree_is_untrusted", return_value=served),
+            patch("platform.machine", return_value=host),
+        ):
+            cmd: list[str] = _capture_container_build(tmp_path)
+        return cmd[: cmd.index("ltvm-build-rocky9")]
+
+    def test_a_served_native_build_has_no_network(self, tmp_path: Path) -> None:
+        opts = self._cmd(tmp_path, served=True, host="x86_64")
+        assert "--network=none" in opts
+
+    def test_an_owner_build_keeps_the_network(self, tmp_path: Path) -> None:
+        opts = self._cmd(tmp_path, served=False, host="x86_64")
+        assert not any(o.startswith("--network") for o in opts)
+
+    def test_a_served_cross_build_keeps_the_network(
+        self, tmp_path: Path
+    ) -> None:
+        opts = self._cmd(tmp_path, served=True, host="aarch64")
+        assert not any(o.startswith("--network") for o in opts)

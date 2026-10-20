@@ -475,7 +475,7 @@ The list of codes is `ERROR_CODES` in `ltvm_pkg/remote/protocol.py`.
 
 **A deploy runs code from the controller on the host.** A Lustre tree holds Makefiles and configure scripts. The allow-list limits which ltvm verbs run. It is not a sandbox. Two layers give the isolation:
 
-- The build container. It is rootless podman on Linux and WSL2, or the podman machine VM on macOS. For a build, the host refuses podman that is not rootless and not in a VM (`podman_unsafe`).
+- The build container. It is rootless podman on Linux and WSL2, or the podman machine VM on macOS. For a build, the host refuses podman that is not rootless and not in a VM (`podman_unsafe`). A native Lustre build under `serve` runs with `--network=none`.
 - The dedicated user `ltvm`. It is not an admin, it has no password, and it cannot use sudo. It must not be able to read the files of the owner.
 
 A container escape or a local privilege escalation on the host defeats this design. Connect only controllers that you trust to run code as a normal user on the host.
@@ -519,6 +519,7 @@ These items are not proven on a real host yet. The end-to-end test on a macOS ho
 - A disk-writing verb that starts below the disk cap can go above it. `serve` checks the cap only before the verb runs.
 - The build container can leave a link in a job tree that points outside the tree. The host reads some files of the tree after a build, such as `configure`, `config.h` and the kernel patch series. Those reads can follow such a link. The content goes to the build, not to the controller.
 - Two parallel creates can both pass the cap check. `serve` takes no lock.
+- A cross Lustre build has a network. It installs its toolchain and sysroot with dnf, zypper or apt, and then runs configure and make from the tree. Code in the tree can thus reach each address that the host reaches, also the guests of the owner. Those guests have the root password `initial0`. A native Lustre build runs with `--network=none`. A ZFS build also has a network for dnf or apt, but it builds an OpenZFS release, not code from the controller. `serve` refuses `--zfs-source`.
 - A cluster cannot span hosts. The guest subnet is private to each host.
 - The isolation of the remote guest network is not proven on real hosts. No real nft table, bridge `fcbr1`, second socket_vmnet or pf anchor was loaded. On macOS, these three facts are from documentation only:
   - pf drops the routed packets between the two vmnet bridges.
