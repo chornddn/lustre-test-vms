@@ -248,7 +248,7 @@ ltvm --host lab1 vm exec co1-single lctl dl
 The build runs on the host, in the build container of the host. The controller and the host can have different architectures.
 
 1. The controller makes a gzip tar stream of the tree. The stream holds the files from `git ls-files --cached --others --exclude-standard`, without deleted files and submodule directories. It also holds a `LUSTRE-VERSION-FILE` that the controller makes from `git describe`. It does not hold `.git`.
-2. `serve` unpacks the stream into a new job directory, `~ltvm/jobs/j-YYYYMMDD-HHMMSS-<hex>/tree/`. It refuses the stream with `path_refused` for an absolute name, a `..` component, a hard link, a device or a `.git` entry. It also refuses a symbolic link whose real path is outside the tree. A link can go through other links of the stream. So `serve` resolves each link after the last member.
+2. `serve` unpacks the stream into a new job directory, `~ltvm/jobs/j-YYYYMMDD-HHMMSS-<hex>/tree/`. It refuses the stream with `path_refused` for an absolute name, a `..` component, a hard link, a device or a `.git` entry (in any case, such as `.GIT`). It also refuses a symbolic link whose real path is outside the tree. A link can go through other links of the stream. So `serve` resolves each link after the last member.
 3. The controller replaces `--lustre-tree` (or `--build`) with the job tree, and `serve` runs the verb.
 
 The controller sends the tree for `deploy-lustre`, `cluster deploy`, and `build all|kernel|image` with `--lustre-tree`. With no tree option, `deploy-lustre` and `cluster deploy` send the current directory.

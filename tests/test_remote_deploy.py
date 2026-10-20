@@ -199,6 +199,9 @@ class TestUnsafeStreams:
             # git on the host reads .git/config, which can run a program.
             [("file", ".git/config", "[core]\n\tfsmonitor = x\n")],
             [("file", "lnet/.git", "gitdir: /tmp\n")],
+            # APFS and NTFS ignore case, so .GIT is the git directory.
+            [("file", ".GIT/config", "[core]\n\tfsmonitor = x\n")],
+            [("file", "lnet/.Git", "gitdir: /tmp\n")],
         ],
     )
     def test_unsafe_stream_is_refused_and_leaves_no_job(

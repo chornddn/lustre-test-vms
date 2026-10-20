@@ -94,8 +94,9 @@ def _member_path(name: str) -> str:
     parts = [p for p in name.split("/") if p not in ("", ".")]
     if not parts or ".." in parts:
         raise _refuse(f"{name!r} is outside the tree")
-    if ".git" in parts:
-        # git reads .git/config, which can name a program to run.
+    if any(p.lower() == ".git" for p in parts):
+        # git reads .git/config, which can name a program to run.  APFS
+        # ignores case, so .GIT is the same directory.
         raise _refuse(f"{name!r} is a git directory")
     return "/".join(parts)
 
