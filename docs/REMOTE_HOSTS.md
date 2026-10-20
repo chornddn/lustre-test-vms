@@ -227,6 +227,7 @@ On the controller, a remote VM has the name `<host>/<vm>`. `list`, `cluster list
 - A verb on a VM or cluster that the owner made gives `vm_not_found` or `cluster_not_found`. The message is the same as for a VM that does not exist.
 - `create` with the name of an owner VM gives `name_in_use`. `create` with the name of a remote VM starts it, as on a local host.
 - `create --owner` gives `bad_request`.
+- A free-form name option gives `bad_request` when it can change a host path. These options are `--arch`, `--kernel`, `--mofed-version`, `--zfs-version`, `--variant`, `--target` and the target positional, and the value part of `--node-kernel` and `--node-target`. A name must have only letters, digits and `. _ + -`, must not start with `.`, and must not have `..`.
 - A `passthrough` NIC gives `needs_root`.
 - Path options give `path_refused`: `create --image`, `vm crash-collect --outdir` and `--mod-dir`, `suite run --results-dir`, `suite collect --dest` and `--results-dir`, `--zfs-source`, `--url`, and a `--lustre-tree` that is not a job tree.
 - `build all`, `build kernel` and `build image` with no `--lustre-tree` give `path_refused`. Locally these verbs build the current directory. On the host, that directory is the home of `ltvm`. These builds use no tree, so they pass: `build image --no-lustre`, and a kernel build of a Debian or kernel.org target.

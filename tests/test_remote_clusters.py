@@ -558,6 +558,64 @@ class TestArtifacts:
     @pytest.mark.parametrize(
         "argv",
         [
+            ["build", "status", "--arch", "../../x"],
+            ["build", "kernel", "rocky9", "--arch=a/b"],
+            ["target", "fetch", "rocky9", "--kernel", "../../../etc"],
+            ["build", "image", "rocky9", "--kernel", ".."],
+            ["build", "mofed-kmods", "rocky9", "--mofed-version", "a/b"],
+            ["build", "zfs", "rocky9", "--zfs-version", "2.2/../x"],
+            ["target", "fetch", "rocky9", "--variant", "../base"],
+            ["build", "all", "rocky9", "--target", "a/b"],
+            ["list", "--arch", "x86_64\n"],
+            [
+                "cluster",
+                "create",
+                "x-new",
+                "mgs+mds:x-a:1",
+                "--node-kernel",
+                "x-a=../../k",
+                "--dry-run",
+            ],
+            [
+                "cluster",
+                "create",
+                "x-new",
+                "mgs+mds:x-a:1",
+                "--node-target",
+                "x-a=a/b",
+                "--dry-run",
+            ],
+        ],
+    )
+    def test_names_that_make_a_path_are_refused(
+        self, child: SimpleNamespace, argv: list[str]
+    ) -> None:
+        # These values become parts of host paths, for example the
+        # artifacts directory and the Lustre staging directory.
+        resp = _send(shlex.join(argv))
+        assert resp.error is not None
+        assert resp.error.code == "bad_request"
+        assert _audit(child.home)[-1]["result"] == "bad_request"
+
+    def test_a_good_name_reaches_the_verb(self, child: SimpleNamespace) -> None:
+        """Negative control: a normal arch and kernel are not refused."""
+        resp = _send(
+            shlex.join(
+                [
+                    "target",
+                    "show",
+                    "nosuch-x9",
+                    "--arch",
+                    "x86_64",
+                    "--json",
+                ]
+            )
+        )
+        assert resp.error is None
+
+    @pytest.mark.parametrize(
+        "argv",
+        [
             ["build", "shell", "rocky9"],
             ["build", "lustre", "rocky9"],
             ["target", "build", "rocky9"],

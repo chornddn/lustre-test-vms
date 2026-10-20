@@ -373,6 +373,16 @@ class TestJobTreeOnTheHost:
         with pytest.raises(RuntimeError, match="link"):
             staging_path(tree, "rocky9", kernel="k")
 
+    @pytest.mark.parametrize("kernel", ["../../../../outside", "k/../.."])
+    def test_staging_with_dot_dot_is_refused(
+        self, tmp_path: Path, served: None, kernel: str
+    ) -> None:
+        from ltvm_pkg.lustre_build import staging_path
+
+        tree, _ = _hostile_tree(tmp_path)
+        with pytest.raises(RuntimeError, match=r"\.\."):
+            staging_path(tree, "rocky9", kernel=kernel)
+
     def test_staging_link_out_of_the_staging_is_refused(
         self, tmp_path: Path, served: None
     ) -> None:

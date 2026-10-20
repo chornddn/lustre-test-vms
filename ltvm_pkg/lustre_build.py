@@ -376,6 +376,9 @@ def check_staging(lustre_tree: Path, staging: Path) -> None:
     """
     part = lustre_tree
     for name in staging.relative_to(lustre_tree).parts:
+        if name == "..":
+            # Path does not resolve "..", so it can leave the tree.
+            raise RuntimeError(f"the staging path {staging} has '..'")
         part = part / name
         if part.is_symlink():
             raise RuntimeError(f"the staging path {part} is a link")

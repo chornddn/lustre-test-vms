@@ -28,6 +28,26 @@ REMOTE_OWNER_PREFIX = "remote:"
 # directory.
 _VM_NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,62}")
 
+# A free-form name (an arch, a kernel, a version, a variant or a target)
+# becomes a part of a host path, such as the artifacts directory or the
+# Lustre staging directory.  So it must be one path part with no "..".
+_NAME_PART_RE = re.compile(r"[A-Za-z0-9_+-][A-Za-z0-9._+-]{0,127}")
+# The free-form name options of the allowed verbs: (dest, option).
+_NAME_OPTIONS = (
+    ("arch", "--arch"),
+    ("kernel", "--kernel"),
+    ("mofed_version", "--mofed-version"),
+    ("zfs_version", "--zfs-version"),
+    ("variant", "--variant"),
+    ("_target_flag", "--target"),
+    ("target", "target"),
+)
+# The `NODE=VALUE` options of `cluster create`.
+_NODE_NAME_OPTIONS = (
+    ("node_kernel", "--node-kernel"),
+    ("node_target", "--node-target"),
+)
+
 # The verbs whose `names` are existing VMs.
 _NAMES_VERBS = frozenset({"destroy", "start", "stop"})
 
@@ -98,6 +118,31 @@ def _has_passthrough(nics: list[str] | None) -> bool:
     from ltvm_pkg.vm_commands import nic_type_of
 
     return any(nic_type_of(str(n)) == "passthrough" for n in nics or [])
+
+
+def _bad_name(option: str, value: object) -> RemoteError:
+    return RemoteError(
+        "bad_request",
+        f"{option} {value!r} is not a valid name on a remote host",
+        hint="Use letters, digits and . _ + - only, with no '..'.",
+    )
+
+
+def _check_names(args: argparse.Namespace) -> None:
+    """Refuse a free-form name that can change a host path."""
+
+    def good(value: str) -> bool:
+        return bool(_NAME_PART_RE.fullmatch(value)) and ".." not in value
+
+    for dest, option in _NAME_OPTIONS:
+        value = getattr(args, dest, None)
+        if isinstance(value, str) and not good(value):
+            raise _bad_name(option, value)
+    for dest, option in _NODE_NAME_OPTIONS:
+        for pair in getattr(args, dest, None) or []:
+            node, _, value = str(pair).partition("=")
+            if not _VM_NAME_RE.fullmatch(node) or not good(value):
+                raise _bad_name(option, pair)
 
 
 def _refuse_root(what: str) -> RemoteError:
@@ -361,6 +406,7 @@ def check(
     """
     home = Path.home() if home is None else home
     verb = argv[0]
+    _check_names(args)
     if verb == "create":
         _check_create(args)
     elif verb in _NAMES_VERBS:
