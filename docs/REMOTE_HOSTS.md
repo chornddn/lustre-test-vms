@@ -69,10 +69,35 @@ sudo ./ltvm install --serve            # Linux, WSL2
 3. It runs the `serve init` wizard as that user. See [Caps](#caps).
 4. It installs the reap job. See [Leases](#leases-and-reap).
 5. Linux (not WSL2): it installs a polkit rule for the power guard. See [Sleep](#sleep-and-power).
-6. It checks sshd for the user: running, `AllowUsers`, `DenyUsers`, `AllowGroups`, `ExposeAuthInfo`, and on macOS the `PATH` and Remote Login.
-7. It prints the steps that you must do, and the `ltvm host add` command for the controller.
+6. It sets up the remote guest network. See [Remote guest network](#remote-guest-network).
+7. It checks sshd for the user: running, `AllowUsers`, `DenyUsers`, `AllowGroups`, `ExposeAuthInfo`, and on macOS the `PATH` and Remote Login.
+8. It prints the steps that you must do, and the `ltvm host add` command for the controller.
 
-`install --serve` never changes the sshd configuration, Remote Login, a firewall or a VPN. It prints these steps for you.
+`install --serve` never changes the sshd configuration, Remote Login or a VPN. It prints these steps for you. It changes a firewall only for the remote guest bridge (see below).
+
+### Remote guest network
+
+Remote VMs have a guest network of their own. The VMs of the host owner stay on the owner network, as before. A VM is remote when its owner ID starts with `remote:`, which `serve` sets at create time. The owner ID selects the network, the IP pool, the gateway, and the bridge or socket for every NIC.
+
+| | Owner network | Remote network |
+|---|---|---|
+| Mgmt subnet | 192.168.100.0/24 (macOS 192.168.105.0/24) | 192.168.101.0/24 (macOS 192.168.106.0/24) |
+| Extra NIC subnet | 172.16.100.0/24, fd17:2016:1000:f100::/64 | 172.16.101.0/24, fd17:2016:1000:f101::/64 |
+| Linux attachment | bridge `fcbr0`, NAT | bridge `fcbr1`, no NAT |
+| macOS attachment | socket_vmnet, vmnet shared mode | second socket_vmnet, vmnet host mode, socket `socket_vmnet.ltvm-remote` |
+| DNS | `ltvm-dnsmasq` | `ltvm-dnsmasq-remote`, local names only |
+
+`LTVM_REMOTE_SUBNET` and `VM_DIR/remote-subnet` move the remote mgmt subnet. On Linux, `install --serve` picks a free /24 (192.168.101, then 192.168.150-199) and writes it to `VM_DIR/remote-subnet`.
+
+On Linux and WSL2, `ltvm-remote-net.service` loads the nftables table `inet ltvm_remote` and then makes `fcbr1`. The table drops each routed packet that goes into `fcbr1` or comes out of it. `ltvm-dnsmasq-remote.service` serves DNS on the remote gateway. `/etc/qemu/bridge.conf` gets `allow fcbr1`. A running ufw gets `allow in on fcbr1` with no `route allow` rule. firewalld puts `fcbr1` in the trusted zone.
+
+On macOS, these LaunchDaemons run the remote network:
+
+- `io.github.ltvm.pf-remote` runs `pfctl -E -a com.apple/ltvm-remote -f /usr/local/etc/ltvm-remote-pf.conf` at boot. The default `/etc/pf.conf` evaluates the anchors under `com.apple/`.
+- `io.github.ltvm.socket_vmnet-remote` runs socket_vmnet with `--vmnet-mode=host` and `--socket-group=ltvm`.
+- `io.github.ltvm.dnsmasq-remote` and `io.github.ltvm.dnsmasq-remote-reload` serve DNS on the remote gateway.
+
+`serve` refuses a remote `create` or `cluster create` with `layout_unsupported` when a part of the remote network is missing. `ltvm doctor` reports the remote network. It also reports a remote VM with an address in the owner network. Such a VM was made before the remote network existed. It does not start: destroy it and create it again.
 
 If the wizard did not run, run it as the dedicated user:
 
@@ -235,7 +260,7 @@ On the controller, a remote VM has the name `<host>/<vm>`. `list`, `cluster list
 - `vm crash-collect` always writes to `VM_DIR/crashes/<vm>/` on the host. `vm dk-collect` always writes to `VM_DIR/dk/<vm>/`.
 - A build or a deploy gives `podman_unsafe` when podman on a Linux or WSL2 host is not rootless. On macOS, podman runs containers in the podman machine VM, so `serve` accepts it.
 
-The controller reaches guests only through `serve`: `vm exec`, `cluster exec`, `suite`, `llmount`, and `pull`. There is no ProxyJump and no port forward. All guests have the root password `initial0`, so only the host must reach the guest subnet.
+The controller reaches guests only through `serve`: `vm exec`, `cluster exec`, `suite`, `llmount`, and `pull`. There is no ProxyJump and no port forward. All guests have the root password `initial0`, so only the host must reach the guest subnets. Remote guests are on their own network and cannot reach the guests of the owner. See [Security boundary](#security-boundary).
 
 ### Deploy a Lustre tree
 
@@ -428,7 +453,7 @@ Each refusal has a stable code. With `--json`, the code is in the `code` field a
 | `bad_request` | `serve` cannot read the request. | Fix the command. |
 | `bad_reply` | The controller cannot read the reply. For example, the host has an ltvm with no `serve`. | Update the host. |
 | `unknown_host` | The controller has no host with that name. | Run `ltvm host list`. |
-| `layout_unsupported` | The host does not have the shared layout, or `serve` runs as root. | The owner runs `ltvm install` on the host, and `ltvm doctor` to check it. |
+| `layout_unsupported` | The host does not have the shared layout, or `serve` runs as root. A `create` or `cluster create` also gives it when the remote guest network is missing. | The owner runs `ltvm install` on the host, and `ltvm doctor` to check it. |
 | `needs_root` | The request needs root on the host. | Use local VMs. |
 | `path_refused` | A path argument is not allowed on a remote host. | Remove the option. Use `pull` for results. |
 | `vm_not_found` | No VM that a remote request made has that name. | Check `ltvm --host <h> list`. |
@@ -459,7 +484,19 @@ Other limits:
 - **Root daemons stay.** socket_vmnet and dnsmasq run as root on macOS. The `ltvm` user does not change that.
 - **No automatic update.** The controller never updates the host, because an update would let the controller replace the code that does the checks. A protocol version change stops all remote use until the owner updates the host.
 - **The test switch.** For the exec:// test hosts, `LTVM_SERVE_TEST_LAYOUT=ready` turns off the layout check and the power guard. The `serve` command refuses a request that has the switch under sshd (`SSH_CONNECTION` is set). Do not add `LTVM_*` to `AcceptEnv` in `sshd_config`.
-- **Guests share one root password.** Only the host reaches the guest subnet. Do not route the guest subnet to other machines.
+- **Guests share one root password.** Only the host reaches the guest subnets. Do not route a guest subnet to other machines.
+
+**The remote guest network is isolated.** A remote guest cannot reach a guest of the owner. A guest of the owner cannot reach a remote guest. A remote guest also cannot reach the LAN or the internet. Remote guests reach each other and the host. Two parts give the isolation:
+
+- Each network has its own L2 segment: its own bridge on Linux, its own vmnet interface on macOS. A guest cannot send a frame to the other network.
+- The host does not route between the networks. On Linux, the nftables table `inet ltvm_remote` drops each routed packet into or out of `fcbr1`. A drop in an nftables base chain is final, so the ACCEPT rules of other tables (qemu-bridge.service, Docker, firewalld, ufw) cannot cancel it. If nft fails, `ltvm-remote-net.service` fails and `fcbr1` does not come up. On macOS, the pf anchor `com.apple/ltvm-remote` drops each packet between the remote subnets and any other address.
+
+On macOS, vmnet does not give this guarantee. Apple documents no isolation between two vmnet networks. vmnet shared mode turns on IP forwarding (`net.inet.ip.forwarding=1`), and the host has an address on both networks. So expect the host to route between them without the pf anchor. The isolation on macOS thus depends on pf: on the anchor, and on pf staying enabled. A `pfctl -d` or a pf.conf with no `com.apple/*` anchor removes it.
+
+Limits of the isolation:
+
+- A remote guest can reach the services of the host on the remote gateway address. A guest of the owner can do the same on its gateway.
+- Both dnsmasq instances read the same `hosts.d`. So a remote guest can resolve the names and addresses of owner VMs. It cannot reach them.
 
 ## Design decisions
 
@@ -481,4 +518,8 @@ These items are not proven on a real host yet. The end-to-end test on a macOS ho
 - The build container can leave a link in a job tree that points outside the tree. The host reads some files of the tree after a build, such as `configure`, `config.h` and the kernel patch series. Those reads can follow such a link. The content goes to the build, not to the controller.
 - Two parallel creates can both pass the cap check. `serve` takes no lock.
 - A cluster cannot span hosts. The guest subnet is private to each host.
+- The isolation of the remote guest network is not proven on real hosts. No real nft table, bridge `fcbr1`, second socket_vmnet or pf anchor was loaded. On macOS, these three facts are from documentation only:
+  - pf drops the routed packets between the two vmnet bridges.
+  - The pf enable reference stays after `pfctl -E` exits.
+  - socket_vmnet host mode takes `--vmnet-gateway`.
 - The controller does not stream verb output. A long deploy prints only at the end.
