@@ -339,6 +339,7 @@ class FakeHost:
             address=lambda: "192.0.2.10",
             hostname=lambda: "box",
             reap=lambda **k: "installed",
+            network=lambda **k: "installed (stub)",
             subid_files=(self.subuid, self.subgid),
             # Not the Homebrew of the machine that runs the tests.
             brew_bin=None,

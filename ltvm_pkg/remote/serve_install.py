@@ -137,6 +137,13 @@ def _reap(*, ltvm: str, user: str, home: str, run: RunFn, system: str) -> str:
     return "installed"
 
 
+def _network(*, run: RunFn, system: str) -> str:
+    from ltvm_pkg.remote import guest_net_install
+
+    write = _root_writer(run, system)
+    return guest_net_install.install(system=system, write=write, run=run)
+
+
 def _polkit(deps: Deps, user: str) -> str:
     """Let the user take the sleep lock of the power guard (power.py).
 
@@ -197,6 +204,7 @@ class Deps:
     hostname: Callable[[], str] = _hostname
     reap: Callable[..., str] | None = None
     brew_bin: str | None = field(default_factory=_brew_bin)
+    network: Callable[..., str] | None = None
 
 
 # ── read access ──────────────────────────────────────────
@@ -583,6 +591,12 @@ def _steps(deps: Deps, report: dict[str, Any], user: str) -> list[str]:
             f"No ed25519 host key at {deps.hostkey_pub}.  Run "
             "`sudo ssh-keygen -A`, then run the install again."
         )
+    if not report["network"].startswith("installed"):
+        steps.append(
+            f"Remote guest network: {report['network']}.  serve refuses "
+            "to create VMs until it is installed.  Fix the cause and run "
+            "`ltvm install --serve` again."
+        )
     if report["reap_job"] != "installed":
         steps.append(f"Reap job: {report['reap_job']}")
     if report["polkit"].startswith("not installed"):
@@ -647,7 +661,18 @@ def install(
         )
     except (RuntimeError, ValueError, OSError) as e:
         reap_result = f"not installed: {e}"
+    network = deps.network or _network
+    try:
+        network_result = network(run=deps.run, system=deps.system)
+    except (
+        RuntimeError,
+        ValueError,
+        OSError,
+        subprocess.CalledProcessError,
+    ) as e:
+        network_result = f"not installed: {e}"
     report: dict[str, Any] = {
+        "network": network_result,
         "user": facts,
         "read_problems": problems,
         "wizard": wizard,
@@ -663,7 +688,8 @@ def install(
     verb = "Made" if facts["created"] else "Kept"
     stdout.write(
         f"\n{verb} the user {user} (home {facts['home']}).  "
-        f"Wizard: {wizard}.  Reap job: {reap_result}.\n\nSteps left:\n"
+        f"Wizard: {wizard}.  Reap job: {reap_result}.  "
+        f"Remote guest network: {network_result}.\n\nSteps left:\n"
     )
     for n, step in enumerate(report["steps"], 1):
         stdout.write(f"\n{n}. {step}\n")

@@ -70,27 +70,44 @@ def active() -> str | None:
     return None
 
 
-def _firewalld_zone() -> str | None:
-    r = _run(["firewall-cmd", f"--get-zone-of-interface={BRIDGE}"])
+def _firewalld_zone(bridge: str = BRIDGE) -> str | None:
+    r = _run(["firewall-cmd", f"--get-zone-of-interface={bridge}"])
     return r.stdout.strip() if r.returncode == 0 else None
 
 
-def _ufw_missing() -> list[tuple[str, ...]] | None:
+def _ufw_rules(bridge: str, route: bool) -> tuple[tuple[str, ...], ...]:
+    rules = tuple(
+        tuple(bridge if w == BRIDGE else w for w in r) for r in UFW_RULES
+    )
+    return rules if route else rules[:1]
+
+
+def _ufw_missing(
+    rules: tuple[tuple[str, ...], ...] = UFW_RULES,
+) -> list[tuple[str, ...]] | None:
     """The ufw rules ltvm wants that are not there; None if unreadable."""
     r = _run(["ufw", "show", "added"])
     if r.returncode != 0:
         return None
     have = {" ".join(line.split()) for line in r.stdout.splitlines()}
-    return [rule for rule in UFW_RULES if "ufw " + " ".join(rule) not in have]
+    return [rule for rule in rules if "ufw " + " ".join(rule) not in have]
 
 
-def trust_bridge() -> None:
-    """Have the running firewall, if any, let fcbr0's traffic through."""
+def trust_bridge(bridge: str = BRIDGE, *, route: bool = True) -> None:
+    """Have the running firewall, if any, let the traffic of a bridge in.
+
+    With route=False, ufw gets no ``route allow`` rule: the remote bridge
+    gets host input only, and no routing.  firewalld puts the bridge in the trusted
+    zone either way.  Its forward accept does not cancel the drop rules
+    of the remote bridge (guest_net_install), which are in a table of
+    their own.
+    """
+    rules = _ufw_rules(bridge, route)
     kind = active()
     if kind == "ufw":
-        missing = _ufw_missing()
+        missing = _ufw_missing(rules)
         if missing is None:
-            missing = list(UFW_RULES)
+            missing = list(rules)
         for rule in missing:
             r = _run(["ufw", *rule])
             if r.returncode != 0:
@@ -98,9 +115,9 @@ def trust_bridge() -> None:
                     f"ufw {' '.join(rule)} failed: {r.stderr.strip()}"
                 )
         if missing:
-            log.info("ufw: allowed traffic in on and routed through %s", BRIDGE)
+            log.info("ufw: allowed traffic in on and routed through %s", bridge)
     elif kind == "firewalld":
-        if _firewalld_zone() == FIREWALLD_ZONE:
+        if _firewalld_zone(bridge) == FIREWALLD_ZONE:
             return
         # Runtime and permanent both: the permanent one is what a
         # reload or a boot restores, and it does not apply until then.
@@ -110,15 +127,15 @@ def trust_bridge() -> None:
                     "firewall-cmd",
                     *extra,
                     f"--zone={FIREWALLD_ZONE}",
-                    f"--change-interface={BRIDGE}",
+                    f"--change-interface={bridge}",
                 ]
             )
             if r.returncode != 0:
                 raise RuntimeError(
                     f"firewall-cmd {' '.join(extra)} --zone={FIREWALLD_ZONE} "
-                    f"--change-interface={BRIDGE} failed: {r.stderr.strip()}"
+                    f"--change-interface={bridge} failed: {r.stderr.strip()}"
                 )
-        log.info("firewalld: put %s in the %s zone", BRIDGE, FIREWALLD_ZONE)
+        log.info("firewalld: put %s in the %s zone", bridge, FIREWALLD_ZONE)
 
 
 def status() -> dict[str, Any]:
