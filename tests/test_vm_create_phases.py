@@ -123,10 +123,16 @@ def _create_env(
         name: str,
         count: int = 1,
         explicit_ip: str | None = None,
+        net: Any = None,
     ) -> Iterator[list[str]]:
         # Mgmt IP honours explicit_ip; extras are synthesised per index.
-        mgmt = explicit_ip or "192.168.100.50"
-        extras = [f"192.168.100.{60 + i}" for i in range(count - 1)]
+        # A remote VM gets addresses from the pools of its network.
+        if net is not None and net.remote:
+            mgmt = explicit_ip or f"{net.subnet}.50"
+            extras = [f"{net.extra_subnet}.{60 + i}" for i in range(count - 1)]
+        else:
+            mgmt = explicit_ip or "192.168.100.50"
+            extras = [f"192.168.100.{60 + i}" for i in range(count - 1)]
         yield [mgmt, *extras]
 
     run_rc_mock = MagicMock(returncode=run_rc, stdout="", stderr="")

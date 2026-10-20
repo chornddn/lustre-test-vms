@@ -20,13 +20,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
-from . import rootless, site_config, vm_state
+from . import guest_net, rootless, site_config, vm_state
 from .host_setup import is_macos, socket_vmnet_socket_path
 from .priv import ensure_dir, ensure_lock_file, invoking_user, sudo_run
 from .vm_state import (
-    BRIDGE,
     EXIT_ERROR,
-    GATEWAY,
     PREFIX_LEN,
     PREFIX_LEN6,
     VMInfo,
@@ -718,11 +716,24 @@ def launch_qemu(vm: VMInfo, *, wait_seconds: int = 0) -> None:
     if refusal:
         die(refusal)
 
+    net = guest_net.for_vm(vm)
+    if net.remote and not net.contains(vm.ip):
+        # A remote VM made before the remote network existed.  It never
+        # boots on the owner network.
+        die(
+            f"VM '{vm.name}' is remote, but its address {vm.ip} is not in "
+            f"the remote network {net.subnet}.0/24 -- destroy it and "
+            f"create it again"
+        )
+
     if is_macos():
         from .host_setup import ensure_socket_vmnet_running
 
         try:
-            ensure_socket_vmnet_running()
+            if net.remote:
+                _remote_vmnet_ready()
+            else:
+                ensure_socket_vmnet_running()
         except RuntimeError as e:
             die(str(e))
 
@@ -766,8 +777,32 @@ NMI_PANIC_ARGS = (
 )
 
 
+def _remote_vmnet_ready() -> None:
+    """Raise RuntimeError when the remote socket_vmnet has no socket.
+
+    launchd keeps the job up.  Only `install --serve` sets it up, and
+    serve has no root to load it, so nothing is started here.
+    """
+    import stat as _stat
+
+    sock = guest_net.remote_vmnet_socket()
+    try:
+        if _stat.S_ISSOCK(sock.stat().st_mode):
+            return
+    except OSError:
+        pass
+    raise RuntimeError(
+        f"the remote socket_vmnet is not reachable at {sock}.  "
+        f"The host owner runs `ltvm install --serve`."
+    )
+
+
 def _start_qemu(vm: VMInfo) -> None:
     """Launch QEMU for ``vm``, under the launch lock, its memory admitted."""
+    # Every NIC of a remote VM is on the remote network: its gateway,
+    # its bridge (Linux) and its socket_vmnet (macOS).
+    net = guest_net.for_vm(vm)
+    bridge = net.bridge
     # aarch64 virt uses PL011 UART (ttyAMA0); x86 uses 8250 (ttyS0)
     console = "ttyAMA0" if vm.arch == "aarch64" else "ttyS0"
 
@@ -824,7 +859,7 @@ def _start_qemu(vm: VMInfo) -> None:
         f"console={console} reboot=k panic=1 crashkernel={crashkernel} "
         f"net.ifnames=0 biosdevname=0 "
         f"systemd.journald.forward_to_console=1 systemd.log_target=console "
-        f"root=/dev/vda rw fc_ip={vm.ip} fc_gw={GATEWAY} "
+        f"root=/dev/vda rw fc_ip={vm.ip} fc_gw={net.gateway} "
         f"fc_name={vm.name}"
         f"{fc_nics_fragment}"
         f"{fc_nic_ips_fragment}"
@@ -860,7 +895,11 @@ def _start_qemu(vm: VMInfo) -> None:
             as_user = True
     vmnet_socket: str | None = None
     if macos:
-        vmnet_socket = str(socket_vmnet_socket_path())
+        vmnet_socket = str(
+            guest_net.remote_vmnet_socket()
+            if net.remote
+            else socket_vmnet_socket_path()
+        )
     elif helper is None:
         # On Linux the TAP is created with ``user $LOGNAME`` so QEMU can
         # attach to it without root via TUNSETIFF; the ``ip`` calls
@@ -871,7 +910,7 @@ def _start_qemu(vm: VMInfo) -> None:
         for _tap in all_taps:
             sudo_run(["ip", "link", "del", _tap], check=False, quiet=True)
         sudo_run(
-            ["ip", "neigh", "flush", vm.ip, "dev", BRIDGE],
+            ["ip", "neigh", "flush", vm.ip, "dev", bridge],
             check=False,
             quiet=True,
         )
@@ -891,7 +930,7 @@ def _start_qemu(vm: VMInfo) -> None:
             quiet=True,
         )
         sudo_run(
-            ["ip", "link", "set", vm.tap, "master", BRIDGE],
+            ["ip", "link", "set", vm.tap, "master", bridge],
             check=True,
             quiet=True,
         )
@@ -935,7 +974,7 @@ def _start_qemu(vm: VMInfo) -> None:
                 quiet=True,
             )
             sudo_run(
-                ["ip", "link", "set", _tap, "master", BRIDGE],
+                ["ip", "link", "set", _tap, "master", bridge],
                 check=True,
                 quiet=True,
             )
@@ -1030,7 +1069,7 @@ def _start_qemu(vm: VMInfo) -> None:
         (
             f"stream,id=net0,addr.type=unix,addr.path={vmnet_socket},server=off"
             if macos
-            else f"bridge,id=net0,br={BRIDGE},helper={helper}"
+            else f"bridge,id=net0,br={bridge},helper={helper}"
             if helper is not None
             else f"tap,id=net0,ifname={vm.tap},script=no,downscript=no"
         ),
@@ -1075,7 +1114,7 @@ def _start_qemu(vm: VMInfo) -> None:
                 )
             elif helper is not None:
                 _netdev_arg = (
-                    f"bridge,id={_netdev_id},br={BRIDGE},helper={helper}"
+                    f"bridge,id={_netdev_id},br={bridge},helper={helper}"
                 )
             else:
                 _netdev_arg = (
@@ -1313,7 +1352,7 @@ def kill_qemu(vm: VMInfo) -> None:
     # Flush stale ARP entry so the bridge doesn't poison new VMs or
     # re-creations of this VM that may get a different MAC.
     sudo_run(
-        ["ip", "neigh", "flush", vm.ip, "dev", BRIDGE],
+        ["ip", "neigh", "flush", vm.ip, "dev", guest_net.for_vm(vm).bridge],
         check=False,
         quiet=True,
     )

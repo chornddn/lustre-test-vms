@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
-from . import rootless, vm_claim
+from . import guest_net, rootless, vm_claim
 from .deploy import configure_test_disks, premount_cleanup_script
 from .host_setup import is_macos
 from .paths import load_meta_safe
@@ -68,7 +68,6 @@ from .vm_state import (
     VMNotFound,
     drop_orphan_clusters,
     lustre_libdir,
-    nic_ip6,
     resolve_os_artifacts,
 )
 
@@ -793,10 +792,13 @@ def _allocate_and_persist_vm(
     # addresses.  The lock is held until vm.save() commits the .info
     # file, at which point the IPs are visible to peers.
     total_ips = 1 + len(extra_nic_types)
+    # A remote VM gets its addresses from the remote network only.
+    net = guest_net.for_owner(args.owner_id)
     with alloc_ip(
         name,
         count=total_ips,
         explicit_ip=getattr(args, "ip", None) or None,
+        net=net,
     ) as ips:
         ip = ips[0]
         nic_ips = ips[1:]
@@ -834,7 +836,7 @@ def _allocate_and_persist_vm(
             nic_ips=list(nic_ips),
             # Derived from the IPv4 addresses, so uniqueness is
             # inherited rather than re-proved by a second allocator.
-            nic_ip6s=[nic_ip6(v4) for v4 in nic_ips],
+            nic_ip6s=[net.nic_ip6(v4) for v4 in nic_ips],
             # passthrough_drivers is filled in below, inside the launch
             # umbrella, after we've actually bound each BDF to vfio-pci.
             passthrough_drivers={},

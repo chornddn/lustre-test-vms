@@ -15,7 +15,8 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import IO
 
-from . import rootless
+from . import guest_net, rootless
+from .guest_net import GuestNet
 from .priv import atomic_write as _priv_atomic_write
 from .priv import ensure_dir as _ensure_dir
 from .priv import ensure_lock_file as _ensure_lock_file
@@ -28,7 +29,6 @@ from .vm_state import (
     VMInfo,
     VMNotFound,
     qemu_machine_for_arch,
-    subnet_for_nic,
 )
 
 log = logging.getLogger(__name__)
@@ -353,7 +353,7 @@ def _used_ips(exclude_name: str) -> set[str]:
     return flat
 
 
-def _validate_explicit_ip(ip: str) -> None:
+def _validate_explicit_ip(ip: str, net: GuestNet | None = None) -> None:
     """Reject a --ip that isn't a host address on the VM subnet.
 
     Unvalidated, the value goes straight onto QEMU's kernel cmdline as
@@ -368,15 +368,15 @@ def _validate_explicit_ip(ip: str) -> None:
     except ipaddress.AddressValueError:
         die(f"--ip {ip!r} is not a valid IPv4 address")
     # Read the mgmt prefix at call time, not from the import-time
-    # snapshot: --ip pins the mgmt NIC, and subnet_for_nic(0) is the
-    # one place that says which /24 that is.
-    mgmt = subnet_for_nic(0)
-    net = ipaddress.IPv4Network(f"{mgmt}.0/24")
-    if addr not in net:
-        die(f"--ip {ip} is outside the VM subnet {net}")
+    # snapshot: --ip pins the mgmt NIC, and the network of the VM says
+    # which /24 that is.
+    mgmt = (net or guest_net.owner()).subnet_for_nic(0)
+    cidr = ipaddress.IPv4Network(f"{mgmt}.0/24")
+    if addr not in cidr:
+        die(f"--ip {ip} is outside the VM subnet {cidr}")
     if ip == f"{mgmt}.1":
         die(f"--ip {ip} is the bridge gateway address")
-    if addr == net.network_address or addr == net.broadcast_address:
+    if addr == cidr.network_address or addr == cidr.broadcast_address:
         die(f"--ip {ip} is a network/broadcast address")
 
 
@@ -385,6 +385,7 @@ def alloc_ip(
     name: str,
     count: int = 1,
     explicit_ip: str | None = None,
+    net: GuestNet | None = None,
 ) -> Iterator[list[str]]:
     """Context manager that allocates *count* unique IPs for *name* under
     an exclusive lock held until the ``with`` block exits.
@@ -402,6 +403,9 @@ def alloc_ip(
     ``explicit_ip`` (optional) pins the mgmt IP; extras are still
     auto-allocated.  Pass None to auto-allocate all IPs.
 
+    ``net`` is the guest network of the VM (guest_net.for_owner).  The
+    addresses come from its pool only.  The default is the owner network.
+
     Usage::
 
         with alloc_ip(name, count=1 + len(extras)) as ips:
@@ -410,11 +414,12 @@ def alloc_ip(
     """
     if count < 1:
         raise ValueError(f"alloc_ip count must be >= 1, got {count}")
+    net = net or guest_net.owner()
     with _ip_alloc_lock():
         used = _used_ips_by_net(name)
         ips: list[str] = []
         if explicit_ip:
-            _validate_explicit_ip(explicit_ip)
+            _validate_explicit_ip(explicit_ip, net)
             if explicit_ip in used.get(_net_of(explicit_ip), set()):
                 die(f"IP {explicit_ip} already used by another VM")
             ips.append(explicit_ip)
@@ -428,7 +433,7 @@ def alloc_ip(
             int(hashlib.md5(name.encode()).hexdigest()[:4], 16) % 244
         ) + 10
         for idx in range(len(ips), count):
-            subnet = subnet_for_nic(idx)
+            subnet = net.subnet_for_nic(idx)
             taken = used.setdefault(subnet, set())
             # Wider scan window than 244 deltas is pointless -- the /24
             # only has 244 usable host addresses -- but we walk the full
