@@ -261,7 +261,10 @@ class FakeHost:
         self.elevated: list[list[str]] = []
         # What each `install SRC DST` wrote, by DST.
         self.files: dict[str, str] = {}
+        # The wizard runs (`sudo -u ltvm ... serve init`).
         self.as_user: list[list[str]] = []
+        # Other commands that run as the user.
+        self.user_cmds: list[list[str]] = []
         self.users: dict[str, Any] = {}
         self.groups = {
             "ltvm": grp.struct_group(("ltvm", "*", 501, [])),
@@ -302,8 +305,10 @@ class FakeHost:
 
         if cmd[:1] == ["install"] and Path(cmd[-2]).is_file():
             self.files[cmd[-1]] = Path(cmd[-2]).read_text()
-        if cmd[:2] == ["sudo", "-u"]:
+        if cmd[:2] == ["sudo", "-u"] and "serve" in cmd:
             self.as_user.append(cmd)
+        elif cmd[:2] == ["sudo", "-u"]:
+            self.user_cmds.append(cmd)
         else:
             self.elevated.append(cmd)
         out = ""
@@ -410,16 +415,17 @@ class TestCreateUserMacOS:
             "ltvm",
         ] in cmds
         assert [
+            "sudo",
+            "-u",
+            "ltvm",
             "install",
             "-d",
-            "-o",
-            "ltvm",
             "-g",
             "staff",
             "-m",
             "0755",
             "/Users/ltvm/artifacts",
-        ] in cmds
+        ] in host.user_cmds
 
 
 class TestCreateUserLinux:
@@ -432,16 +438,17 @@ class TestCreateUserLinux:
         assert useradd[useradd.index("--groups") + 1] == "kvm"
         assert ["usermod", "--lock", "ltvm"] in host.elevated
         assert [
+            "sudo",
+            "-u",
+            "ltvm",
             "install",
             "-d",
-            "-o",
-            "ltvm",
             "-g",
             "ltvm",
             "-m",
             "0755",
             "/home/ltvm/artifacts",
-        ] in host.elevated
+        ] in host.user_cmds
 
     def test_no_kvm_group_means_no_extra_group(self, tmp_path: Path) -> None:
         host = FakeHost(tmp_path, "Linux")
@@ -461,8 +468,31 @@ class TestCreateUserLinux:
         cmds = _flat(host.elevated)
         assert "useradd" not in cmds
         assert "usermod --append --groups ltvm,kvm ltvm" in cmds
-        assert "/srv/ltvm/artifacts" in cmds
+        assert "/srv/ltvm/artifacts" in _flat(host.user_cmds)
         assert report["user"]["created"] is False
+
+    @pytest.mark.parametrize("system", ["Linux", "Darwin"])
+    def test_root_never_touches_a_path_in_the_user_home(
+        self, tmp_path: Path, system: str
+    ) -> None:
+        """The user can put a link at ~/artifacts.
+
+        install -d as root follows a link on a path that exists, and
+        chowns its target.  Thus only the user makes the directory.
+        """
+        import pwd
+
+        host = FakeHost(tmp_path, system)
+        home = "/Users/ltvm" if system == "Darwin" else "/srv/ltvm"
+        host.users["ltvm"] = pwd.struct_passwd(
+            ("ltvm", "!", 990, 20, "", home, "/bin/sh")
+        )
+        _install(host)
+        inside = [
+            c for c in host.elevated if any(a.startswith(f"{home}/") for a in c)
+        ]
+        assert inside == []
+        assert any(f"{home}/artifacts" in c for c in host.user_cmds)
 
     def test_no_ltvm_group_stops_before_any_change(
         self, tmp_path: Path
@@ -807,7 +837,7 @@ class TestSshdFailures:
         real = host.run
 
         def run(cmd: list[str], **kw: Any) -> Any:
-            if cmd[:2] == ["sudo", "-u"]:
+            if cmd[:2] == ["sudo", "-u"] and "serve" in cmd:
                 raise FileNotFoundError(2, "No such file", "sudo")
             return real(cmd, **kw)
 
@@ -879,7 +909,7 @@ class TestInstallJson:
         real_run = host.run
 
         def run(cmd: list[str], **kw: Any) -> Any:
-            if cmd[:2] == ["sudo", "-u"]:
+            if cmd[:2] == ["sudo", "-u"] and "serve" in cmd:
                 seen.append(kw)
             return real_run(cmd, **kw)
 

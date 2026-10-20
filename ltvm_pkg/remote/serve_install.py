@@ -378,8 +378,22 @@ def _ensure_user(deps: Deps, user: str) -> dict[str, Any]:
             ["usermod", "--append", "--groups", ",".join([GROUP, *extra]), user]
         )
     artifacts = f"{home}/artifacts"
+    # The user owns home and can put a link at artifacts.  install -d as
+    # root follows a link on a path that exists, and then root changes
+    # the owner of the target.  Thus the user makes the directory.
     deps.run(
-        ["install", "-d", "-o", user, "-g", group_name, "-m", "0755", artifacts]
+        [
+            "sudo",
+            "-u",
+            user,
+            "install",
+            "-d",
+            "-g",
+            group_name,
+            "-m",
+            "0755",
+            artifacts,
+        ]
     )
     gids = {primary, ltvm_gid}
     gids |= {g for g in (_gid(deps, n) for n in extra) if g is not None}
